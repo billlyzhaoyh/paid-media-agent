@@ -139,15 +139,15 @@ async def test_report_reconciles_and_shows_missing_platforms(
     theme.write_text(
         theme.read_text()
         .replace("Paid Media Agent", "Example company")
-        .replace("#006ddd", "#7c3a70")
+        .replace("#a5432b", "#7c3a70")
         .replace(
-            "Inter, -apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif",
+            "IBM Plex Sans, -apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif",
             "Georgia, serif",
         )
     )
     branded = ReportRenderer(tmp_path / "company-out", templates_dir=templates).render_html(payload)
     assert "--current: #7c3a70" in branded and 'fill="#7c3a70"' in branded
-    assert "#006ddd" not in branded
+    assert "#a5432b" not in branded
     assert "--font-family: Georgia, serif" in branded and "font: 8pt Georgia, serif" in branded
     assert 'content: "Example company"' in branded
     assert "font: var(--heading-weight) 19px" in branded

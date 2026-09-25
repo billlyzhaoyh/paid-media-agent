@@ -17,7 +17,7 @@ window.createPaidMediaHero = ({ el, logo }) => {
     ["deepagents", "Managed Deep Agents", "Managed hosting", 4, 1],
     ["x", "X Ads", "Ad platform", 2, 0],
     ["meta", "Meta Ads", "Ad platform", 0, -1],
-    ["langchain", "LangChain", "Agent framework", -2, -2],
+    ["googleanalytics", "Google Analytics", "First-party analytics", -2, -2],
     ["linkedin", "LinkedIn Ads", "Ad platform", 1, 1],
     ["openai", "OpenAI", "Model provider", -1, 1],
     ["slack", "Slack", "Optional team interface", -3, -1],

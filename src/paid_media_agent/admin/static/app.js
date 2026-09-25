@@ -218,7 +218,7 @@
 
   // ---- render
   function render() {
-    $("#brand-mark").innerHTML = LOGOS.langchain || "";
+    $("#brand-mark").innerHTML = LOGOS.structureml || "";
     const advanced = state.view === "advanced";
     $("#wizard").hidden = advanced;
     document.body.classList.toggle("is-welcome", !advanced && (!state.step || state.step === "welcome"));
@@ -347,9 +347,8 @@
     return { children: [el("div", { class: "welcome-layout" }, [
       el("div", { class: "welcome-copy" }, [
         el("span", { class: "welcome-badge" }, [
-          el("img", { class: "welcome-oss-logo welcome-oss-logo-light", src: "/static/langchain-oss-light.svg", alt: "", width: "22", height: "22" }),
-          el("img", { class: "welcome-oss-logo welcome-oss-logo-dark", src: "/static/langchain-oss-dark.svg", alt: "", width: "22", height: "22" }),
-          el("span", { text: "LangChain OSS" }),
+          el("span", { class: "welcome-badge-mark", "aria-hidden": "true", html: LOGOS.structureml || "" }),
+          el("span", { text: "By StructureML" }),
         ]),
         el("h1", { class: "welcome-title", tabindex: "-1", text: "Set up your\npaid media agent." }),
         el("p", { class: "welcome-description", text: "Compare ad spend, conversions, and cost per lead across channels. Get weekly reports and answers to campaign questions." }),
@@ -380,7 +379,7 @@
       onclick: () => { state.picked = p.id; state.session.modelTested = null; refreshScreen(); },
     }, [
       el("div", { class: "row" }, [
-        logo(p.logo, p.logo === "langchain" ? "lc" : ""),
+        logo(p.logo),
         el("span", { class: "stack" }, [
           el("span", { class: "name", text: p.label }),
           el("span", { class: "note", text: p.id === "anthropic" ? "Use your Anthropic API key" : p.id === "openai" ? "Use your OpenAI API key" : p.note }),

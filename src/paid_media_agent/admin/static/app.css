@@ -1,11 +1,11 @@
-/* Shared theme tokens. */
+/* Shared theme tokens: StructureML paper, ink, and terracotta. */
 :root {
-  --desk: #ecebe8; --shell: #ffffff; --sidebar: #f4f3f1; --canvas: #fbfbfa; --panel: #ffffff;
-  --muted: #fafaf8; --hover: #f0efed; --selected: #eae9e7;
-  --line: #e6e5e1; --line-strong: #d9d7d2;
-  --ink: #333333; --ink-muted: #333333; --ink-subtle: #777777;
-  --primary: #006ddd; --primary-ink: #ffffff; --secondary: #333333; --secondary-ink: #ffffff;
-  --mark: #ffffff; --mark-ink: #333333;
+  --desk: #ede7dd; --shell: #fdfbf6; --sidebar: #f5f0e8; --canvas: #faf6ef; --panel: #fdfbf6;
+  --muted: #f8f4ed; --hover: #f2ece3; --selected: #ebe4d9;
+  --line: #e4dcd2; --line-strong: #d9cfc5;
+  --ink: #2a2723; --ink-muted: #2a2723; --ink-subtle: #655c53;
+  --primary: #a5432b; --primary-ink: #ffffff; --secondary: #2a2723; --secondary-ink: #fdfbf6;
+  --mark: #fdfbf6; --mark-ink: #2a2723;
   --positive: #005b43; --positive-bg: #dcf3e9; --attention: #734600; --attention-bg: #fcecdb;
   --risk: #883431; --risk-bg: #ffe9e7; --info: #0b528c; --info-bg: #e3f0ff; --neutral: #494845; --neutral-bg: #e1e0dc;
   --elev-tint: rgb(66 50 30 / 0.06);
@@ -22,16 +22,16 @@
   --ease-out-quint: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-out: var(--ease-out-quint);
   --duration-fast: 160ms; --fast: var(--duration-fast);
-  --font: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 [data-theme="dark"] {
-  --desk: #131313; --shell: #161616; --sidebar: #1a1a1a; --canvas: #191919; --panel: #161616;
-  --muted: #191919; --hover: #2a2a2a; --selected: #2a2a2a;
+  --desk: #12100d; --shell: #161310; --sidebar: #1a1714; --canvas: #1c1915; --panel: #161310;
+  --muted: #1c1915; --hover: #2b2622; --selected: #2b2622;
   --line: rgb(255 255 250 / 7%); --line-strong: rgb(255 255 250 / 12%);
-  --ink: #fafaf8; --ink-muted: #d4d4d0; --ink-subtle: #a0a09a;
-  --primary: #99d3ff; --primary-ink: #191919; --secondary: #4a4a46; --secondary-ink: #fafaf8;
-  --mark: #161616; --mark-ink: #fafaf8;
+  --ink: #f2eee7; --ink-muted: #d6d0c7; --ink-subtle: #aba39b;
+  --primary: #e69275; --primary-ink: #161310; --secondary: #4a443e; --secondary-ink: #f2eee7;
+  --mark: #161310; --mark-ink: #f2eee7;
   --positive: #7fccaf; --positive-bg: #1d352c; --attention: #e4b480; --attention-bg: #3c2d1e;
   --risk: #f3aaa3; --risk-bg: #412a28; --info: #91c2f4; --info-bg: #233241; --neutral: #c6c5c1; --neutral-bg: #373633;
   --elev-hi: rgb(255 255 255 / 0.03);
