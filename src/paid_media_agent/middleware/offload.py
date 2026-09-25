@@ -57,5 +57,5 @@ class ResultOffloadMiddleware(AgentMiddleware[Any, Any, Any]):
     async def awrap_tool_call(
         self, request: ToolCallRequest, handler: Any
     ) -> ToolMessage | Command[Any]:
-        # The artifact write touches disk and, in sandbox mode, the network: keep it off the loop.
+        # The artifact write touches disk: keep it off the loop.
         return await asyncio.to_thread(self._offload, request, await handler(request))

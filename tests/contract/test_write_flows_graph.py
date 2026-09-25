@@ -197,8 +197,8 @@ async def test_replayed_claim_cannot_execute_twice(settings: Settings, project_r
     original_receipt = runtime.profile.receipts.get(record.changeset.proposal_id)
     assert original_receipt is not None and original_receipt.status == "verified"
     replay = await runtime.components.write_executor.execute(record.changeset.proposal_id)
-    assert replay is original_receipt
-    assert runtime.profile.receipts.get(record.changeset.proposal_id) is original_receipt
+    assert replay == original_receipt
+    assert runtime.profile.receipts.get(record.changeset.proposal_id) == original_receipt
     assert len(provider.mutation_calls) == 1, "a replay must never produce a second mutation"
 
 
@@ -476,42 +476,3 @@ async def test_reject_decision_leaves_provider_untouched(
     assert tool_message.status == "error" and "rejected" in tool_message.content
     assert service.get(record.changeset.proposal_id).state is ProposalState.REJECTED  # type: ignore[union-attr]
     assert provider.mutation_calls == []
-
-
-async def test_mda_uses_verified_identity_instead_of_configurable_caller(
-    settings: Settings, project_root: Path
-) -> None:
-    from dataclasses import replace
-    from types import SimpleNamespace
-
-    from managed_deepagents._managed_tools import with_managed_runtime
-
-    from paid_media_agent.runtime.local import compile_graph
-    from paid_media_agent.tools.write_tools import _caller_from_runtime
-
-    state = FixtureState()
-    provider = FakeWriteProvider(state)
-    runtime, _ = build_runtime(
-        settings, project_root, WRITE_STEPS, fixture_state=state, write_provider=provider
-    )
-    components = replace(
-        runtime.components, tools=tuple(with_managed_runtime(t) for t in runtime.components.tools)
-    )
-    runtime = replace(
-        runtime,
-        components=components,
-        graph=compile_graph(components, project_root=project_root, checkpointer=InMemorySaver()),
-    )
-    cfg = config(caller="untrusted-caller")
-    cfg["configurable"]["langgraph_auth_user"] = {
-        "identity": "reviewer-1",
-        "mda_user_id": "reviewer-1",
-    }
-    await run_until_interrupt(runtime, cfg)
-    record = runtime.components.proposal_service.proposals.list_for_thread("t-1")[0]
-    assert record.changeset.requester_ref == "reviewer-1"
-    final = await resume(runtime, cfg)
-    assert _last_tool(final)["receipt"]["status"] == "verified"
-    assert len(provider.mutation_calls) == 1
-    missing_identity = SimpleNamespace(identity=None, config=cfg)
-    assert _caller_from_runtime(missing_identity) == ("t-1", "anonymous")

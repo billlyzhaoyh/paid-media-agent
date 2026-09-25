@@ -192,11 +192,10 @@ async def test_both_paths_expose_the_same_authorized_reachability(
     )
 
 
-async def test_configured_gateway_selector_is_used(
+async def test_configured_selector_model_is_used(
     settings: Settings, project_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from paid_media_agent import assembly
-    from paid_media_agent.middleware.tool_selection import LenientStructuredOutputModel
 
     main = RecordingProviderModel(
         provider="openai", model_name="main", responses=[AIMessage(content="ok")]
@@ -207,7 +206,7 @@ async def test_configured_gateway_selector_is_used(
         responses=[],
         structured_selection=["google_ads__get_campaign_performance"],
     )
-    selector_spec = "langsmith:openai/gpt-5.4-mini"
+    selector_spec = "openai:gpt-5.4-mini"
     resolved = []
     original_resolve = assembly.resolve_model
 
@@ -219,14 +218,13 @@ async def test_configured_gateway_selector_is_used(
 
     monkeypatch.setattr(assembly, "resolve_model", resolve)
     components, graph = _runtime(
-        _settings(settings, "langsmith:anthropic/claude-sonnet-4-6", selector_spec),
+        _settings(settings, "google_genai:gemini-3-flash", selector_spec),
         project_root,
         main,
     )
     assert resolved == [selector_spec]
     selection = next(m for m in components.middleware if m.name == "PaidMediaPortableToolSelector")
-    assert isinstance(selection.model, LenientStructuredOutputModel)
-    assert selection.model.inner is selector
+    assert selection.model is selector
     await graph.ainvoke(
         {"messages": [{"role": "user", "content": "Analyze campaign performance."}]},
         config=config(),

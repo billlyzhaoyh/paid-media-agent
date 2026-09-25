@@ -55,15 +55,10 @@ class ExecuteChangeArgs(BaseModel):
 
 
 def _caller_from_runtime(runtime: Any) -> tuple[str, str]:
-    """Use MDA's verified identity, or the caller injected by a local transport."""
+    """The thread and caller the transport injected into the run config."""
     config = getattr(runtime, "config", None) or {}
     configurable = config.get("configurable", {})
     thread_id = str(configurable.get("thread_id") or "local-thread")
-    if hasattr(runtime, "identity"):
-        identity = runtime.identity
-        user = identity.get("user") if isinstance(identity, Mapping) else None
-        actor = user.get("id") if isinstance(user, Mapping) else None
-        return thread_id, actor if isinstance(actor, str) else "anonymous"
     return thread_id, str(configurable.get("caller_ref") or "local-user")
 
 

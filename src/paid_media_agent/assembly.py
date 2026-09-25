@@ -30,7 +30,6 @@ from paid_media_agent.middleware.tool_selection import (
     SelectionPlan,
     SelectionStrategy,
     build_selection_middleware,
-    lenient_selector,
     plan_selection,
 )
 from paid_media_agent.runtime.profiles import RuntimeProfile
@@ -151,7 +150,7 @@ def resolve_model(
     api_key_env: str | None = None,
     timeout_seconds: int = 120,
 ) -> BaseChatModel:
-    """Initialize the configured provider model. No implicit gateway: `langsmith:` specs opt in.
+    """Initialize the configured provider model.
 
     `api_key_env` names the environment variable holding the key when the provider does not read
     its default one (for example an OpenAI-compatible endpoint with its own key). Every request
@@ -218,9 +217,7 @@ def build_agent_components(
             selected = resolve_model(
                 selector_config, timeout_seconds=settings.paid_media_model_timeout_seconds
             )
-            selection_model = lenient_selector(selected, selector_config) or selected
-        else:
-            selection_model = lenient_selector(resolved_model, model_config)
+            selection_model = selected
     selection = build_selection_middleware(
         plan,
         searchable_tool_names=[t.name for t in platform_tools],
@@ -298,7 +295,6 @@ def _secret_values(settings: Settings) -> tuple[str, ...]:
         settings.slack_bot_token,
         settings.slack_app_token,
         settings.slack_signing_secret,
-        settings.database_url,
         settings.paid_media_api_tokens,
     ):
         if secret is not None:

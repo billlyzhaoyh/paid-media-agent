@@ -52,6 +52,39 @@ async def test_runtime_loads_only_runtime_skills_and_keeps_them_read_only(
     assert (tmp_path / "workspace" / "note.txt").read_text() == "analysis notes"
 
 
+async def test_model_cannot_read_or_write_the_state_file(
+    settings: Settings, project_root: Path, tmp_path: Path
+) -> None:
+    """Approval claims live in the state file; the model's file tools must never reach it."""
+    shutil.copy(project_root / "instructions.md", tmp_path / "instructions.md")
+    shutil.copytree(project_root / "workspace" / "skills", tmp_path / "workspace" / "skills")
+    (tmp_path / "skills").symlink_to("workspace/skills", target_is_directory=True)
+    state_file = tmp_path / "workspace" / "state" / "pma.duckdb"
+    state_file.parent.mkdir(parents=True)
+    state_file.write_bytes(b"state")
+    steps = [
+        lambda _m: tool_call_message("read_file", {"file_path": "/workspace/state/pma.duckdb"}),
+        lambda _m: tool_call_message(
+            "write_file", {"file_path": "/workspace/state/pma.duckdb", "content": "forged"}
+        ),
+        lambda _m: tool_call_message(
+            "write_file", {"file_path": "/workspace/state/other.duckdb", "content": "forged"}
+        ),
+        lambda _m: AIMessage(content="done"),
+    ]
+    runtime, _ = build_runtime(settings, tmp_path, steps)
+
+    state = await runtime.graph.ainvoke(
+        {"messages": [{"role": "user", "content": "Inspect the state."}]}, config=config()
+    )
+
+    messages = [m for m in state["messages"] if isinstance(m, ToolMessage)]
+    assert len(messages) == 3
+    assert all("permission denied" in str(m.content) for m in messages)
+    assert state_file.read_bytes() == b"state"
+    assert not (state_file.parent / "other.duckdb").exists()
+
+
 async def test_manually_authored_company_context_uses_runtime_skills(
     settings: Settings, project_root: Path, tmp_path: Path
 ) -> None:

@@ -1,14 +1,15 @@
-"""Surface parity: Slack, the API, the MDA definition, and the self-hosted runtime share one assembly."""
+"""Surface parity: Slack, the API, and the self-hosted runtime share one assembly."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
 from paid_media_agent.config import Settings
-from paid_media_agent.persistence.memory import InMemoryDedupeStore, InMemoryThreadOwnershipStore
+from paid_media_agent.store import Store
 from paid_media_agent.surfaces.api.app import create_app
 from paid_media_agent.surfaces.runner import AgentRunner
 from paid_media_agent.surfaces.slack.blocks import ACTION_APPROVE
@@ -50,14 +51,14 @@ async def test_slack_review_and_button_approval_resume_the_same_graph(
         write_provider=provider,
         approval_policy=policy,
     )
-    threads = InMemoryThreadOwnershipStore()
+    threads = Store().repositories.threads
     runner = AgentRunner(
         graph=runtime.graph,
         service=runtime.components.proposal_service,
         receipts=runtime.profile.receipts,
         threads=threads,
     )
-    slack = SlackApplicationService(runner=runner, dedupe=InMemoryDedupeStore())
+    slack = SlackApplicationService(runner=runner, dedupe=Store().repositories.dedupe)
 
     events = []
 
@@ -151,7 +152,7 @@ async def test_api_and_slack_share_persisted_state(settings: Settings, project_r
     holder.components = runtime.components  # type: ignore[attr-defined]
     holder.profile = runtime.profile  # type: ignore[attr-defined]
     holder.catalog = runtime.catalog  # type: ignore[attr-defined]
-    holder.threads = InMemoryThreadOwnershipStore()  # type: ignore[attr-defined]
+    holder.threads = Store().repositories.threads  # type: ignore[attr-defined]
     holder.persistence = "memory"  # type: ignore[attr-defined]
     app = create_app(holder)
     client = TestClient(app)
@@ -181,35 +182,6 @@ async def test_api_and_slack_share_persisted_state(settings: Settings, project_r
     assert fastapi is not None
 
 
-def test_mda_definition_uses_shared_components(
-    project_root: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import importlib
-    import sys
-
-    monkeypatch.delenv("PIPEBOARD_API_TOKEN", raising=False)
-    # The import reads the developer's .env; pin the model so a local typo cannot fail the suite.
-    monkeypatch.setenv("PAID_MEDIA_MODEL", "anthropic:claude-sonnet-4-6")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-never-used")
-    monkeypatch.chdir(project_root)
-    sys.modules.pop("agent", None)
-    module = importlib.import_module("agent")
-    definition = module.agent
-    config = definition.config
-    assert config["name"] == "paid-media-agent"
-    names = {t.name for t in config["tools"]}
-    assert {"discover_tools", "compare_periods", "propose_change", "execute_change"} <= names
-    assert not any(n.endswith("__mutate") or "delete" in n for n in names)
-    assert "execute_change" in config["interrupt_on"]
-    middleware_names = {m.name for m in config["middleware"]}
-    assert {
-        "PaidMediaInvocationGuard",
-        "PaidMediaRedaction",
-        "PaidMediaResultOffload",
-    } <= middleware_names
-    assert (project_root / "channels" / "slack.py").exists()
-
-
 def test_configured_runtime_compiles_the_deployment_profile_locally(
     settings: Settings, project_root: Path
 ) -> None:
@@ -219,7 +191,7 @@ def test_configured_runtime_compiles_the_deployment_profile_locally(
     runtime = build_configured_runtime(
         settings, project_root=project_root, model=ScriptedChatModel(steps=[])
     )
-    assert runtime.profile.name == "mda"
+    assert runtime.profile.name == "local"
     assert runtime.components.metadata.catalog_source == "fixture"
     assert runtime.profile.write_provider_is_fake is True, "no live adapter without credentials"
     assert {t.name for t in runtime.components.tools} >= {
@@ -229,16 +201,21 @@ def test_configured_runtime_compiles_the_deployment_profile_locally(
     }
 
 
-async def test_self_hosted_runtime_uses_the_same_profile(
-    settings: Settings, project_root: Path
+def test_self_hosted_runtime_uses_the_same_profile_over_a_state_file(
+    settings: Settings, project_root: Path, tmp_path: Path
 ) -> None:
     from paid_media_agent.runtime.self_hosted import build_self_hosted_runtime
     from paid_media_agent.testing.scripted_model import ScriptedChatModel
 
-    runtime = await build_self_hosted_runtime(
-        settings, project_root=project_root, model=ScriptedChatModel(steps=[])
+    state = tmp_path / "state" / "pma.duckdb"
+    runtime = build_self_hosted_runtime(
+        settings.model_copy(update={"paid_media_state_path": state}),
+        project_root=project_root,
+        model=ScriptedChatModel(steps=[]),
     )
-    assert runtime.persistence == "memory" and runtime.profile.name == "self_hosted"
+    assert runtime.persistence == "duckdb" and runtime.profile.name == "self_hosted"
+    assert state.is_file() and runtime.threads.claim("t-1", "alice")
+    runtime.store.close()
     assert runtime.components.metadata.catalog_source == "fixture"
     assert runtime.profile.write_provider_is_fake is True
     assert {t.name for t in runtime.components.tools} >= {
@@ -301,8 +278,8 @@ async def test_signed_http_ack_precedes_agent_work_and_verifies_requests(
             profile=runtime.profile,
             catalog=runtime.catalog,
             persistence="memory",
-            dedupe=InMemoryDedupeStore(),
-            threads=InMemoryThreadOwnershipStore(),
+            dedupe=Store().repositories.dedupe,
+            threads=Store().repositories.threads,
         )
     )
     body = json.dumps(_slack_event("T1", "C1", "1.0", "U1", "Analyze spend", "Ev-ack")).encode()
@@ -354,7 +331,7 @@ async def test_artifacts_require_thread_owner_and_persisted_report_reference(
         update={"paid_media_api_tokens": SecretStr("alice-token:alice,bob-token:bob")}
     )
     runtime, _ = build_runtime(configured, project_root, [final_step])
-    threads = InMemoryThreadOwnershipStore()
+    threads = Store().repositories.threads
     threads.claim("alice-thread", "alice")
     output = runtime.profile.workspace_root / "out"
     (output / "report.html").write_text("<p>Alice's report</p>")
@@ -394,3 +371,52 @@ async def test_artifacts_require_thread_owner_and_persisted_report_reference(
             await client.get("/threads/alice-thread/artifacts/other.html", headers=alice)
         ).status_code == 404
         assert (await client.get("/artifacts/report.html", headers=alice)).status_code == 404
+
+
+async def test_restart_keeps_proposals_but_refuses_approving_an_expired_conversation(
+    settings: Settings, project_root: Path, tmp_path: Path
+) -> None:
+    """Proposals, claims, and thread owners are in the state file; checkpoints are not (yet)."""
+    import httpx
+    from pydantic import SecretStr
+
+    from paid_media_agent.runtime.self_hosted import build_self_hosted_runtime
+    from paid_media_agent.testing.demo_script import write_demo_steps
+    from paid_media_agent.testing.scripted_model import ScriptedChatModel
+
+    configured = settings.model_copy(
+        update={
+            "paid_media_state_path": tmp_path / "pma.duckdb",
+            "paid_media_api_tokens": SecretStr("tok-req:alice,tok-rev:bob"),
+            "paid_media_approver_ids": "bob",
+        }
+    )
+    requester, reviewer = {"Authorization": "Bearer tok-req"}, {"Authorization": "Bearer tok-rev"}
+    first = build_self_hosted_runtime(
+        configured, project_root=project_root, model=ScriptedChatModel(steps=write_demo_steps())
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(create_app(first)), base_url="http://test"
+    ) as client:
+        sent = await client.post(
+            "/threads/t1/messages", json={"text": "lower the budget"}, headers=requester
+        )
+    assert sent.json()["interrupted"] is True
+    proposal_id = sent.json()["proposal"]["proposal_id"]
+    first.store.close()
+
+    restarted = build_self_hosted_runtime(
+        configured, project_root=project_root, model=ScriptedChatModel(steps=[])
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(create_app(restarted)), base_url="http://test"
+    ) as client:
+        stored = await client.get(f"/proposals/{proposal_id}", headers=reviewer)
+        approved = await client.post(f"/proposals/{proposal_id}/approve", headers=reviewer)
+        foreign = await client.post("/threads/t1/messages", json={"text": "hi"}, headers=reviewer)
+    assert stored.json()["proposal"]["state"] == "awaiting_approval"
+    assert approved.status_code == 409 and "conversation_expired" in approved.json()["detail"]
+    assert foreign.status_code == 403, "thread ownership survives the restart"
+    assert restarted.profile.approvals.latest_unused(UUID(proposal_id), 1) is None
+    assert restarted.profile.write_provider.mutation_calls == []  # type: ignore[attr-defined]
+    restarted.store.close()

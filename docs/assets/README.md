@@ -8,7 +8,7 @@ The setup console uses vendor marks to identify integrations. Source categories 
 `src/paid_media_agent/admin/static/logos.js`:
 
 - [Simple Icons](https://simpleicons.org/) supplies the monochrome marks identified there, under CC0.
-- Deep Agents, LangSmith (the LangChain mark), Google, Meta, LinkedIn, Reddit, X, and BigQuery use official brand or product marks.
+- Google, Meta, LinkedIn, Reddit, X, and BigQuery use official brand or product marks.
 - Pipeboard uses its public favicon; Groq and Zhipu use letter tiles.
 
 The self-hosted image downloads IBM Plex Sans and Mono 1.1.0 from IBM's releases, pinned by

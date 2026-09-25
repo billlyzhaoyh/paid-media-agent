@@ -6,10 +6,10 @@
   </p>
   <h1>Paid Media Agent</h1>
   <p>by <a href="https://structureml.com/">StructureML</a></p>
-  <p>Cross-channel campaign analysis and reporting.<br>Built on <a href="https://github.com/langchain-ai/deepagents">Deep Agents</a>. Deploy with <a href="https://docs.langchain.com/langsmith/python/managed-deep-agents-overview">Managed Deep Agents</a>.</p>
+  <p>Cross-channel campaign analysis and reporting.<br>Built on <a href="https://github.com/langchain-ai/deepagents">Deep Agents</a>. Runs locally or in Docker.</p>
   <p>
     <a href="#quick-start">Quick start</a> ·
-    <a href="#deployment">Deployment</a> ·
+    <a href="#running-it">Running it</a> ·
     <a href="OPERATIONS.md">Documentation</a> ·
     <a href="CONTRIBUTING.md">Contributing</a>
   </p>
@@ -28,9 +28,8 @@ next. Ask questions in Slack or the terminal, generate performance reports, and 
 changes for review.
 
 It comes with ad platform integrations, analysis and reporting skills, and a paid-media wiki.
-Connect your accounts, add your company context, and deploy with
-[Managed Deep Agents](https://docs.langchain.com/langsmith/python/managed-deep-agents-overview)
-or on your own infrastructure. You choose the model.
+Connect your accounts, add your company context, and run it on your machine or your own server.
+You choose the model.
 
 [StructureML](https://structureml.com/) researches foundational machine learning for structured
 data. We are extending this agent with models for media-buying decisions and with first-party
@@ -68,13 +67,13 @@ uv run paid-media-agent setup
 ```
 
 The setup command opens a local console for choosing a model, connecting ad accounts, and
-deploying. No frontend build is needed. The CLI exposes the same connection actions with JSON
+running the agent. No frontend build is needed. The CLI exposes the same connection actions with JSON
 output if you prefer the terminal.
 
 You can also ask your coding agent to guide setup:
 
 > Read AGENTS.md and .agents/skills/paid-media-onboarding/SKILL.md. Help me connect a model,
-> connect my ad accounts, add my business context, and choose a deployment path.
+> connect my ad accounts, add my business context, and run it locally.
 
 **Try it without model keys or ad accounts:**
 
@@ -120,50 +119,36 @@ Ask your coding agent to follow the
 Settings live in `.env`, account mappings in `config/accounts.toml`, and company context in
 `workspace/skills/company-context/`. All three are Git-ignored.
 
-## Deployment
+## Running it
 
-Choose who operates the infrastructure:
+Everything runs on your machine or your own server. State (proposals, approvals, receipts, and
+conversation ownership) lives in one DuckDB file at `workspace/state/pma.duckdb`.
 
-| | Managed Deep Agents · recommended | Self-hosted |
+| | Local | Docker |
 | --- | --- | --- |
-| Hosting | LangSmith manages the runtime and sandbox | You run the API and Postgres |
-| Slack | Authorize the managed Slack app | Connect your own Slack app |
-| Scheduled reports | Managed weekly and monthly schedules | Run the report command with your scheduler |
-| Guide | [Managed deployment](OPERATIONS.md#deploying-with-managed-deep-agents) | [Self-hosting](docs/self-hosting.md) |
+| Start | `uv run paid-media-agent serve` | `docker compose up -d --build` |
+| Slack | Socket Mode in the same process | Socket Mode in the same container |
+| Scheduled reports | Run `report` from your scheduler | Run `report` from your scheduler |
+| Guide | [Operations](OPERATIONS.md) | [Self-hosting](docs/self-hosting.md) |
 
-For **Managed Deep Agents**, choose **Deploy agent** in setup, or validate and deploy from the terminal:
-
-```bash
-uv run paid-media-agent mda check
-uv run mda deploy .
-```
-
-You'll need a LangSmith organization with MDA access, an API key with deployment permissions,
-and a model key. Deployment syncs the instructions and skills, provisions the sandbox, and
-configures Slack. Authorize your workspace when prompted. The sandbox snapshot is reused until
-its recipe changes. After deployment, open the printed LangSmith URL to inspect your agent.
-
-To **self-host**, install Docker, configure your model and accounts, then generate API credentials
-and start the services:
+Generate API credentials first, then start the server:
 
 ```bash
 uv run paid-media-agent config generate PAID_MEDIA_API_TOKENS PAID_MEDIA_APPROVAL_SIGNING_KEY
-docker compose up -d --build
+uv run paid-media-agent serve
 ```
 
-Compose starts the API and Postgres. Follow the [self-hosting guide](docs/self-hosting.md#connect-slack)
-to connect Slack through Socket Mode or signed HTTP. The Docker image includes PDF libraries.
+`serve` runs the API and, when Slack tokens are configured, the Slack adapter in Socket Mode. DuckDB
+lets a single process hold the state file, so both run together and Docker runs one container.
+Follow the [self-hosting guide](docs/self-hosting.md#connect-slack) to connect Slack. The Docker
+image includes the PDF libraries and IBM Plex fonts.
 
-Managed schedules can post text to Slack once you configure a delivery channel. Report files are
-available locally and through the self-hosted API. Automatic PDF attachments to Slack are not included.
-
-[Managed hosting is paid](https://www.langchain.com/pricing); model and connector charges depend
-on your providers. For local development, `uv run mda dev .` opens the managed runtime in LangSmith
-Studio so you can inspect model calls, tool results, and approval requests.
+Report files are available locally and through the API. Automatic PDF attachments to Slack are not
+included. Model and connector charges depend on your providers.
 
 ## Build on it
 
-Both deployment paths use the same [agent assembly](src/paid_media_agent/assembly.py), built on
+The CLI, API, and Slack adapter use the same [agent assembly](src/paid_media_agent/assembly.py), built on
 [Deep Agents](https://github.com/langchain-ai/deepagents). It defines the model, tools, middleware,
 and approval policy. Extend it without maintaining a separate agent for each interface.
 
@@ -186,7 +171,6 @@ or CRM schema. See [optional data sources](docs/customization.md#optional-wareho
 | Agent instructions and paid-media knowledge | [instructions.md](instructions.md) · [workspace/skills/](workspace/skills/) |
 | Report colors, typography, and layout | [Report design](docs/customization.md#report-design) |
 | Tools and runtime | [src/paid_media_agent/](src/paid_media_agent/) · [Architecture](docs/architecture/README.md) |
-| Managed channels and schedules | [channels/](channels/) · [schedules/](schedules/) · [sandbox/](sandbox/) |
 | Configuration and troubleshooting | [Operations](OPERATIONS.md) |
 | Development and tests | [Contributing](CONTRIBUTING.md) · [Agent instructions](AGENTS.md) · [Coding-agent skills](.agents/skills/) |
 

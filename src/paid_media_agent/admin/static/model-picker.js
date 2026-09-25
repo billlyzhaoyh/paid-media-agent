@@ -8,7 +8,7 @@ window.createModelPicker = ({ el, logo, preset, selected, loadModels, onChange }
   const providerLogos = { google: "gemini", "google-genai": "gemini", google_genai: "gemini", moonshotai: "moonshot", "x-ai": "xai", mistralai: "mistral", "z-ai": "zhipu", "meta-llama": "meta" };
   const modelId = spec => spec.slice(spec.indexOf(":") + 1);
   const modelLogo = item => {
-    const provider = item?.provider || (["langsmith", "openrouter"].includes(preset.id) ? modelId(value).split("/")[0] : preset.logo);
+    const provider = item?.provider || (preset.id === "openrouter" ? modelId(value).split("/")[0] : preset.logo);
     const key = providerLogos[provider] || provider;
     return logo(window.PMA_LOGOS[key] ? key : "custom", "model-mini-logo");
   };

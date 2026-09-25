@@ -9,8 +9,6 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
-from paid_media_agent.deployment import DeploymentSettings
-
 _LINE_RE = re.compile(r"^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=\s*(.*)$")
 
 
@@ -225,8 +223,8 @@ ENV_KEYS: tuple[EnvKeySpec, ...] = (
         name="PAID_MEDIA_RUNTIME",
         group="runtime",
         secret=False,
-        description="Deployment path chosen in the console: local, mda, or self_hosted",
-        example="mda",
+        description="local (in-memory state) or self_hosted (DuckDB state file)",
+        example="self_hosted",
     ),
     EnvKeySpec(name="SLACK_BOT_TOKEN", group="slack", secret=True, description="Bot token (xoxb-)"),
     EnvKeySpec(
@@ -249,10 +247,11 @@ ENV_KEYS: tuple[EnvKeySpec, ...] = (
         example="socket_mode",
     ),
     EnvKeySpec(
-        name="DATABASE_URL",
+        name="PAID_MEDIA_STATE_PATH",
         group="self_hosted",
-        secret=True,
-        description="Postgres connection string",
+        secret=False,
+        description="DuckDB state file, held by the running agent",
+        example="workspace/state/pma.duckdb",
     ),
     EnvKeySpec(
         name="PAID_MEDIA_API_TOKENS",
@@ -273,18 +272,6 @@ ENV_KEYS: tuple[EnvKeySpec, ...] = (
         secret=False,
         description="API port",
         example="8080",
-    ),
-    EnvKeySpec(
-        name="LANGSMITH_API_KEY",
-        group="mda",
-        secret=True,
-        description="LangSmith key for mda dev, mda deploy, sandbox snapshots, and the LLM Gateway",
-    ),
-    EnvKeySpec(
-        name="LANGSMITH_GATEWAY_API_KEY",
-        group="model",
-        secret=True,
-        description="Second LangSmith key for the gateway; point PAID_MEDIA_MODEL_API_KEY_ENV at it",
     ),
     EnvKeySpec(
         name="PAID_MEDIA_MODEL_TIMEOUT_SECONDS",
@@ -329,31 +316,11 @@ ENV_KEYS: tuple[EnvKeySpec, ...] = (
         example="6000",
     ),
     EnvKeySpec(
-        name="PAID_MEDIA_SANDBOX_IDLE_TTL_SECONDS",
-        group="sandbox",
-        secret=False,
-        description="Idle seconds before MDA deletes a thread's sandbox",
-        example="1800",
+        name="TABPFN_TOKEN",
+        group="predictions",
+        secret=True,
+        description="Prior Labs TabPFN API token for predictions",
     ),
-    EnvKeySpec(
-        name="PAID_MEDIA_SANDBOX_SNAPSHOT",
-        group="sandbox",
-        secret=False,
-        description="Snapshot built from sandbox/Dockerfile and declared to MDA",
-        example="paid-media-agent-sandbox",
-    ),
-)
-ENV_KEYS += tuple(
-    EnvKeySpec(
-        name=f"PAID_MEDIA_{name.upper()}",
-        group="mda",
-        secret=False,
-        description=field.description or name,
-        example=str(field.default).lower()
-        if isinstance(field.default, bool)
-        else str(field.default),
-    )
-    for name, field in DeploymentSettings.model_fields.items()
 )
 ENV_KEY_BY_NAME: dict[str, EnvKeySpec] = {spec.name: spec for spec in ENV_KEYS}
 _CUSTOM_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,40}_API_KEY$")

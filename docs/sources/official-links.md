@@ -3,20 +3,11 @@
 Check the relevant primary source before changing an external contract. Update the owning
 architecture page when the supported behavior changes.
 
-## Deep Agents and MDA
+## Deep Agents
 
 - [Customize Deep Agents](https://docs.langchain.com/oss/python/deepagents/customization)
 - [Deep Agents human-in-the-loop](https://docs.langchain.com/oss/python/deepagents/human-in-the-loop)
-- [Managed Deep Agents overview](https://docs.langchain.com/langsmith/python/managed-deep-agents-overview)
-- [MDA project structure](https://docs.langchain.com/langsmith/python/managed-deep-agents-project-structure)
-- [MDA agent definition](https://docs.langchain.com/langsmith/python/managed-deep-agents-agent-definition)
-- [MDA custom tools](https://docs.langchain.com/langsmith/python/managed-deep-agents-tools)
-- [MDA custom middleware](https://docs.langchain.com/langsmith/python/managed-deep-agents-middleware)
-- [MDA Slack channel](https://docs.langchain.com/langsmith/python/managed-deep-agents-channels-slack)
-- [MDA deployment](https://docs.langchain.com/langsmith/python/managed-deep-agents-deploy)
-
-Check the deployment and Slack documentation for current availability, regions, and channel limits.
-Installed SDK behavior and the project preflight determine whether this checkout can deploy.
+- [DuckDB concurrency](https://duckdb.org/docs/stable/connect/concurrency)
 
 ## Models and tool disclosure
 

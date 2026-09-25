@@ -205,7 +205,7 @@ class ReadDispatcher:
             )
         except TimeoutError as exc:
             raise ProviderTimeout("provider read timed out") from exc
-        # Normalization plus the artifact write (disk, and the sandbox mirror) stay off the loop.
+        # Normalization plus the artifact write stay off the loop.
         summary = await asyncio.to_thread(self._store, entry, catalog, alias, scoped, result)
         del self.audit[:-AUDIT_LIMIT]
         self.audit.append(

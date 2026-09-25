@@ -80,7 +80,6 @@ body {
 body.advanced .header-icon[data-for="advanced"] { display: none; }
 body.advanced .header-icon[data-for="setup"] { display: block; }
 .mark-bg { fill: currentColor; stroke: none; opacity: 0.2; }
-.mark-ink { fill: currentColor; }
 .onboard {
   position: relative; isolation: isolate; display: flex; flex-direction: column;
   flex: 1; min-height: 0; overflow: hidden; width: 100%; color: var(--ink);
@@ -261,18 +260,6 @@ select.input { cursor: pointer; }
 @media (hover: hover) and (pointer: fine) { .btn-ghost:hover, .btn-outline:hover { background: var(--hover); } }
 .btn-risk { background: var(--risk-bg); color: var(--risk); }
 a.btn { text-decoration: none; }
-#dialog-root[hidden] { display: none !important; }
-#dialog-root { position: fixed; inset: 0; z-index: 80; }
-.dialog-backdrop {
-  display: grid; place-items: center; width: 100%; height: 100%; padding: 24px;
-  background: rgb(0 0 0 / 0.4);
-}
-.dialog {
-  width: min(28rem, 100%); display: flex; flex-direction: column; gap: 16px;
-  padding: 24px; border-radius: var(--r-panel); border: 1px solid var(--line-strong);
-  background: var(--panel); box-shadow: var(--shadow-overlay);
-}
-.dialog-actions { display: flex; flex-direction: column; gap: 8px; padding-top: 8px; }
 .btn:focus-visible, .option:focus-visible, .path-card:focus-visible, .input:focus-visible, .step-head:focus-visible, .rail-item:focus-visible, .stepper-trigger:focus-visible, .stepper-dot:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 
 /* Inline status and lists */

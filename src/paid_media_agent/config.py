@@ -13,15 +13,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from paid_media_agent.domain.common import Platform
 
-RuntimeName = Literal["local", "mda", "self_hosted"]
-"""Which path the setup console guides you through. Managed Deep Agents is the recommended one."""
+RuntimeName = Literal["local", "self_hosted"]
+"""Which path the setup console guides you through."""
 SlackTransport = Literal["socket_mode", "http"]
 
 DEFAULT_MODEL_SPEC = "anthropic:claude-sonnet-4-6"
 
 
 class ModelConfig(BaseModel):
-    """Resolved `provider:model` configuration. A gateway is used only via an explicit `langsmith:` spec."""
+    """Resolved `provider:model` configuration."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -40,8 +40,6 @@ class ModelConfig(BaseModel):
     ) -> ModelConfig:
         """Parse a provider:model specification."""
         raw = spec.strip()
-        if raw and ":" not in raw and "/" in raw:
-            raw = f"langsmith:{raw}"
         provider, sep, model = raw.partition(":")
         if not sep or not provider.strip() or not model.strip():
             raise ValueError("PAID_MEDIA_MODEL must look like 'provider:model'")
@@ -123,12 +121,10 @@ class Settings(BaseSettings):
     """The deployment path chosen in the console; the command you run selects the runtime."""
     paid_media_data_mode: Literal["auto", "sample", "live"] = "auto"
     """Sample always uses fixtures. Live requires credentials. Auto preserves CLI defaults."""
-    paid_media_sandbox_snapshot: str | None = None
-    """Optional custom bake base. By default MDA builds sandbox/setup.sh during deployment."""
-    paid_media_sandbox_idle_ttl_seconds: int = Field(default=1800, ge=60)
-    """Idle seconds before MDA deletes a thread's sandbox; written into sandbox/__init__.py."""
     paid_media_log_level: str = "INFO"
     paid_media_workspace_root: Path = Path("workspace")
+    paid_media_state_path: Path = Path("workspace/state/pma.duckdb")
+    """DuckDB file for proposals, approvals, receipts, and threads. Relative to the project root."""
     paid_media_fixture_anchor: date | None = None
     """Last complete day of the synthetic data. Unset means two days ago, so the demo never ages
     out; tests pin it to the shipped dates. Set it only when reproducing a specific window."""
@@ -165,12 +161,11 @@ class Settings(BaseSettings):
     paid_media_approval_ttl_seconds: int = Field(default=900, ge=60, le=86400)
     paid_media_allow_self_approval: bool = False
 
-    # Self-hosted path: the Slack adapter, Postgres persistence, and the API boundary.
+    # Self-hosted path: the Slack adapter and the API boundary.
     slack_bot_token: SecretStr | None = None
     slack_app_token: SecretStr | None = None
     slack_signing_secret: SecretStr | None = None
     slack_transport: SlackTransport = "socket_mode"
-    database_url: SecretStr | None = None
     paid_media_api_tokens: SecretStr | None = None
     paid_media_api_host: str = "127.0.0.1"
     paid_media_api_port: int = Field(default=8080, ge=1, le=65535)
@@ -200,7 +195,6 @@ class Settings(BaseSettings):
         "slack_bot_token",
         "slack_app_token",
         "slack_signing_secret",
-        "database_url",
         "paid_media_api_tokens",
         mode="before",
     )

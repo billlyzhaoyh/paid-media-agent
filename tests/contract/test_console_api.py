@@ -15,18 +15,17 @@ TOKEN = "test-token-abcdefghijklmnopqrstuvwxyz"
 
 @pytest.fixture
 def workspace(tmp_path: Path, project_root: Path) -> Path:
-    for name in ("instructions.md", ".env.example", "agent.py"):
+    for name in ("instructions.md", ".env.example"):
         shutil.copy(project_root / name, tmp_path / name)
-    for directory in ("skills", "config", "channels", "docs", "src"):
-        if (project_root / directory).exists() and directory != "src":
-            shutil.copytree(project_root / directory, tmp_path / directory)
+    for directory in ("skills", "config", "docs"):
+        shutil.copytree(project_root / directory, tmp_path / directory)
     (tmp_path / "workspace").mkdir()
     return tmp_path
 
 
 @pytest.fixture
 def client(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    for name in ("ANTHROPIC_API_KEY", "PIPEBOARD_API_TOKEN", "LANGSMITH_API_KEY"):
+    for name in ("ANTHROPIC_API_KEY", "PIPEBOARD_API_TOKEN"):
         monkeypatch.delenv(name, raising=False)
     app = create_console_app(workspace, token=TOKEN)
     return TestClient(app, base_url="http://127.0.0.1:8765")
@@ -59,7 +58,7 @@ def test_api_requires_token_and_local_host(client: TestClient) -> None:
     foreign = client.get("/api/status", headers={"X-Admin-Token": TOKEN, "Host": "evil.example"})
     assert foreign.status_code == 403
     assert client.get("/", headers={"Host": "evil.example"}).status_code == 403
-    assert client.post("/api/models", json={"provider": "langsmith"}).status_code == 401
+    assert client.post("/api/models", json={"provider": "anthropic"}).status_code == 401
 
 
 def test_model_catalog_endpoint_uses_a_draft_key_without_saving(
@@ -68,7 +67,7 @@ def test_model_catalog_endpoint_uses_a_draft_key_without_saving(
     from paid_media_agent.admin import actions
 
     def catalog(root: Path, provider: str, *, api_key: str = "") -> actions.ActionResult:
-        assert root == workspace and provider == "langsmith" and api_key == "draft-key"
+        assert root == workspace and provider == "openrouter" and api_key == "draft-key"
         return actions.ActionResult(
             action="models_list",
             ok=True,
@@ -77,7 +76,7 @@ def test_model_catalog_endpoint_uses_a_draft_key_without_saving(
             detail={
                 "models": [
                     {
-                        "id": "langsmith:provider/new-model",
+                        "id": "openai:provider/new-model",
                         "name": "New model",
                         "provider": "provider",
                     }
@@ -90,7 +89,7 @@ def test_model_catalog_endpoint_uses_a_draft_key_without_saving(
     response = client.post(
         "/api/models",
         headers={"X-Admin-Token": TOKEN},
-        json={"provider": "langsmith", "api_key": "draft-key"},
+        json={"provider": "openrouter", "api_key": "draft-key"},
     )
     assert response.status_code == 200 and response.json()["ok"]
     assert "draft-key" not in response.text
@@ -106,12 +105,10 @@ def test_status_routes_and_config_round_trip(client: TestClient, workspace: Path
         "pipeboard",
         "org",
         "direct",
-        "sandbox",
-        "mda",
-        "slack",
         "self_hosted",
+        "slack",
     ]
-    assert {p["name"] for p in data["processes"]} == {"mda-dev", "mda-deploy", "serve", "slack"}
+    assert [p["name"] for p in data["processes"]] == ["serve"]
     posted = client.post(
         "/api/config",
         headers=headers,
@@ -184,61 +181,41 @@ def test_demo_runs_through_the_console(client: TestClient) -> None:
     assert result["detail"]["receipt"]["status"] == "verified"
 
 
-def test_process_endpoints_guard_deploy(client: TestClient) -> None:
-    headers = {"X-Admin-Token": TOKEN}
-    assert (
-        client.post(
-            "/api/processes/mda-deploy/start", headers=headers, json={"confirm": False}
-        ).status_code
-        == 409
-    )
-    assert client.post("/api/processes/unknown/start", headers=headers, json={}).status_code == 409
-    log = client.get("/api/processes/mda-dev/log", headers=headers).json()
-    assert log["name"] == "mda-dev" and log["running"] is False
-
-
-def test_deploy_click_checks_project_and_blocks_failed_preflight(
+def test_process_endpoints_run_only_fixed_templates(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One explicit deploy runs preflight; a failed preflight never starts the child."""
     import sys
 
-    from paid_media_agent.admin import actions
     from paid_media_agent.admin.processes import PROCESS_TEMPLATES
 
     headers = {"X-Admin-Token": TOKEN}
-    checks = []
-    ready = False
-
-    def preflight(root: Path) -> actions.ActionResult:
-        checks.append(root)
-        return actions.ActionResult(
-            action="mda_check",
-            ok=ready,
-            status="ok" if ready else "warn",
-            summary="ready" if ready else "blocked by langsmith_key_set",
-        )
-
-    monkeypatch.setattr(actions, "mda_check", preflight)
-    monkeypatch.setitem(
-        PROCESS_TEMPLATES, "mda-deploy", (sys.executable, "-c", "print('test deployment')")
-    )
+    assert client.post("/api/processes/unknown/start", headers=headers).status_code == 409
+    for removed in ("mda-deploy", "slack"):
+        assert client.post(f"/api/processes/{removed}/start", headers=headers).status_code == 409
+    log = client.get("/api/processes/serve/log", headers=headers).json()
+    assert log["name"] == "serve" and log["running"] is False
+    monkeypatch.setitem(PROCESS_TEMPLATES, "serve", (sys.executable, "-c", "print('served')"))
     manager = client.app.state.console.processes
-    endpoint = "/api/processes/mda-deploy/start"
-    assert client.post(endpoint, headers=headers, json={}).status_code == 409
-    assert not checks
-    blocked = client.post(endpoint, headers=headers, json={"confirm": True})
-    assert blocked.status_code == 409 and "langsmith_key_set" in blocked.json()["detail"]
-    assert manager.view("mda-deploy").state == "stopped"
-    ready = True
     try:
-        started = client.post(endpoint, headers=headers, json={"confirm": True})
-        assert started.status_code == 200 and len(checks) == 2
-        manager._procs["mda-deploy"].wait(timeout=5)
-        assert manager.view("mda-deploy").state == "completed"
-        assert "test deployment" in manager.tail("mda-deploy")
+        started = client.post("/api/processes/serve/start", headers=headers)
+        assert started.status_code == 200 and started.json()["command"] == (
+            "uv run paid-media-agent serve"
+        )
+        manager._procs["serve"].wait(timeout=5)
+        assert manager.view("serve").state == "completed"
+        assert "served" in manager.tail("serve")
     finally:
         manager.stop_all()
+
+
+def test_state_check_runs_through_the_console(client: TestClient, workspace: Path) -> None:
+    headers = {"X-Admin-Token": TOKEN}
+    result = client.post("/api/actions/state_test", headers=headers, json={}).json()
+    assert result["ok"], result["summary"]
+    assert (workspace / "workspace" / "state" / "pma.duckdb").is_file()
+    for removed in ("database_test", "mda_check", "sandbox_test", "snapshot_check"):
+        assert client.post(f"/api/actions/{removed}", headers=headers, json={}).status_code == 404
+    assert client.post("/api/slack/icon", headers=headers, content=b"x").status_code in (404, 405)
 
 
 def test_token_less_mode_accepts_same_origin_only(workspace: Path) -> None:
@@ -313,37 +290,3 @@ def test_model_check_expires_when_shell_key_changes_behind_blank_env_entry(
     assert (
         "model_test" not in client.get("/api/status", headers=headers).json()["connection_checks"]
     )
-
-
-def test_slack_icon_roundtrip_and_invalid_replacement(client: TestClient, workspace: Path) -> None:
-    import base64
-    import io
-
-    from PIL import Image
-
-    headers = {"X-Admin-Token": TOKEN, "Content-Type": "image/png"}
-    buffer = io.BytesIO()
-    Image.new("RGB", (512, 512), "#123456").save(buffer, format="PNG")
-    png = buffer.getvalue()
-    assert client.post("/api/slack/icon", content=png).status_code == 401
-    response = client.post("/api/slack/icon", content=png, headers=headers)
-    assert response.status_code == 200
-    path = workspace / "channels/slack-icon.png"
-    assert path.read_bytes() == png
-    saved = client.get("/api/slack/icon", headers=headers).json()["data_url"]
-    assert base64.b64decode(saved.split(",", 1)[1]) == png
-    small = io.BytesIO()
-    Image.new("RGB", (32, 32)).save(small, format="PNG")
-    for invalid in (b"not an image", small.getvalue(), png[:50]):
-        assert client.post("/api/slack/icon", content=invalid, headers=headers).status_code == 400
-        assert path.read_bytes() == png
-    assert (
-        client.post(
-            "/api/slack/icon", content=b"x" * (1024 * 1024 + 1), headers=headers
-        ).status_code
-        == 413
-    )
-    assert path.read_bytes() == png
-    assert client.delete("/api/slack/icon", headers=headers).status_code == 200
-    assert not path.exists()
-    assert client.get("/api/slack/icon", headers=headers).status_code == 404

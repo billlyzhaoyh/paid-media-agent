@@ -246,6 +246,15 @@ class AgentRunner:
         record = self._service.get(proposal_id)
         if record is None:
             raise WriteDenied("unknown_proposal")
+        paused = await self._graph.aget_state(
+            RunnableConfig(configurable={"thread_id": record.changeset.thread_id})
+        )
+        if not paused.interrupts:
+            # Conversation checkpoints are process memory: after a restart no run is waiting, and
+            # a claim created now could never be used by the conversation that proposed it.
+            raise WriteDenied(
+                "conversation_expired", "no paused conversation; propose the change again"
+            )
         self._service.approve(proposal_id, approver_ref=approver_ref)
         return await self.resume(
             thread_id=record.changeset.thread_id,

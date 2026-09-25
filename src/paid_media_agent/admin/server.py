@@ -22,8 +22,6 @@ from paid_media_agent.admin import actions
 from paid_media_agent.admin.model_presets import model_key_env
 from paid_media_agent.admin.processes import ProcessError, ProcessManager
 from paid_media_agent.admin.routes import build_routes
-from paid_media_agent.admin.slack_icon import MAX_ICON_BYTES, icon_data_url, icon_path, save_icon
-from paid_media_agent.deployment import DeploymentSettings
 from paid_media_agent.domain.common import JsonValue
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -41,13 +39,10 @@ ACTIONS: dict[str, Callable[..., actions.ActionResult]] = {
     "catalog_show": lambda root, live=False, **_: actions.catalog_show(root, live=bool(live)),
     "policy_validate": lambda root, live=False, **_: actions.policy_validate(root, live=bool(live)),
     "slack_test": lambda root, **_: actions.slack_test(root),
-    "database_test": lambda root, **_: actions.database_test(root),
-    "mda_check": lambda root, **_: actions.mda_check(root),
+    "state_test": lambda root, **_: actions.state_test(root),
     "demo_run": lambda root, with_proposal=False, **_: actions.demo_run(
         root, with_proposal=bool(with_proposal)
     ),
-    "snapshot_check": lambda root, **_: actions.snapshot_check(root),
-    "sandbox_test": lambda root, **_: actions.sandbox_test(root),
     "status": lambda root, **_: actions.status(root),
     "ask": lambda root, question="", **_: actions.ask_question(root, str(question)),
 }
@@ -74,10 +69,6 @@ class AccountAdd(BaseModel):
     timezone: str = "UTC"
 
 
-class ProcessStart(BaseModel):
-    confirm: bool = False
-
-
 class KillSwitchRequest(BaseModel):
     engaged: bool
     confirm: bool = False
@@ -99,24 +90,17 @@ class ConsoleState:
             if name == "model_test"
             else ("pipeboard_", "x_ads_", "openai_ads_")
         )
-        if name == "mda_check":
-            prefixes += ("paid_media_model", "paid_media_sandbox_")
         values = {
             key: value.get_secret_value() if isinstance(value, SecretStr) else value
             for key, value in settings.model_dump().items()
             if key.startswith(prefixes)
         }
-        if name in ("model_test", "mda_check"):
+        if name == "model_test":
             try:
                 key_name = model_key_env(settings)
             except ValueError:
                 key_name = None
             values["model_key"] = os.environ.get(key_name, "") if key_name else ""
-        if name == "mda_check":
-            values["deployment_key"] = os.environ.get("LANGSMITH_API_KEY", "")
-            values["customization"] = DeploymentSettings(
-                _env_file=str(self.root / ".env")
-            ).model_dump(mode="json")
         return hashlib.sha256(json.dumps(values, sort_keys=True, default=str).encode()).hexdigest()
 
     def refresh_checks(self) -> None:
@@ -267,40 +251,6 @@ def create_console_app(
     ) -> dict[str, JsonValue]:
         return actions.generate_secret(console.root, body.key).model_dump(mode="json")
 
-    @app.get("/api/slack/icon")
-    def get_slack_icon(console: ConsoleState = Depends(_authorized)) -> dict[str, str]:
-        try:
-            return {"data_url": icon_data_url(console.root)}
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="No custom Slack icon") from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    @app.post("/api/slack/icon")
-    async def post_slack_icon(
-        request: Request, console: ConsoleState = Depends(_authorized)
-    ) -> dict[str, bool]:
-        data = bytearray()
-        async for chunk in request.stream():
-            data.extend(chunk)
-            if len(data) > MAX_ICON_BYTES:
-                raise HTTPException(status_code=413, detail="Choose a PNG no larger than 1 MB")
-        try:
-            save_icon(console.root, bytes(data))
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        console.checks.pop("mda_check", None)
-        return {"ok": True}
-
-    @app.delete("/api/slack/icon")
-    def delete_slack_icon(console: ConsoleState = Depends(_authorized)) -> dict[str, bool]:
-        try:
-            icon_path(console.root).unlink(missing_ok=True)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        console.checks.pop("mda_check", None)
-        return {"ok": True}
-
     @app.post("/api/actions/{name}")
     def post_action(
         name: str,
@@ -328,12 +278,9 @@ def create_console_app(
         stamp = console.stamp(name)
         result = handler(console.root, **(body or {})).model_dump(mode="json")
         console.refresh_checks()
-        if name in (
-            "model_test",
-            "pipeboard_test",
-            "accounts_discover",
-            "mda_check",
-        ) and stamp == console.stamp(name):
+        if name in ("model_test", "pipeboard_test", "accounts_discover") and stamp == console.stamp(
+            name
+        ):
             console.check_stamps[name] = stamp
             console.checks[name] = {"status": result["status"], "summary": result["summary"]}
         return result
@@ -359,17 +306,10 @@ def create_console_app(
 
     @app.post("/api/processes/{name}/start")
     def start_process(
-        name: str, body: ProcessStart | None = None, console: ConsoleState = Depends(_authorized)
+        name: str, console: ConsoleState = Depends(_authorized)
     ) -> dict[str, JsonValue]:
         try:
-            confirmed = bool(body and body.confirm)
-            if name == "mda-deploy":
-                if not confirmed:
-                    raise ProcessError("mda-deploy requires explicit confirmation")
-                check = actions.mda_check(console.root)
-                if check.status != "ok":
-                    raise ProcessError(check.summary)
-            view = console.processes.start(name, confirmed=confirmed)
+            view = console.processes.start(name)
         except ProcessError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from None
         return view.model_dump(mode="json")
@@ -382,15 +322,6 @@ def create_console_app(
             return console.processes.stop(name).model_dump(mode="json")
         except ProcessError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from None
-
-    @app.post("/api/processes/{name}/continue")
-    def continue_process(
-        name: str, console: ConsoleState = Depends(_authorized)
-    ) -> dict[str, JsonValue]:
-        try:
-            return console.processes.continue_authorization(name).model_dump(mode="json")
-        except ProcessError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from None
 
     @app.get("/api/processes/{name}/log")
     def process_log(

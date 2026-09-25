@@ -31,8 +31,6 @@ jobs:
         run: uv run --frozen pytest -q
       - name: Fixture demo
         run: uv run --frozen paid-media-agent demo --with-proposal
-      - name: MDA definition import smoke
-        run: uv run --frozen python -c "import agent; print(agent.agent.config['name'])"
 
   secrets:
     runs-on: ubuntu-latest

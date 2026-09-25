@@ -57,11 +57,11 @@ def test_catalog_failure_hides_provider_body_and_does_not_follow_redirects(
     monkeypatch.setattr(
         model_catalog.httpx, "Client", partial(httpx.Client, transport=httpx.MockTransport(respond))
     )
-    result = actions.models_list(tmp_path, "langsmith", api_key="catalog-test-key")
+    result = actions.models_list(tmp_path, "openai", api_key="catalog-test-key")
     assert not result.ok and not result.detail
     assert "catalog-test-key" not in result.model_dump_json()
     assert len(calls) == 1
-    assert calls[0].url.host == "gateway.smith.langchain.com"
+    assert calls[0].url.host == "api.openai.com"
 
 
 def test_catalog_requires_own_key_before_contacting_provider(
@@ -76,6 +76,7 @@ def test_catalog_requires_own_key_before_contacting_provider(
     monkeypatch.setattr(model_catalog.httpx, "Client", unexpected_request)
     assert not actions.models_list(tmp_path, "anthropic").ok
     assert not actions.models_list(tmp_path, "https://other.example").ok
+    assert not actions.models_list(tmp_path, "langsmith", api_key="unused").ok, "gateway removed"
 
 
 def test_catalog_uses_runtime_credentials_and_forgets_cleared_exports(

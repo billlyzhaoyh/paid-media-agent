@@ -1,7 +1,7 @@
 # Self-hosting
 
-Run the paid-media agent on your own infrastructure with Docker, Postgres, and an optional Slack
-app. MDA remains the shortest hosted path. Both use the same agent tools and approval policy.
+Run the paid-media agent on your own machine or server with Docker and an optional Slack app. One
+process serves the API and Slack, and keeps its state in a DuckDB file.
 
 ## Start the API
 
@@ -14,9 +14,10 @@ curl http://localhost:8080/health
 ```
 
 `config generate` prints the API token once. Send the part before `:operator` as a bearer token.
-The API listens on localhost. Postgres stores conversations and approvals; a Docker volume stores
-report files. Your local `config/` and `workspace/skills/` folders are mounted read-only, so account
-mappings, write policy, and business context are available in both containers.
+The API listens on localhost. The DuckDB state file (`workspace/state/pma.duckdb`) holds proposals,
+approvals, receipts, and thread ownership; it lives on the `workspace` volume with report files.
+Your local `config/` and `workspace/skills/` folders are mounted read-only, so account mappings,
+write policy, and business context are available in the container.
 
 Give your coding agent the [onboarding skill](../.agents/skills/paid-media-onboarding/SKILL.md), or
 follow [customization](customization.md) to edit business context and skills manually.
@@ -29,10 +30,10 @@ follow [customization](customization.md) to edit business context and skills man
    (`xoxb-`) into `SLACK_BOT_TOKEN` in your local `.env`.
 3. In **Basic Information → App-Level Tokens → Generate Token and Scopes**, add
    `connections:write`. Save the `xapp-` token as `SLACK_APP_TOKEN` and enable **Socket Mode**.
-4. Start the Slack worker alongside the API:
+4. Restart the container. `serve` connects Slack in Socket Mode when both tokens are set:
 
 ```bash
-docker compose --profile slack up --build -d
+docker compose up --build -d
 ```
 
 Mention the app in a channel or send it a DM. Replies stream text and tool progress using Slack's
@@ -46,51 +47,49 @@ revised proposal. Self-approval is disabled unless explicitly enabled. There are
 
 ## Deploy to your server
 
-Clone the project on a host with Docker, configure `.env`, and run the same Compose command. Both
-containers connect to the same Postgres service. Back up the Postgres and workspace volumes, and
-protect the local `.env` and configuration files.
+Clone the project on a host with Docker, configure `.env`, and run the same Compose command. Run
+one container: DuckDB lets a single process hold the state file, so the service cannot scale out.
+Back up the `workspace` volume, and protect the local `.env` and configuration files.
 
 Socket Mode needs only outbound network access. To expose the API remotely, put an HTTPS reverse
-proxy in front of port 8080 and keep bearer authentication enabled. Do not expose Postgres.
+proxy in front of port 8080 and keep bearer authentication enabled.
 
 For Slack over HTTPS instead of Socket Mode:
 
 1. Set `SLACK_TRANSPORT=http`, `SLACK_SIGNING_SECRET`, and `SLACK_BOT_TOKEN`.
 2. Disable Socket Mode in Slack and point both **Event Subscriptions** and **Interactivity** at
    `https://your-host/slack/events`.
-3. Start only the API and Postgres with `docker compose up --build -d`.
+3. Start the service with `docker compose up --build -d`.
 
 Bolt verifies Slack signatures and acknowledges events before running the agent. Accepted runs
 continue in that server process; keep it running until they finish. The starter does not include
 a durable background job queue.
 
+A conversation paused for approval lives in process memory. After a restart, approving it returns
+409 `conversation_expired` and nothing executes; ask the agent to propose the change again.
+
 ## API and reports
 
 `POST /threads/{thread_id}/messages` accepts `{"text":"..."}` and returns the completed response.
-Proposal routes support read, approve, edit, and reject. This API does not implement the LangGraph
-Agent Server protocol.
+Proposal routes support read, approve, edit, and reject.
 
 Download a generated report with `GET /threads/{thread_id}/artifacts/{name}` using the thread
 owner's bearer token. Only files returned by `render_report` in that thread are accessible.
 Slack replies can describe the report, but the adapter does not automatically upload files.
 
-Use your existing scheduler for recurring self-hosted reports:
+Use your existing scheduler for recurring reports. The `report` command does not open the state
+file, so it runs alongside the server:
 
 ```bash
-docker compose exec -T api paid-media-agent report --cadence weekly
+docker compose exec -T agent paid-media-agent report --cadence weekly
 ```
-
-MDA's `schedules/` declarations are managed by MDA; Compose does not run them automatically.
 
 ## Without Docker
 
 ```bash
 uv sync --all-extras --dev
 uv run paid-media-agent serve --port 8080
-# In a second terminal, if Slack is configured:
-uv run paid-media-agent slack
 ```
 
-Set the same `DATABASE_URL` for both processes to share durable state. Without it, each process
-uses its own temporary in-memory conversations. Install the native PDF libraries if you need PDF
-reports; HTML reports remain available.
+The same process serves Slack when its tokens are configured. Install the native PDF libraries if
+you need PDF reports; HTML reports remain available.

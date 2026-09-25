@@ -64,7 +64,6 @@ def build_routes(detail: dict[str, JsonValue]) -> list[Route]:
     env = _get(detail, "env") or {}
     model = _get(detail, "model") or {}
     slack = _get(detail, "slack") or {}
-    mda = _get(detail, "mda") or {}
     self_hosted = _get(detail, "self_hosted") or {}
     writes = _get(detail, "writes") or {}
     accounts = _get(detail, "accounts") or []
@@ -85,7 +84,6 @@ def build_routes(detail: dict[str, JsonValue]) -> list[Route]:
     }
     accounts_path = str(_get(detail, "accounts_path") or "")
     real_accounts = accounts_path.endswith("config/accounts.toml")
-    snapshot = str(env.get("PAID_MEDIA_SANDBOX_SNAPSHOT") or "") if isinstance(env, dict) else ""
 
     local = Route(
         id="local",
@@ -268,31 +266,6 @@ def build_routes(detail: dict[str, JsonValue]) -> list[Route]:
         ),
     )
 
-    sandbox_route = Route(
-        id="sandbox",
-        title="Sandbox",
-        tagline="Tools and files for each conversation",
-        description="Included with deployment. MDA builds the Python tools and PDF libraries once, then reuses the snapshot for new conversations.",
-        steps=(
-            Step(
-                id="sb_publish",
-                title="Publish a standalone snapshot",
-                description="Optional. Build the same recipe separately to test it or reuse it across deployments. No local Docker needed.",
-                status="done" if snapshot else "optional",
-                cli="uv run paid-media-agent sandbox publish --name paid-media-agent-sandbox",
-                action=StepAction(kind="command", label="Copy command"),
-            ),
-            Step(
-                id="sb_test",
-                title="Test the environment",
-                description="Check a separately published snapshot for Python, file access, and PDF rendering. The temporary test sandbox is removed afterward.",
-                status="optional",
-                cli="uv run paid-media-agent sandbox test --json",
-                action=StepAction(kind="test", label="Test sandbox", action="sandbox_test"),
-            ),
-        ),
-    )
-
     socket_ready = bool(slack.get("bot_token_set")) and (
         bool(slack.get("app_token_set"))
         if slack.get("transport") == "socket_mode"
@@ -301,8 +274,8 @@ def build_routes(detail: dict[str, JsonValue]) -> list[Route]:
     slack_route = Route(
         id="slack",
         title="Slack",
-        tagline="Connect Slack to a self-hosted agent",
-        description="Use your own Slack app with the self-hosted agent. Managed Deep Agents creates its Slack app during deployment.",
+        tagline="Talk to the agent in Slack",
+        description="Use your own Slack app. The agent connects it over Socket Mode in the same process as the API.",
         steps=(
             Step(
                 id="sl_app",
@@ -341,129 +314,56 @@ def build_routes(detail: dict[str, JsonValue]) -> list[Route]:
             ),
             Step(
                 id="sl_run",
-                title="Start Slack",
-                description="Listen for Slack messages on this machine. Connection status and logs appear here.",
+                title="Start the agent",
+                description="Start the API and Slack together on this machine. Connection status and logs appear here.",
                 status="blocked" if not socket_ready else "todo",
-                cli="uv run paid-media-agent slack",
-                action=StepAction(kind="process", label="Start Slack adapter", action="slack"),
+                cli="uv run paid-media-agent serve",
+                action=StepAction(kind="process", label="Start agent", action="serve"),
             ),
         ),
     )
 
-    mda_ready = (
-        bool(mda.get("cli_installed")) and bool(mda.get("langsmith_key_set")) and model_ready
-    )
-    mda_route = Route(
-        id="mda",
-        title="Managed Deep Agents",
-        tagline="Deploy and manage your hosted agent",
-        description="LangSmith hosts your agent, connects Slack, and runs scheduled reports. Use Setup to review settings before deploying.",
-        steps=(
-            Step(
-                id="mda_key",
-                title="Add a LangSmith API key",
-                description="Use a LangSmith API key with access to your organization.",
-                status="done" if mda.get("langsmith_key_set") else "todo",
-                cli="uv run paid-media-agent config set LANGSMITH_API_KEY=...",
-                action=StepAction(
-                    kind="form", label="Save LangSmith key", keys=("LANGSMITH_API_KEY",)
-                ),
-            ),
-            Step(
-                id="mda_model",
-                title="Model credentials",
-                description="Your hosted agent uses this model and its matching provider key.",
-                status="done" if model_ready else "todo",
-                cli="uv run paid-media-agent config set PAID_MEDIA_MODEL=... ANTHROPIC_API_KEY=...",
-                action=StepAction(
-                    kind="form",
-                    label="Save model settings",
-                    keys=(
-                        "PAID_MEDIA_MODEL",
-                        "ANTHROPIC_API_KEY",
-                        "OPENAI_API_KEY",
-                        "GOOGLE_API_KEY",
-                    ),
-                ),
-            ),
-            Step(
-                id="mda_check",
-                title="Check deployment setup",
-                description="Check the project files, model credentials, and deployment tools before uploading.",
-                status="todo" if mda_ready else "blocked",
-                cli="uv run paid-media-agent mda check --json",
-                action=StepAction(kind="test", label="Check setup", action="mda_check"),
-            ),
-            Step(
-                id="mda_dev",
-                title="Run locally in Studio",
-                description="Start the agent locally and inspect its conversations and tool calls in Studio.",
-                status="optional",
-                cli="uv run mda dev",
-                action=StepAction(kind="process", label="Start Studio", action="mda-dev"),
-            ),
-            Step(
-                id="mda_deploy",
-                title="Deploy your agent",
-                description="Review accounts, report schedules, and Slack settings in Setup, then deploy. The first deployment connects Slack.",
-                status="blocked" if not mda_ready else "todo",
-                cli="uv run mda deploy .",
-                action=StepAction(
-                    kind="process", label="Deploy", action="mda-deploy", payload={"confirm": True}
-                ),
-            ),
-        ),
-    )
-
-    db_set = bool(self_hosted.get("database_url_set"))
     api_set = bool(self_hosted.get("api_tokens_set"))
+    state_path = str(self_hosted.get("state_path") or "")
     self_route = Route(
         id="self_hosted",
-        title="Self-host",
-        tagline="Run on your own infrastructure",
-        description="Run the API and Postgres with Docker, or connect your own database and start the API directly.",
+        title="Run",
+        tagline="Run on this machine or with Docker",
+        description="One process serves the API and, when configured, Slack. State lives in a local DuckDB file.",
         steps=(
-            Step(
-                id="sh_docker",
-                title="Run with Docker",
-                description="Start the API and Postgres together. Model and account credentials come from your local .env file.",
-                status="optional",
-                cli="docker compose up",
-                action=StepAction(kind="command", label="Copy command"),
-            ),
-            Step(
-                id="sh_db",
-                title="Connect Postgres",
-                description="Connect your own database to save conversations. Docker Compose configures its database automatically.",
-                status="done" if db_set else "todo",
-                cli="uv run paid-media-agent config set DATABASE_URL=postgresql://...",
-                action=StepAction(kind="form", label="Save database URL", keys=("DATABASE_URL",)),
-            ),
-            Step(
-                id="sh_db_test",
-                title="Test the database",
-                description="Connect to Postgres and check the server version.",
-                status="blocked" if not db_set else "todo",
-                cli="uv run paid-media-agent test db --json",
-                action=StepAction(kind="test", label="Test database", action="database_test"),
-            ),
             Step(
                 id="sh_tokens",
                 title="API credentials",
                 description="Create an API access token and a signing key. The token is shown once, so keep it somewhere secure.",
                 status="done" if api_set and writes.get("signing_key_set") else "todo",
-                cli="uv run paid-media-agent config generate PAID_MEDIA_API_TOKENS && uv run paid-media-agent config generate PAID_MEDIA_APPROVAL_SIGNING_KEY",
+                cli="uv run paid-media-agent config generate PAID_MEDIA_API_TOKENS PAID_MEDIA_APPROVAL_SIGNING_KEY",
                 action=StepAction(
                     kind="run", label="Generate credentials", action="generate_secrets"
                 ),
             ),
             Step(
+                id="sh_state",
+                title="Check local state",
+                description=f"Open {state_path or 'the state file'}, create it if missing, and apply migrations. A running agent holds the file, so the check then reports it as in use.",
+                status="done" if self_hosted.get("state_exists") else "todo",
+                cli="uv run paid-media-agent test state --json",
+                action=StepAction(kind="test", label="Check state", action="state_test"),
+            ),
+            Step(
                 id="sh_serve",
-                title="Start the API",
-                description="Start the agent API on this machine using the configured host and port.",
+                title="Start the agent",
+                description="Start the API, and Slack when its tokens are set, on this machine using the configured host and port.",
                 status="todo",
                 cli="uv run paid-media-agent serve",
-                action=StepAction(kind="process", label="Start API", action="serve"),
+                action=StepAction(kind="process", label="Start agent", action="serve"),
+            ),
+            Step(
+                id="sh_docker",
+                title="Run with Docker",
+                description="Run the same process in a container. Credentials come from your local .env file and state stays in a named volume.",
+                status="optional",
+                cli="docker compose up -d --build",
+                action=StepAction(kind="command", label="Copy command"),
             ),
             Step(
                 id="sh_http_slack",
@@ -485,8 +385,6 @@ def build_routes(detail: dict[str, JsonValue]) -> list[Route]:
         pipeboard,
         org_route,
         direct,
-        sandbox_route,
-        mda_route,
-        slack_route,
         self_route,
+        slack_route,
     ]

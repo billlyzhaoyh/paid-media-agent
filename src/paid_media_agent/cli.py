@@ -1,4 +1,4 @@
-"""Command-line entry: setup console, fixture demo, doctor, tests, accounts, org, sandbox, MDA.
+"""Command-line entry: setup console, fixture demo, doctor, tests, accounts, reports, and serve.
 
 Every console action has a subcommand with `--json`, so coding agents and humans share one path.
 """
@@ -120,24 +120,17 @@ def demo(with_proposal: bool, as_json: bool) -> None:
 
 
 @main.command()
-@click.option(
-    "--snapshot", is_flag=True, help="Run the sandbox snapshot compatibility contract instead."
-)
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
-def doctor(snapshot: bool, as_json: bool) -> None:
+def doctor(as_json: bool) -> None:
     """Diagnose configuration without printing secret values."""
-    from paid_media_agent.doctor import (
-        format_checks,
-        run_doctor,
-        run_snapshot_checks,
-    )
+    from paid_media_agent.doctor import format_checks, run_doctor
 
     root = project_root()
     if as_json:
-        _emit(actions.snapshot_check(root) if snapshot else actions.status(root), True)
+        _emit(actions.status(root), True)
         return
     settings = actions.load_settings(root)
-    checks = run_snapshot_checks(root) if snapshot else run_doctor(settings, project_root=root)
+    checks = run_doctor(settings, project_root=root)
     click.echo(format_checks(checks))
     if any(not c.ok for c in checks):
         sys.exit(1)
@@ -299,38 +292,8 @@ def policy_validate(live: bool, as_json: bool) -> None:
         click.echo(f"  {issue['tool']:<48} {issue['reason']}")
 
 
-@main.group()
-def sandbox() -> None:
-    """Build, declare, and probe the LangSmith sandbox the model's files live in."""
-
-
-@sandbox.command("publish")
-@click.option("--name", default="paid-media-agent-sandbox", show_default=True)
-@click.option("--fs-gib", type=int, default=actions.SNAPSHOT_FS_GIB, show_default=True)
-@click.option("--json", "as_json", is_flag=True)
-def sandbox_publish(name: str, fs_gib: int, as_json: bool) -> None:
-    """Build sandbox/Dockerfile into a snapshot on LangSmith and declare it."""
-    log = None if as_json else lambda line: click.echo(line.rstrip("\n"))
-    _emit(actions.sandbox_publish(project_root(), name=name, fs_gib=fs_gib, log=log), as_json)
-
-
-@sandbox.command("use")
-@click.argument("name")
-@click.option("--json", "as_json", is_flag=True)
-def sandbox_use(name: str, as_json: bool) -> None:
-    """Declare an existing snapshot in .env and sandbox/__init__.py."""
-    _emit(actions.sandbox_use(project_root(), name), as_json)
-
-
-@sandbox.command("test")
-@click.option("--json", "as_json", is_flag=True)
-def sandbox_test(as_json: bool) -> None:
-    """Open a sandbox from the snapshot, probe it, and delete it."""
-    _emit(actions.sandbox_test(project_root()), as_json)
-
-
 @main.command("models")
-@click.option("--provider", required=True, help="Provider card ID, e.g. langsmith or anthropic.")
+@click.option("--provider", required=True, help="Provider card ID, e.g. anthropic or openai.")
 @click.option("--json", "as_json", is_flag=True)
 def models(provider: str, as_json: bool) -> None:
     """List models from the provider's official API using its configured key."""
@@ -361,11 +324,11 @@ def test_slack(as_json: bool) -> None:
     _emit(actions.slack_test(project_root()), as_json)
 
 
-@test.command("db")
+@test.command("state")
 @click.option("--json", "as_json", is_flag=True)
-def test_db(as_json: bool) -> None:
-    """Postgres connection (self-hosted path)."""
-    _emit(actions.database_test(project_root()), as_json)
+def test_state(as_json: bool) -> None:
+    """Open the DuckDB state file and apply migrations (self-hosted path)."""
+    _emit(actions.state_test(project_root()), as_json)
 
 
 @test.command("all")
@@ -374,7 +337,7 @@ def test_all(as_json: bool) -> None:
     root = project_root()
     results = [actions.model_test(root), actions.pipeboard_test(root)]
     if actions.load_settings(root).paid_media_runtime == "self_hosted":
-        results += [actions.slack_test(root), actions.database_test(root)]
+        results += [actions.slack_test(root), actions.state_test(root)]
     if as_json:
         click.echo(json.dumps([r.model_dump(mode="json") for r in results], indent=2, default=str))
     else:
@@ -384,49 +347,7 @@ def test_all(as_json: bool) -> None:
         sys.exit(1)
 
 
-# ---------------------------------------------------------------- mda and writes
-
-
-@main.group()
-def mda() -> None:
-    """Managed Deep Agents preflight and deployment."""
-
-
-@mda.command("check")
-@click.option("--json", "as_json", is_flag=True)
-def mda_check(as_json: bool) -> None:
-    _emit(actions.mda_check(project_root()), as_json)
-
-
-@mda.command("dev")
-def mda_dev() -> None:
-    """Run `mda dev` in the foreground."""
-    import subprocess
-
-    from paid_media_agent.admin.processes import PROCESS_TEMPLATES
-
-    raise SystemExit(subprocess.call(PROCESS_TEMPLATES["mda-dev"], cwd=project_root()))  # noqa: S603
-
-
-@mda.command("deploy")
-@click.option(
-    "--yes", is_flag=True, help="Confirm the deployment. Deploying is an outward-facing action."
-)
-def mda_deploy(yes: bool) -> None:
-    """Run `mda deploy .` after preflight and explicit confirmation."""
-    import subprocess
-
-    from paid_media_agent.admin.processes import PROCESS_TEMPLATES
-
-    root = project_root()
-    check = actions.mda_check(root)
-    click.echo(f"{check.status.upper()} preflight: {check.summary}")
-    if check.status != "ok":
-        sys.exit(1)
-    if not yes:
-        click.echo("Re-run with --yes to deploy.")
-        sys.exit(2)
-    raise SystemExit(subprocess.call(PROCESS_TEMPLATES["mda-deploy"], cwd=root))  # noqa: S603
+# ---------------------------------------------------------------- writes
 
 
 @main.group()
@@ -557,7 +478,10 @@ def report(
 @click.option("--host", default=None, help="Bind address (default PAID_MEDIA_API_HOST).")
 @click.option("--port", type=int, default=None, help="Port (default PAID_MEDIA_API_PORT).")
 def serve(host: str | None, port: int | None) -> None:
-    """Serve the self-hosted API (Postgres when DATABASE_URL is set, else in-memory state)."""
+    """Serve the self-hosted API, and Slack in Socket Mode when it is configured.
+
+    One process owns the DuckDB state file, so the API and the Slack adapter share it here.
+    """
     settings = Settings()
     if host is not None:
         settings = settings.model_copy(update={"paid_media_api_host": host})
@@ -567,34 +491,42 @@ def serve(host: str | None, port: int | None) -> None:
     import uvicorn
 
     from paid_media_agent.runtime.self_hosted import build_self_hosted_runtime
+    from paid_media_agent.store import StoreBusy
     from paid_media_agent.surfaces.api.app import create_app
+    from paid_media_agent.surfaces.slack.socket_mode import connect_socket_mode, socket_mode_ready
+
+    try:
+        runtime = build_self_hosted_runtime(settings, project_root=project_root())
+    except StoreBusy as exc:
+        click.echo(f"FAIL {exc}", err=True)
+        sys.exit(1)
 
     async def _serve() -> None:
-        # The Postgres checkpointer is async and bound to this loop, so build and serve in it.
-        runtime = await build_self_hosted_runtime(settings, project_root=project_root())
-        config = uvicorn.Config(
-            create_app(runtime),
-            host=settings.paid_media_api_host,
-            port=settings.paid_media_api_port,
+        socket = (
+            await connect_socket_mode(settings, runtime) if socket_mode_ready(settings) else None
         )
-        await uvicorn.Server(config).serve()
+        try:
+            config = uvicorn.Config(
+                create_app(runtime),
+                host=settings.paid_media_api_host,
+                port=settings.paid_media_api_port,
+            )
+            await uvicorn.Server(config).serve()
+        finally:
+            if socket is not None:
+                await socket.close_async()
 
-    asyncio.run(_serve())
+    try:
+        asyncio.run(_serve())
+    finally:
+        runtime.store.close()
 
 
 @main.command()
-def slack() -> None:
-    """Run the Slack adapter in Socket Mode against the self-hosted runtime."""
-    settings = Settings()
-    _configure_logging(settings)
-    from paid_media_agent.runtime.self_hosted import build_self_hosted_runtime
-    from paid_media_agent.surfaces.slack.socket_mode import run_socket_mode
-
-    async def _slack() -> None:
-        runtime = await build_self_hosted_runtime(settings, project_root=project_root())
-        await run_socket_mode(settings, runtime)
-
-    asyncio.run(_slack())
+@click.pass_context
+def slack(ctx: click.Context) -> None:
+    """Alias of `serve`: the Slack adapter runs inside the API process."""
+    ctx.invoke(serve)
 
 
 if __name__ == "__main__":

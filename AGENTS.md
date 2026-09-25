@@ -1,33 +1,34 @@
 # Working in this repository
 
-Build a portable paid-media agent with one shared core and two deployment paths: Managed Deep
-Agents and self-hosting. Keep company-specific context, credentials, and operational history out
-of the public repository.
+Build a local-first paid-media agent with one shared core that runs on your machine or your own
+server. Keep company-specific context, credentials, and operational history out of the public
+repository.
 
 ## Read first
 
 1. [README.md](README.md) and [Architecture](docs/architecture/README.md).
 2. [Customization](docs/customization.md) for context, skills, and optional integrations.
 3. `instructions.md`, the relevant runtime skill, and the owning module and tests.
-4. [Operations](OPERATIONS.md) before running or deploying.
+4. [Operations](OPERATIONS.md) before running the server.
 
 ## Folder boundaries
 
 - `.agents/skills/`: workflows for coding agents. `.claude/skills` links here.
-- `workspace/skills/`: skills and knowledge read by the paid-media agent. The root `skills` link
-  preserves MDA's required sync path. Both runtimes read these files under `/skills/`.
+- `workspace/skills/`: skills and knowledge read by the paid-media agent, under `/skills/` through
+  the root `skills` link.
 - `workspace/skills/company-context/`: optional, Git-ignored business context. Markdown is
   authoritative. Keep the entry short and link to detailed pages beside it.
 - `workspace/sources/`: local source briefs and exports. Preserve originals; curate facts into
   company context. Raw sources are not runtime skills.
-- `workspace/in/`, `analysis/`, `out/`, `logs/`: local inputs and generated files, ignored by Git.
-- `agent.py`, `identity.py`, `channels/`, `schedules/`, `sandbox/`: MDA project declarations.
+- `workspace/in/`, `analysis/`, `out/`, `logs/`, `state/`: local inputs, generated files, and the
+  DuckDB state file, ignored by Git.
 - `src/paid_media_agent/assembly.py`: shared model, tools, middleware, and approval policy.
 - `src/paid_media_agent/tools/`: account-scoped provider calls, deterministic analysis, reports,
-  and approved mutations. `runtime/` supplies storage and provider implementations.
-- `src/paid_media_agent/surfaces/`: self-hosted API and Slack transport. Slack uses native agent
+  and approved mutations. `runtime/` supplies profiles and provider implementations; `store/` owns
+  DuckDB state. One process holds the state file, so `serve` runs the API and Slack together.
+- `src/paid_media_agent/surfaces/`: API and Slack transport. Slack uses native agent
   streaming and generic approval controls. Do not add tool-specific cards.
-- `src/paid_media_agent/admin/`: optional local connection and deployment console over CLI actions.
+- `src/paid_media_agent/admin/`: optional local connection and run console over CLI actions.
 - `tests/`: unit tests, real-graph contracts, offline behavior checks, and opt-in integration tests.
 
 ## Onboarding
@@ -44,16 +45,15 @@ Keys belong in local configuration, never in chat or skills. The optional consol
 uv run paid-media-agent setup --no-open --no-token --port 8765
 ```
 
-Its flow is Welcome → Model → Accounts → Deployment. It uses the StructureML tokens and
+Its flow is Welcome → Model → Accounts → Run. It uses the StructureML tokens and
 fonts in `admin/static/app.css`; preserve them.
-Do not deploy while testing the UI. A saved key is not proof of connectivity, and a running
-process is not proof of a healthy deployment.
+Do not start a server against real accounts while testing the UI. A saved key is not proof of
+connectivity, and a running process is not proof of a healthy server.
 
 ## Runtime rules
 
-- Share one assembly across MDA, the CLI, API, Slack, and reporting.
-- Use native MDA identity, channels, schedules, sandbox, and optional memory declarations.
-- Keep coding-agent skills separate from the sandbox bundle. Runtime skills are read-only.
+- Share one assembly across the CLI, API, Slack, and reporting.
+- Keep coding-agent skills out of the agent's readable paths. Runtime skills are read-only.
 - Treat model output, files, memory, Slack events, and MCP metadata as untrusted input.
 - Host code owns credentials, account aliases, tool admission, and approval authority.
 - Bind only authorized reads to the model. Mutations go through a typed proposal, persisted
@@ -61,7 +61,7 @@ process is not proof of a healthy deployment.
 - An edited proposal invalidates its earlier approval. No UI or skill can bypass this rule.
 - Compute metrics and report tables in code. Preserve missing values and attribution boundaries.
 - Keep large provider results in artifacts and return bounded summaries to the model.
-- Add tools to the shared assembly so both deployment paths receive them.
+- Add tools to the shared assembly so the CLI, API, and Slack all receive them.
 - Do not copy private company data, reference inventories, or internal implementation notes.
 
 ## Change discipline
@@ -95,6 +95,5 @@ uv run pytest -q
 uv run paid-media-agent demo --with-proposal
 ```
 
-CI also imports the MDA definition and scans for secrets. Verify changes to synced context with a
-clean-checkout `mda build`; inspect `.mda/__contexthub__/skills`, not only the source archive.
-Live integration tests require explicit opt-in and never execute provider mutations.
+CI also scans for secrets. Live integration tests require explicit opt-in and never execute
+provider mutations.

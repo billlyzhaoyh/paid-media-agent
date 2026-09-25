@@ -1,7 +1,5 @@
-"""Local compilation of the shared components: the fixture demo, tests, and the CLI.
-
-Managed Deep Agents compiles the same components in production. Here `create_deep_agent` does it
-with the repository as the model's filesystem and an in-memory checkpointer.
+"""Compilation of the shared components with `create_deep_agent`: the repository as the model's
+filesystem and an in-memory checkpointer. The CLI, the demo, the tests, and the server share it.
 """
 
 from __future__ import annotations
@@ -19,7 +17,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from paid_media_agent.assembly import AgentComponents, build_agent_components
 from paid_media_agent.config import Settings
-from paid_media_agent.runtime.mda import configured_profile
+from paid_media_agent.runtime.configured import configured_profile
 from paid_media_agent.runtime.profiles import RuntimeProfile, fixture_profile
 from paid_media_agent.tools.catalog import AuthorizedToolCatalog, StaticCatalogProvider
 from paid_media_agent.tools.fixtures import FixtureState, build_fixture_catalog
@@ -35,7 +33,7 @@ def filesystem_permissions() -> list[FilesystemPermission]:
                 "/.env.*",
                 "/.venv/**",
                 "/.git/**",
-                "/.mda/**",
+                "/workspace/state/**",
                 "/.agents/**",
                 "/.claude/**",
                 "/config/**",

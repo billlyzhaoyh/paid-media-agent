@@ -5,8 +5,6 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import os
-import shutil
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,8 +26,7 @@ SECRET_ENV_NAMES = (
     "SLACK_APP_TOKEN",
     "SLACK_SIGNING_SECRET",
     "PAID_MEDIA_APPROVAL_SIGNING_KEY",
-    "DATABASE_URL",
-    "LANGSMITH_API_KEY",
+    "TABPFN_TOKEN",
 )
 
 
@@ -103,15 +100,6 @@ def run_doctor(settings: Settings, *, project_root: Path) -> list[Check]:
             else "none configured (LinkedIn, X, OpenAI Ads are direct adapters)",
         )
     )
-    gateway = os.environ.get("LANGSMITH_GATEWAY", "")
-    if gateway:
-        checks.append(
-            Check(
-                "model_gateway",
-                "ok",
-                f"LANGSMITH_GATEWAY={gateway}; provider SDKs route through LangSmith",
-            )
-        )
     if settings.pipeboard_api_token is None:
         checks.append(Check("pipeboard", "warn", "no token: fixture catalog only"))
     else:
@@ -234,20 +222,9 @@ def run_doctor(settings: Settings, *, project_root: Path) -> list[Check]:
                 else "slack extra not installed",
             )
         )
-        if settings.database_url is None:
-            checks.append(
-                Check("persistence", "warn", "DATABASE_URL not set; in-memory state (local only)")
-            )
-        else:
-            checks.append(
-                Check(
-                    "persistence",
-                    "ok" if _module_available("psycopg") else "fail",
-                    "Postgres configured"
-                    if _module_available("psycopg")
-                    else "psycopg missing; install the self-host extra",
-                )
-            )
+        checks.append(
+            Check("persistence", "ok", f"DuckDB state file {settings.paid_media_state_path}")
+        )
 
     from paid_media_agent.reports.render import pdf_renderer_available
 
@@ -257,20 +234,6 @@ def run_doctor(settings: Settings, *, project_root: Path) -> list[Check]:
             "report_pdf",
             "ok" if pdf_ok else "warn",
             "WeasyPrint ready" if pdf_ok else f"HTML only; {pdf_detail}",
-        )
-    )
-    sandbox_recipe = all(
-        (project_root / "sandbox" / name).is_file() for name in ("__init__.py", "setup.sh")
-    )
-    checks.append(
-        Check(
-            "sandbox_snapshot",
-            "ok" if sandbox_recipe else "warn",
-            f"custom bake base: {settings.paid_media_sandbox_snapshot}"
-            if settings.paid_media_sandbox_snapshot
-            else "recipe configured; MDA builds the snapshot on deploy"
-            if sandbox_recipe
-            else "sandbox declaration or setup.sh missing; restore the sandbox/ files",
         )
     )
     checks.append(
@@ -286,74 +249,6 @@ def run_doctor(settings: Settings, *, project_root: Path) -> list[Check]:
         os.access(workspace, os.W_OK) if workspace.exists() else os.access(project_root, os.W_OK)
     )
     checks.append(Check("workspace", "ok" if writable else "fail", str(workspace)))
-    return checks
-
-
-def run_snapshot_checks(project_root: Path) -> list[Check]:
-    """Sandbox compatibility contract from docs/architecture/sandbox-and-snapshots.md."""
-    checks: list[Check] = []
-    version = sys.version_info
-    checks.append(
-        Check(
-            "python",
-            "ok" if version >= (3, 11) else "fail",
-            f"{version.major}.{version.minor}.{version.micro}",
-        )
-    )
-    for binary in ("rg", "jq"):
-        path = shutil.which(binary)
-        checks.append(Check(f"binary:{binary}", "ok" if path else "warn", path or "not found"))
-    for module in ("deepagents", "langchain", "langgraph", "pydantic", "jinja2"):
-        checks.append(
-            Check(
-                f"import:{module}",
-                "ok" if _module_available(module) else "fail",
-                "importable" if _module_available(module) else "missing",
-            )
-        )
-    leaked = [name for name in SECRET_ENV_NAMES if os.environ.get(name)]
-    checks.append(
-        Check(
-            "secrets_absent",
-            "ok" if not leaked else "fail",
-            "no secret env values visible"
-            if not leaked
-            else f"secret env visible in sandbox: {', '.join(leaked)}",
-        )
-    )
-    workspace = project_root / "workspace"
-    checks.append(
-        Check(
-            "workspace_writable", "ok" if os.access(workspace, os.W_OK) else "fail", str(workspace)
-        )
-    )
-    outside = Path.home() / ".ssh"
-    checks.append(
-        Check(
-            "outside_paths",
-            "ok" if not os.access(outside, os.R_OK) else "warn",
-            "home SSH material not readable"
-            if not os.access(outside, os.R_OK)
-            else "home SSH directory is readable from this process",
-        )
-    )
-    from paid_media_agent.reports.render import pdf_renderer_available
-
-    pdf_ok, pdf_detail = pdf_renderer_available()
-    checks.append(
-        Check(
-            "report_render",
-            "ok" if pdf_ok else "warn",
-            "PDF rendering ready" if pdf_ok else f"HTML only; {pdf_detail}",
-        )
-    )
-    checks.append(
-        Check(
-            "network_policy",
-            "warn",
-            "outbound network policy must be enforced by the sandbox runtime; not verifiable from inside",
-        )
-    )
     return checks
 
 

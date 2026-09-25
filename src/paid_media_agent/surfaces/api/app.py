@@ -118,8 +118,10 @@ def create_app(runtime: Any) -> Any:
         try:
             outcome = await runner.approve(proposal_id=proposal_id, approver_ref=who)
         except WriteDenied as exc:
+            # An expired conversation is a state conflict; every other denial is about the caller.
+            status = 409 if exc.reason == "conversation_expired" else 403
             raise HTTPException(
-                status_code=403, detail=f"{exc.reason}: {exc.detail}".rstrip(": ")
+                status_code=status, detail=f"{exc.reason}: {exc.detail}".rstrip(": ")
             ) from None
         return _outcome(outcome)
 

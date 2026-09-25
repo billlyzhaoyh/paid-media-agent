@@ -14,7 +14,7 @@ window.createPaidMediaHero = ({ el, logo }) => {
     ["pipeboard", "Pipeboard", "Ad account connection", 4, -2],
     ["google", "Google Ads", "Ad platform", 2, -2],
     ["anthropic", "Anthropic", "Model provider", 0, -3],
-    ["deepagents", "Managed Deep Agents", "Managed hosting", 4, 1],
+    ["docker", "Docker", "Run anywhere", 4, 1],
     ["x", "X Ads", "Ad platform", 2, 0],
     ["meta", "Meta Ads", "Ad platform", 0, -1],
     ["googleanalytics", "Google Analytics", "First-party analytics", -2, -2],

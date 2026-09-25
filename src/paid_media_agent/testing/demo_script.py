@@ -204,15 +204,6 @@ def write_demo_steps() -> list[Step]:
 async def run_demo(
     settings: Settings, *, with_proposal: bool, root: Path | None = None
 ) -> dict[str, Any]:
-    from langsmith import tracing_context
-
-    with tracing_context(enabled=False):
-        return await _run_demo(settings, with_proposal=with_proposal, root=root)
-
-
-async def _run_demo(
-    settings: Settings, *, with_proposal: bool, root: Path | None = None
-) -> dict[str, Any]:
     from paid_media_agent.runtime.local import build_local_runtime
 
     root = root or project_root()

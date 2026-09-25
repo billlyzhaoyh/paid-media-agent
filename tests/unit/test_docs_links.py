@@ -15,7 +15,7 @@ LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 def _markdown_files(root: Path) -> list[Path]:
     files = []
     for path in root.rglob("*.md"):
-        if any(part in {".venv", ".git", ".mda"} for part in path.parts):
+        if any(part in {".venv", ".git"} for part in path.parts):
             continue
         if path.is_relative_to(root / "workspace") and not path.is_relative_to(
             root / "workspace" / "skills"
@@ -56,8 +56,6 @@ def test_documented_commands_exist(project_root: Path) -> None:
         "catalog",
         "policy",
         "writes",
-        "mda",
-        "sandbox",
         "serve",
         "slack",
     } <= documented

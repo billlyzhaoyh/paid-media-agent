@@ -9,17 +9,6 @@ from paid_media_agent.domain.common import JsonValue
 
 MODEL_PRESETS: tuple[dict[str, JsonValue], ...] = (
     {
-        "id": "langsmith",
-        "label": "LangSmith Gateway",
-        "model": "langsmith:anthropic/claude-sonnet-4-6",
-        "key": "LANGSMITH_API_KEY",
-        "url": "https://smith.langchain.com/settings",
-        "note": "One key, every provider, traced",
-        "package": "",
-        "recommended": True,
-        "logo": "langsmith",
-    },
-    {
         "id": "anthropic",
         "label": "Anthropic",
         "logo": "anthropic",
@@ -29,7 +18,7 @@ MODEL_PRESETS: tuple[dict[str, JsonValue], ...] = (
         "extra": "",
         "url": "https://console.anthropic.com/settings/keys",
         "note": "Native tool search",
-        "recommended": False,
+        "recommended": True,
     },
     {
         "id": "openai",
@@ -166,13 +155,11 @@ PROVIDER_IMPORT_MODULES: dict[str, str] = {
     "xai": "langchain_xai",
     "mistralai": "langchain_mistralai",
     "deepseek": "langchain_deepseek",
-    "langsmith": "langchain_openai",
     "scripted": "paid_media_agent",
 }
 
 
 PROVIDER_DEFAULT_KEYS: dict[str, str] = {
-    "langsmith": "LANGSMITH_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
     "google_genai": "GOOGLE_API_KEY",
