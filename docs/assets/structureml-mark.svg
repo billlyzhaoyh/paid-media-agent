@@ -1,5 +1,4 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <!-- StructureML mark, as published at structureml.com/favicon.svg. Do not redraw. -->
   <rect width="64" height="64" rx="10" fill="#f5f2eb" />
   <rect x="10" y="12" width="19" height="17" rx="2" fill="none" stroke="#2a2723" stroke-width="3" />
   <path d="M10 19.5h19M16.5 12v17" fill="none" stroke="#2a2723" stroke-width="2" />

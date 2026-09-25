@@ -116,6 +116,7 @@
   @page {
     size: A4;
     margin: 16mm;
+    background: {{ tokens.canvas }};
     @bottom-left { content: {{ brand.name | tojson }}; font: 8pt {{ tokens['font-family'] }}; color: {{ tokens.muted }}; }
     @bottom-right { content: counter(page) " / " counter(pages); font: 8pt {{ tokens['font-family'] }}; color: {{ tokens.muted }}; }
   }

@@ -44,7 +44,8 @@ Keys belong in local configuration, never in chat or skills. The optional consol
 uv run paid-media-agent setup --no-open --no-token --port 8765
 ```
 
-Its flow is Welcome → Model → Accounts → Deployment. Preserve its existing tokens and fonts.
+Its flow is Welcome → Model → Accounts → Deployment. It uses the StructureML tokens and
+fonts in `admin/static/app.css`; preserve them.
 Do not deploy while testing the UI. A saved key is not proof of connectivity, and a running
 process is not proof of a healthy deployment.
 

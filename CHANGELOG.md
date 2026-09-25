@@ -18,4 +18,5 @@ Live provider writes remain disabled by default and require the documented relea
 ### Changed
 
 - Clarify the README's capabilities, setup, deployment, and company customization guidance.
-- Use the LangChain company logo in the README, with light and dark variants.
+- Rebrand as Paid Media Agent by StructureML: StructureML mark, console palette and IBM Plex
+  fonts, and warm report defaults with a distinct decrease color. Self-hosted PDFs install IBM Plex.

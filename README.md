@@ -1,13 +1,11 @@
 <div align="center">
   <p>
-    <a href="https://www.langchain.com/">
-      <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="docs/assets/langchain-company-dark.svg">
-        <img src="docs/assets/langchain-company-light.svg" alt="LangChain" width="152">
-      </picture>
+    <a href="https://structureml.com/">
+      <img src="docs/assets/structureml-mark.svg" alt="StructureML" width="56">
     </a>
   </p>
   <h1>Paid Media Agent</h1>
+  <p>by <a href="https://structureml.com/">StructureML</a></p>
   <p>Cross-channel campaign analysis and reporting.<br>Built on <a href="https://github.com/langchain-ai/deepagents">Deep Agents</a>. Deploy with <a href="https://docs.langchain.com/langsmith/python/managed-deep-agents-overview">Managed Deep Agents</a>.</p>
   <p>
     <a href="#quick-start">Quick start</a> ·
@@ -17,12 +15,12 @@
   </p>
 </div>
 
-<a href="docs/screenshots/readme-overview-light.png">
-  <img src="docs/screenshots/readme-overview-light.png" alt="Paid Media Agent setup console layered with an illustrative Slack report showing spend, leads, cost per lead, and platform comparisons" width="100%">
+<a href="docs/screenshots/setup-preview-light.png">
+  <img src="docs/screenshots/setup-preview-light.png" alt="Paid Media Agent setup console welcome screen" width="100%">
 </a>
 
 <p align="center">
-  <sub><a href="docs/screenshots/setup-preview-light.png">Setup console</a> · <a href="docs/screenshots/report-illustration.png">Report illustration</a> with example figures. Presentation varies by runtime.</sub>
+  <sub><a href="docs/screenshots/setup-preview.png">Setup console, dark</a> · <a href="docs/screenshots/report-preview.png">Example report</a> from synthetic accounts.</sub>
 </p>
 
 Paid Media Agent helps you understand what changed across your ad accounts and decide what to do
@@ -33,6 +31,11 @@ It comes with ad platform integrations, analysis and reporting skills, and a pai
 Connect your accounts, add your company context, and deploy with
 [Managed Deep Agents](https://docs.langchain.com/langsmith/python/managed-deep-agents-overview)
 or on your own infrastructure. You choose the model.
+
+[StructureML](https://structureml.com/) researches foundational machine learning for structured
+data. We are extending this agent with models for media-buying decisions and with first-party
+data such as Google Analytics and CRM pipeline, so spend can be judged against the revenue it
+produces.
 
 ## What it does
 
@@ -58,7 +61,7 @@ Approval applies to the exact proposal reviewed; editing it requires a new appro
 Requires **Python 3.11+** and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-git clone https://github.com/langchain-ai/paid-media-agent.git
+git clone https://github.com/billlyzhaoyh/paid-media-agent.git
 cd paid-media-agent
 uv sync
 uv run paid-media-agent setup
@@ -191,5 +194,9 @@ Use synthetic data for development. Run `make check` before submitting a change;
 [Contributing](CONTRIBUTING.md) for the development dependencies and checks.
 
 ---
+
+Originally developed by LangChain as
+[langchain-ai/paid-media-agent](https://github.com/langchain-ai/paid-media-agent); modified and
+maintained by StructureML.
 
 [Apache 2.0](LICENSE) · [Changelog](CHANGELOG.md) · [Security](SECURITY.md) · [Code of conduct](CODE_OF_CONDUCT.md)

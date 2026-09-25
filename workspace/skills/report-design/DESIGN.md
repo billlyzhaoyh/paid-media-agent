@@ -19,19 +19,19 @@ skill covers that workflow. No design service or external account is required.
 
 ## Company tokens
 
-These are the shipped defaults. When company tokens are supplied, replace this table and the
+These are the shipped StructureML defaults. When company tokens are supplied, replace this table and the
 matching values in `tokens.j2`. Map company colors to these roles instead of adding a new palette.
 
 | Role | Value |
 | --- | --- |
-| `canvas` | `#ffffff` |
-| `paper` | `#fbfbfc` |
-| `ink` / `muted` | `#030710` / `#6c7077` |
-| `line` / `card-line` | `#e4e6e9` / `#e4e6e9` |
-| `current` | `#006ddd` |
-| `previous-fill` / `previous` | `#f3f4f6` / `#737983` |
-| `increase` / `decrease` | `#19704c` / `#ad4242` |
-| `font-family` | `Inter, -apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif` |
+| `canvas` | `#fdfbf6` |
+| `paper` | `#f5f2eb` |
+| `ink` / `muted` | `#1b150f` / `#655c53` |
+| `line` / `card-line` | `#e4ddd3` / `#e4ddd3` |
+| `current` | `#a5432b` |
+| `previous-fill` / `previous` | `#efeae4` / `#787069` |
+| `increase` / `decrease` | `#19704c` / `#992b57` |
+| `font-family` | `IBM Plex Sans, -apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif` |
 | `font-mono` | `IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, monospace` |
 | `heading-weight` | `600` |
 | `radius-card` / `radius-metric` | `14px` / `14px` |

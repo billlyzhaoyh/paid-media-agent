@@ -1,12 +1,13 @@
 [project]
 name = "paid-media-agent"
 version = "0.1.0"
-description = "Paid-media analysis and reporting with Deep Agents. Deploy with MDA or self-host."
+description = "Paid-media analysis and reporting by StructureML, built on Deep Agents. Deploy with MDA or self-host."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
+authors = [{ name = "StructureML" }]
 requires-python = ">=3.11"
-keywords = ["paid-media", "deep-agents", "langchain", "mcp", "pipeboard", "slack"]
+keywords = ["paid-media", "deep-agents", "mcp", "pipeboard", "slack"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -42,9 +43,9 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/langchain-ai/paid-media-agent"
-Changelog = "https://github.com/langchain-ai/paid-media-agent/blob/main/CHANGELOG.md"
-Security = "https://github.com/langchain-ai/paid-media-agent/blob/main/SECURITY.md"
+Repository = "https://github.com/billlyzhaoyh/paid-media-agent"
+Changelog = "https://github.com/billlyzhaoyh/paid-media-agent/blob/main/CHANGELOG.md"
+Security = "https://github.com/billlyzhaoyh/paid-media-agent/blob/main/SECURITY.md"
 
 [project.scripts]
 paid-media-agent = "paid_media_agent.cli:main"

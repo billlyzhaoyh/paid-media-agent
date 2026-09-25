@@ -17,7 +17,7 @@ MODEL_PRESETS: tuple[dict[str, JsonValue], ...] = (
         "note": "One key, every provider, traced",
         "package": "",
         "recommended": True,
-        "logo": "langchain",
+        "logo": "langsmith",
     },
     {
         "id": "anthropic",
