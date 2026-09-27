@@ -9,6 +9,6 @@ cp .env.example .env            # set PAID_MEDIA_MODEL and the matching provider
 uv run python examples/ask.py "Which campaign moved the most in the last two weeks?"
 ```
 
-The example compiles the profile the deployment runs: the live catalog when a Pipeboard token or
-direct-platform credentials are configured, the fixture accounts otherwise, with an in-memory
-checkpointer. Writes stay behind the same gates as everywhere else.
+The example runs the profile a server runs: the live catalog when a Pipeboard token or
+direct-platform credentials are configured, the fixture accounts otherwise, with in-memory state.
+Writes stay behind the same gates as everywhere else.

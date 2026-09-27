@@ -8,12 +8,9 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from paid_media_agent.assembly import TOOL_SELECTION
 from paid_media_agent.config import Settings
-from paid_media_agent.middleware.tool_selection import (
-    PROVIDER_DISTRIBUTIONS,
-    capabilities_for,
-    plan_selection,
-)
+from paid_media_agent.harness.models import PROVIDERS
 from paid_media_agent.runtime.profiles import load_accounts, load_write_policy_file
 from paid_media_agent.tools.fixtures import build_fixture_catalog
 
@@ -49,30 +46,16 @@ def run_doctor(settings: Settings, *, project_root: Path) -> list[Check]:
     checks: list[Check] = []
     try:
         model = settings.model_settings()
-        caps = capabilities_for(model)
-        plan = plan_selection(model, max_tools=settings.paid_media_max_selected_tools)
+        known = model.provider in PROVIDERS or model.provider == "scripted"
         checks.append(
-            Check("model", "ok", f"{model.spec}; selection={plan.strategy.value} ({plan.reason})")
+            Check(
+                "model",
+                "ok" if known or model.base_url is not None else "fail",
+                f"{model.spec}; tools bound through {TOOL_SELECTION}"
+                if known or model.base_url is not None
+                else f"unknown provider {model.provider}; set PAID_MEDIA_MODEL_BASE_URL",
+            )
         )
-        package = PROVIDER_DISTRIBUTIONS.get(model.provider, caps.integration_package)
-        if package and package != "paid-media-agent":
-            module = package.replace("-", "_")
-            status = "ok" if _module_available(module) else "fail"
-            checks.append(
-                Check(
-                    "model_package",
-                    status,
-                    f"{package} {'installed' if status == 'ok' else 'missing; install the extra'}",
-                )
-            )
-        if not caps.verified:
-            checks.append(
-                Check(
-                    "model_registry",
-                    "warn",
-                    "model is not in the tested capability registry; portable selection applies",
-                )
-            )
         if model.base_url is not None:
             checks.append(
                 Check(

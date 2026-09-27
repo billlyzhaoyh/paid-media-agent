@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
-from langchain_core.messages import ToolMessage
-from langchain_core.tools import StructuredTool
 
 from paid_media_agent.domain.common import RiskLevel
 from paid_media_agent.tools.catalog import AuthorizedToolCatalog, StaticCatalogProvider
-from paid_media_agent.tools.pipeboard import invoke_mcp_tool
+from paid_media_agent.tools.pipeboard import McpResult, ToolAddress, invoke_mcp_tool
 from paid_media_agent.tools.providers import ProviderError
 from paid_media_agent.tools.write_policy import (
     WriteOperation,
@@ -135,47 +134,42 @@ def test_write_gate_matrix(tmp_path: Path) -> None:
 
 
 async def test_invoke_mcp_tool_surfaces_errors_and_structured_content() -> None:
-    async def ok(**kwargs: object) -> tuple[str, object]:
-        return '{"campaign": {"id": "c1", "daily_budget": 5}}', None
+    class Client:
+        def __init__(self, result: McpResult | Exception) -> None:
+            self.result = result
+            self.calls: list[tuple[str, str, dict[str, Any]]] = []
 
-    tool = StructuredTool(
-        name="get_campaign",
-        description="d",
-        args_schema={"type": "object", "properties": {"campaign_id": {"type": "string"}}},
-        coroutine=ok,
-        response_format="content_and_artifact",
-    )
-    payload = await invoke_mcp_tool(tool, {"campaign_id": "c1"}, timeout=5)
-    assert payload["campaign"]["daily_budget"] == 5
+        async def list_tools(self, platform: object, url: str) -> list[object]:
+            return []
 
-    async def failing(**kwargs: object) -> str:
-        # Synthetic credential-shaped value built at runtime so the repository never carries one.
-        raise RuntimeError("provider exploded with token " + "sk-ant-" + "a" * 30)
+        async def call_tool(self, url: str, name: str, arguments: dict[str, Any]) -> McpResult:
+            self.calls.append((url, name, arguments))
+            if isinstance(self.result, Exception):
+                raise self.result
+            return self.result
 
-    bad = StructuredTool(
-        name="bad",
-        description="d",
-        args_schema={"type": "object", "properties": {}},
-        coroutine=failing,
-        handle_tool_error=True,
-    )
+    address = ToolAddress("https://mcp.example/google", "get_campaign")
+    text = Client(McpResult(False, None, '{"campaign": {"id": "c1", "daily_budget": 5}}'))
+    payload = await invoke_mcp_tool(text, address, {"campaign_id": "c1"}, timeout=5)  # type: ignore[arg-type]
+    assert payload["campaign"]["daily_budget"] == 5  # type: ignore[index]
+    assert text.calls == [(address.url, "get_campaign", {"campaign_id": "c1"})]
+
+    structured = Client(McpResult(False, {"campaign": {"id": "c1"}}, "ignored text"))
+    assert await invoke_mcp_tool(structured, address, {}, timeout=5) == {  # type: ignore[arg-type]
+        "campaign": {"id": "c1"}
+    }
+
+    # Synthetic credential-shaped value built at runtime so the repository never carries one.
+    secret = "sk-ant-" + "a" * 30
+    failing = Client(RuntimeError("provider exploded with token " + secret))
     with pytest.raises(ProviderError) as info:
-        await invoke_mcp_tool(bad, {}, timeout=5)
+        await invoke_mcp_tool(failing, address, {}, timeout=5)  # type: ignore[arg-type]
     assert "sk-ant-" not in str(info.value)
 
-    async def error_message(**kwargs: object) -> ToolMessage:
-        return ToolMessage(
-            content="isError from provider", tool_call_id="host-call", status="error"
-        )
-
-    err_tool = StructuredTool(
-        name="err",
-        description="d",
-        args_schema={"type": "object", "properties": {}},
-        coroutine=error_message,
-    )
-    with pytest.raises(ProviderError):
-        await invoke_mcp_tool(err_tool, {}, timeout=5)
+    reported = Client(McpResult(True, None, "isError from provider " + secret))
+    with pytest.raises(ProviderError) as info:
+        await invoke_mcp_tool(reported, address, {}, timeout=5)  # type: ignore[arg-type]
+    assert "sk-ant-" not in str(info.value)
 
 
 def test_operation_digest_changes_with_policy(catalog: AuthorizedToolCatalog) -> None:

@@ -47,8 +47,9 @@ attempts to bypass the dispatcher.
 - `propose_change` builds the `ChangeSet` from the current catalog entry and the reviewed
   `WritePolicy` (`WriteOperation` names the readback tool, target argument, editable fields, and
   risk). The before value comes from the authorized read provider, never from the model.
-- `execute_change` is the only tool under `interrupt_on` (`approve`/`reject`). Resuming the graph
-  grants nothing by itself: the executor loads the persisted proposal and the latest unused
+- `execute_change` is the only gated tool. The loop persists the call in `pending_tool_calls` and
+  stops; other calls in the same batch still run. A pause survives a restart, and a paused call is
+  taken exactly once, so two approvals cannot run it twice. Resuming grants nothing by itself: the executor loads the persisted proposal and the latest unused
   `ApprovalClaim` for that revision, verifies the HMAC signature, digest, scope, requester, and
   expiry, checks the current catalog entry and schema, then claims the proposal and consumes the
   approval exactly once. Multiple valid approval claims cannot create multiple execution attempts.
@@ -73,8 +74,8 @@ attempts to bypass the dispatcher.
 - `classify_risk` derives reviewer facts from the operation, schema, and actual change:
   `status_flip`, `starts_delivery`, `budget_delta`, `budget_increase`, `publishes_live`,
   `access_change`, `destructive_change`, `sensitive_data_transfer`, `standing_automation`,
-  `bulk_capable`, `policy_high_risk`. They are shown on cards and in the interrupt description.
-- `execute_change` interrupts only when the proposal id exists on the current thread. Unknown ids,
+  `bulk_capable`, `policy_high_risk`. They are shown on cards and in the proposal view.
+- `execute_change` pauses only when the proposal id exists on the current thread. Unknown ids,
   malformed ids, and proposals from other threads run straight into the executor's refusal, so a
   reviewer is never asked to approve something that cannot execute.
 - When the policy row names a `validate_only_arg`, the executor calls the provider in validation

@@ -34,13 +34,13 @@ ENV_KEYS: tuple[EnvKeySpec, ...] = (
         name="PAID_MEDIA_MODEL_BASE_URL",
         group="model",
         secret=False,
-        description="Optional compatible base URL; disables provider-native tool search",
+        description="Optional OpenAI-compatible base URL",
     ),
     EnvKeySpec(
-        name="PAID_MEDIA_TOOL_SELECTOR_MODEL",
+        name="PAID_MEDIA_MODEL_ZERO_DATA_RETENTION",
         group="model",
         secret=False,
-        description="Cheaper model for the portable tool selector",
+        description="OpenRouter only: route to zero-data-retention endpoints (true/false)",
     ),
     EnvKeySpec(
         name="PAID_MEDIA_MODEL_API_KEY_ENV",

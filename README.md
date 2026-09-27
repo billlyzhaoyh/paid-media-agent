@@ -6,7 +6,7 @@
   </p>
   <h1>Paid Media Agent</h1>
   <p>by <a href="https://structureml.com/">StructureML</a></p>
-  <p>Cross-channel campaign analysis and reporting.<br>Built on <a href="https://github.com/langchain-ai/deepagents">Deep Agents</a>. Runs locally or in Docker.</p>
+  <p>Cross-channel campaign analysis and reporting.<br>Runs locally or in Docker, with the model you choose.</p>
   <p>
     <a href="#quick-start">Quick start</a> ·
     <a href="#running-it">Running it</a> ·
@@ -148,13 +148,16 @@ included. Model and connector charges depend on your providers.
 
 ## Build on it
 
-The CLI, API, and Slack adapter use the same [agent assembly](src/paid_media_agent/assembly.py), built on
-[Deep Agents](https://github.com/langchain-ai/deepagents). It defines the model, tools, middleware,
-and approval policy. Extend it without maintaining a separate agent for each interface.
+The CLI, API, and Slack adapter use the same [agent assembly](src/paid_media_agent/assembly.py)
+and a small agent loop in [`harness/`](src/paid_media_agent/harness/). The assembly defines the
+model, tools, and approval gate; the loop runs them and keeps conversations, including changes
+paused for approval, in the DuckDB state file. Extend the assembly without maintaining a separate
+agent for each interface.
 
-Tools are selected from the connected catalog as needed, limiting how many tool definitions the
-model reads on each call. Skills guide the investigation and reporting process; edit them as
-Markdown in `workspace/skills/`.
+Any OpenAI-compatible model works: Anthropic, OpenAI, Gemini, OpenRouter, Groq, and others. Platform
+tools are bound only after `discover_tools` finds them, limiting how many tool definitions the model
+reads on each call. Skills guide the investigation and reporting process; edit them as Markdown in
+`workspace/skills/`.
 
 To apply your company's report style, ask your coding agent to update
 [DESIGN.md](workspace/skills/report-design/DESIGN.md) and the renderer tokens together. The

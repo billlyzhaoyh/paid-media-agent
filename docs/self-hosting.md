@@ -65,8 +65,9 @@ Bolt verifies Slack signatures and acknowledges events before running the agent.
 continue in that server process; keep it running until they finish. The starter does not include
 a durable background job queue.
 
-A conversation paused for approval lives in process memory. After a restart, approving it returns
-409 `conversation_expired` and nothing executes; ask the agent to propose the change again.
+A change paused for approval is stored with the conversation, so a restart does not lose it. If
+the conversation moves on before a decision, approving the old change returns 409
+`conversation_expired` and nothing executes; ask the agent to propose it again.
 
 ## API and reports
 

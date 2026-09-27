@@ -143,7 +143,7 @@
   function derive() {
     const d = state.status?.detail || {};
     const model = d.model || {};
-    const modelDone = !!model.package_installed && (d.model_key_env ? !!d.model_key_set : model.provider === "scripted");
+    const modelDone = !!model.provider_supported && (d.model_key_env ? !!d.model_key_set : model.provider === "scripted");
     const tokenSet = !!d.pipeboard?.token_set;
     const realAccounts = String(d.accounts_path || "").endsWith("config/accounts.toml") && (d.accounts || []).length > 0;
     return { modelDone, tokenSet, realAccounts };
@@ -836,7 +836,6 @@
   }
   const CONFIG_LABELS = {
     PAID_MEDIA_MODEL: "Model", PAID_MEDIA_MODEL_BASE_URL: "Custom API URL",
-    PAID_MEDIA_TOOL_SELECTOR_MODEL: "Tool selection model",
     ANTHROPIC_API_KEY: "Anthropic API key", OPENAI_API_KEY: "OpenAI API key", GOOGLE_API_KEY: "Google API key",
     PIPEBOARD_API_TOKEN: "Pipeboard API token",
     X_ADS_CONSUMER_KEY: "App API key", X_ADS_CONSUMER_SECRET: "App API secret",
@@ -864,7 +863,6 @@
         : el("input", { class: "input", name: key.name, type: key.secret ? "password" : "text", placeholder: key.is_set && key.secret ? "Saved. Leave blank to keep." : key.example || "", value: key.secret ? "" : key.value, autocomplete: "off", spellcheck: "false" });
       input.id = `f-${key.name}`; input.dataset.initial = key.secret ? "" : key.value;
       const help = key.name === "PAID_MEDIA_MODEL" ? "Use provider:model, such as anthropic:claude-sonnet-4-6."
-        : key.name === "PAID_MEDIA_TOOL_SELECTOR_MODEL" ? "Optional smaller model that chooses the tools for each request."
         : key.name === "PAID_MEDIA_MODEL_BASE_URL" ? "Optional endpoint for a compatible model provider." : slackTokenHelp(key.name);
       const field = formField(input.id, CONFIG_LABELS[key.name] || key.description, input, help);
       form.append(field);

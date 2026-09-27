@@ -68,7 +68,7 @@ def build_routes(detail: dict[str, JsonValue]) -> list[Route]:
     writes = _get(detail, "writes") or {}
     accounts = _get(detail, "accounts") or []
     token_set = bool(_get(detail, "pipeboard", "token_set"))
-    model_ready = bool(model.get("package_installed")) and bool(_get(detail, "model_key_set"))
+    model_ready = bool(model.get("provider_supported")) and bool(_get(detail, "model_key_set"))
     direct_keys = {
         "x": (
             "X_ADS_CONSUMER_KEY",
@@ -123,10 +123,8 @@ def build_routes(detail: dict[str, JsonValue]) -> list[Route]:
                         "OPENAI_API_KEY",
                         "GOOGLE_API_KEY",
                         "PAID_MEDIA_MODEL_BASE_URL",
-                        "PAID_MEDIA_TOOL_SELECTOR_MODEL",
                     ),
                 ),
-                note=str(model.get("selection_reason") or ""),
             ),
             Step(
                 id="model_test",

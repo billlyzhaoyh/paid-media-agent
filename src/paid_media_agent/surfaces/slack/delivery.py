@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from paid_media_agent.middleware.redaction import sanitize_exception
+from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.surfaces.runner import RunEvent
 from paid_media_agent.surfaces.slack.service import SlackApplicationService, SlackReply
 

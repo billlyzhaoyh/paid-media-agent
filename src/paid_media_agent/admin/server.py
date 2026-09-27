@@ -86,7 +86,7 @@ class ConsoleState:
     def stamp(self, name: str) -> str:
         settings = actions.load_settings(self.root)
         prefixes: tuple[str, ...] = (
-            ("paid_media_model", "paid_media_tool_selector_model")
+            ("paid_media_model",)
             if name == "model_test"
             else ("pipeboard_", "x_ads_", "openai_ads_")
         )

@@ -12,12 +12,12 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
-from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field, ValidationError
 
 from paid_media_agent.domain.common import JsonValue
 from paid_media_agent.domain.metrics import PerformanceRow
-from paid_media_agent.middleware.redaction import sanitize_exception
+from paid_media_agent.harness.tools import ToolContext, ToolSpec, parameters_for
+from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.tools.artifacts import ArtifactError, ArtifactStore
 from paid_media_agent.tools.compute import ComputeError, aggregate
 from paid_media_agent.tools.normalize import NormalizationError, rows_from_payload
@@ -196,8 +196,8 @@ def run_summarize_window(artifacts: ArtifactStore, args: SummarizeWindowArgs) ->
     return {"artifact_id": metadata.artifact_id, "platforms": platforms}
 
 
-def build_summarize_window_tool(artifacts: ArtifactStore) -> BaseTool:
-    def _run(**kwargs: Any) -> str:
+def build_summarize_window_tool(artifacts: ArtifactStore) -> ToolSpec:
+    def _run(kwargs: dict[str, Any], _context: ToolContext) -> str:
         try:
             args = SummarizeWindowArgs.model_validate(kwargs)
             return json.dumps(run_summarize_window(artifacts, args))
@@ -210,7 +210,7 @@ def build_summarize_window_tool(artifacts: ArtifactStore) -> BaseTool:
         ) as exc:
             return json.dumps({"error": True, "detail": sanitize_exception(exc)})
 
-    return StructuredTool(
+    return ToolSpec(
         name=SUMMARIZE_WINDOW_TOOL,
         description=(
             "Summarize one window from performance_rows artifacts: totals, per-entity spend share, "
@@ -219,6 +219,6 @@ def build_summarize_window_tool(artifacts: ArtifactStore) -> BaseTool:
             "days. Use it for pacing, anomalies, and top-N questions inside a single window; use "
             "compare_periods for period-over-period change."
         ),
-        args_schema=SummarizeWindowArgs,
-        func=_run,
+        parameters=parameters_for(SummarizeWindowArgs),
+        handler=_run,
     )

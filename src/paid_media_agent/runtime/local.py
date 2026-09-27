@@ -1,51 +1,22 @@
-"""Compilation of the shared components with `create_deep_agent`: the repository as the model's
-filesystem and an in-memory checkpointer. The CLI, the demo, the tests, and the server share it.
+"""Local runtimes: the shared components and the agent loop over a profile's state store.
+
+The demo and the test suite use the fixture profile with an injected model. `ask` and `report` use
+the configured profile, the same accounts and policy a server runs, with in-memory state.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
-from deepagents import FilesystemPermission, create_deep_agent
-from deepagents.backends import FilesystemBackend
-from langchain_core.language_models import BaseChatModel
-from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.graph.state import CompiledStateGraph
-
-from paid_media_agent.assembly import AgentComponents, build_agent_components
+from paid_media_agent.assembly import AgentComponents, build_agent, build_agent_components
 from paid_media_agent.config import Settings
+from paid_media_agent.harness.loop import Agent
+from paid_media_agent.harness.models import ChatModel
 from paid_media_agent.runtime.configured import configured_profile
 from paid_media_agent.runtime.profiles import RuntimeProfile, fixture_profile
 from paid_media_agent.tools.catalog import AuthorizedToolCatalog, StaticCatalogProvider
 from paid_media_agent.tools.fixtures import FixtureState, build_fixture_catalog
-
-
-def filesystem_permissions() -> list[FilesystemPermission]:
-    """Hide secrets and coding-agent files; keep runtime skills read-only."""
-    return [
-        FilesystemPermission(
-            operations=["read", "write"],
-            paths=[
-                "/.env",
-                "/.env.*",
-                "/.venv/**",
-                "/.git/**",
-                "/workspace/state/**",
-                "/.agents/**",
-                "/.claude/**",
-                "/config/**",
-                "/workspace/sources/**",
-                "/docs/org/**",
-            ],
-            mode="deny",
-        ),
-        FilesystemPermission(operations=["write"], paths=["/workspace/skills/**"], mode="deny"),
-        FilesystemPermission(operations=["write"], paths=["/workspace/**"], mode="allow"),
-        FilesystemPermission(operations=["write"], paths=["/**"], mode="deny"),
-    ]
 
 
 @dataclass(frozen=True)
@@ -54,41 +25,17 @@ class LocalRuntime:
     profile: RuntimeProfile
     catalog: AuthorizedToolCatalog
     components: AgentComponents
-    graph: CompiledStateGraph[Any, Any, Any, Any]
-    checkpointer: BaseCheckpointSaver[Any]
-
-
-def compile_graph(
-    components: AgentComponents,
-    *,
-    project_root: Path,
-    checkpointer: BaseCheckpointSaver[Any] | None,
-    name: str = "paid-media-agent",
-) -> CompiledStateGraph[Any, Any, Any, Any]:
-    """Compile the shared components with Deep Agents over the repository filesystem."""
-    return create_deep_agent(
-        components.model,
-        list(components.tools),
-        system_prompt=components.system_prompt,
-        middleware=list(components.middleware),
-        skills=list(components.skills),
-        permissions=filesystem_permissions(),
-        backend=FilesystemBackend(root_dir=project_root, virtual_mode=True),
-        interrupt_on=dict(components.interrupt_on) or None,
-        checkpointer=checkpointer,
-        name=name,
-    )
+    agent: Agent
 
 
 def build_local_runtime(
     settings: Settings,
     *,
     project_root: Path,
-    model: BaseChatModel,
+    model: ChatModel,
     catalog: AuthorizedToolCatalog | None = None,
     catalog_provider: StaticCatalogProvider | None = None,
     profile: RuntimeProfile | None = None,
-    checkpointer: BaseCheckpointSaver[Any] | None = None,
     fixture_state: FixtureState | None = None,
     workspace_root: Path | None = None,
 ) -> LocalRuntime:
@@ -105,38 +52,31 @@ def build_local_runtime(
     components = build_agent_components(
         settings=settings, runtime=resolved_profile, catalog=resolved_catalog, model=model
     )
-    saver = checkpointer or InMemorySaver()
-    graph = compile_graph(components, project_root=project_root, checkpointer=saver)
     return LocalRuntime(
         settings=settings,
         profile=resolved_profile,
         catalog=resolved_catalog,
         components=components,
-        graph=graph,
-        checkpointer=saver,
+        agent=build_agent(components, resolved_profile.store),
     )
 
 
 def build_configured_runtime(
-    settings: Settings, *, project_root: Path, model: BaseChatModel | None = None
+    settings: Settings, *, project_root: Path, model: ChatModel | None = None
 ) -> LocalRuntime:
-    """The deployment's profile compiled locally: live catalog when credentials exist.
+    """The server's profile run locally: live catalog when credentials exist, in-memory state.
 
     `paid-media-agent ask` and `report` use this, so a local answer comes from the same accounts,
-    policy, and tools the hosted agent has. The write gate still decides whether a live mutation
-    can run; nothing here loosens it.
+    policy, and tools a server has. The write gate still decides whether a live mutation can run.
     """
     profile, loaded = configured_profile(settings, project_root=project_root)
     components = build_agent_components(
         settings=settings, runtime=profile, catalog=loaded.catalog, model=model
     )
-    saver = InMemorySaver()
-    graph = compile_graph(components, project_root=project_root, checkpointer=saver)
     return LocalRuntime(
         settings=settings,
         profile=profile,
         catalog=loaded.catalog,
         components=components,
-        graph=graph,
-        checkpointer=saver,
+        agent=build_agent(components, profile.store),
     )

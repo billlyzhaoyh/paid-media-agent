@@ -1,4 +1,4 @@
-"""Behavior checks run with the scripted model through the real graph."""
+"""Behavior checks run with the scripted model through the real agent loop."""
 
 from __future__ import annotations
 
@@ -7,12 +7,12 @@ from datetime import date
 from pathlib import Path
 
 import pytest
-from langchain_core.messages import AIMessage, ToolMessage
 
 from paid_media_agent.config import Settings
+from paid_media_agent.harness.messages import AssistantMessage, ToolMessage
 from paid_media_agent.testing.demo_script import DEMO_QUESTION, demo_steps
 from paid_media_agent.testing.scripted_model import tool_call_message
-from tests.contract.helpers import build_runtime, config
+from tests.contract.helpers import build_runtime, config, run_until_interrupt
 
 
 async def test_demo_uses_the_fixture_anchor_and_fails_on_unreconciled_analysis(
@@ -30,7 +30,7 @@ async def test_demo_uses_the_fixture_anchor_and_fails_on_unreconciled_analysis(
     monkeypatch.setattr(
         demo_script,
         "demo_steps",
-        lambda _anchor=None: [lambda _: AIMessage(content="Analysis failed")],
+        lambda _anchor=None: [lambda _: AssistantMessage(content="Analysis failed")],
     )
     with pytest.raises(ValueError, match="Analysis failed"):
         await demo_script.run_demo(shifted, root=project_root, with_proposal=True)
@@ -40,17 +40,18 @@ async def test_discovers_instead_of_inventing_and_cites_evidence(
     settings: Settings, project_root: Path
 ) -> None:
     runtime, _ = build_runtime(settings, project_root, demo_steps())
-    state = await runtime.graph.ainvoke(
-        {"messages": [{"role": "user", "content": DEMO_QUESTION}]}, config=config()
-    )
+    conversation = await run_until_interrupt(runtime, config(), DEMO_QUESTION)
     tool_calls = [
-        tc["name"] for m in state["messages"] if isinstance(m, AIMessage) for tc in m.tool_calls
+        tc.name
+        for m in conversation.messages
+        if isinstance(m, AssistantMessage)
+        for tc in m.tool_calls
     ]
     assert tool_calls[0] == "discover_tools", "discover before any platform read"
     assert tool_calls.index("compare_periods") > tool_calls.index(
         "google_ads__get_campaign_performance"
     )
-    answer = state["messages"][-1].content
+    answer = conversation.messages[-1].content
     assert answer.count("art_") >= 4, "the answer cites the analysis and each source artifact"
     assert "not zero" in answer and "incrementality" in answer
 
@@ -77,14 +78,12 @@ async def test_missing_window_reports_instead_of_guessing(
                 "previous_end": "2026-08-10",
             },
         ),
-        lambda m: AIMessage(
+        lambda m: AssistantMessage(
             content=str(
                 json.loads(next(x for x in reversed(m) if isinstance(x, ToolMessage)).content)
             )
         ),
     ]
     runtime, _ = build_runtime(settings, project_root, steps)
-    state = await runtime.graph.ainvoke(
-        {"messages": [{"role": "user", "content": "compare"}]}, config=config()
-    )
-    assert "same day count" in state["messages"][-1].content
+    conversation = await run_until_interrupt(runtime, config(), "compare")
+    assert "same day count" in conversation.messages[-1].content

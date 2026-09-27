@@ -6,11 +6,10 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
-from langchain_core.messages import AIMessage, ToolMessage
-
 from paid_media_agent.config import Settings
 from paid_media_agent.domain.common import JsonValue
 from paid_media_agent.domain.proposals import ProposalState
+from paid_media_agent.harness.messages import AssistantMessage, Conversation, ToolMessage
 from paid_media_agent.runtime.profiles import fixture_profile
 from paid_media_agent.testing.scripted_model import tool_call_message
 from paid_media_agent.tools.catalog import CatalogEntry, StaticCatalogProvider
@@ -29,9 +28,9 @@ from tests.contract.helpers import (
 WRITE_STEPS = [propose_step(), execute_step, final_step]
 
 
-def _last_tool(state: dict) -> dict:  # type: ignore[type-arg]
+def _last_tool(conversation: Conversation) -> dict:  # type: ignore[type-arg]
     return json.loads(
-        next(m for m in reversed(state["messages"]) if isinstance(m, ToolMessage)).content
+        next(m for m in reversed(conversation.messages) if isinstance(m, ToolMessage)).content
     )
 
 
@@ -205,15 +204,14 @@ async def test_unknown_proposal_id_does_not_interrupt(
         lambda _m: tool_call_message(
             "execute_change", {"proposal_id": "not-a-uuid", "revision": 1}
         ),
-        lambda _m: AIMessage(content="end"),
+        lambda _m: AssistantMessage(content="end"),
     ]
     runtime, _ = build_runtime(settings, project_root, steps)
     cfg = config()
-    state = await runtime.graph.ainvoke(
-        {"messages": [{"role": "user", "content": "go"}]}, config=cfg
-    )
-    assert not runtime.graph.get_state(cfg).interrupts, "bogus ids never reach a reviewer"
-    bodies = [json.loads(m.content) for m in state["messages"] if isinstance(m, ToolMessage)]
+    state = await run_until_interrupt(runtime, cfg, "go")
+    assert not state.awaiting_approval, "bogus ids never reach a reviewer"
+    assert not runtime.agent.conversation(cfg.thread_id).pending
+    bodies = [json.loads(m.content) for m in state.messages if isinstance(m, ToolMessage)]
     assert bodies[0]["denied"] and bodies[0]["reason"] == "unknown_proposal"
     assert bodies[1]["reason"] == "invalid_proposal_id"
 
@@ -225,9 +223,7 @@ async def test_foreign_thread_proposal_does_not_interrupt(
     runtime, _ = build_runtime(
         settings, project_root, [propose_step(), final_step], write_provider=provider
     )
-    await runtime.graph.ainvoke(
-        {"messages": [{"role": "user", "content": "stage"}]}, config=config(thread_id="owner")
-    )
+    await run_until_interrupt(runtime, config(thread_id="owner"), "stage")
     record = runtime.components.proposal_service.proposals.list_for_thread("owner")[0]
     pid = str(record.changeset.proposal_id)
     hijack, _ = build_runtime(
@@ -242,10 +238,9 @@ async def test_foreign_thread_proposal_does_not_interrupt(
         catalog_provider=runtime.profile.catalog_provider,
     )  # type: ignore[arg-type]
     cfg = config(thread_id="intruder", caller="someone-else")
-    state = await hijack.graph.ainvoke(
-        {"messages": [{"role": "user", "content": "execute it"}]}, config=cfg
-    )
-    assert not hijack.graph.get_state(cfg).interrupts
+    state = await run_until_interrupt(hijack, cfg, "execute it")
+    assert not state.awaiting_approval
+    assert not hijack.agent.conversation(cfg.thread_id).pending
     assert _last_tool(state)["denied"] is True and _last_tool(state)["reason"] == "unknown_proposal"
     assert provider.mutation_calls == []
     assert (
@@ -308,9 +303,7 @@ async def test_discover_write_operations_lists_only_admitted_operations(
 ) -> None:
     steps = [lambda _m: tool_call_message("discover_write_operations", {}), final_step]
     runtime, _ = build_runtime(settings, project_root, steps)
-    state = await runtime.graph.ainvoke(
-        {"messages": [{"role": "user", "content": "what can you change?"}]}, config=config()
-    )
+    state = await run_until_interrupt(runtime, config(), "what can you change?")
     body = _last_tool(state)
     names = {op["tool_name"] for op in body["operations"]}
     assert names == {
@@ -332,9 +325,7 @@ async def test_proposal_carries_risk_flags_and_contract_identity(
         [propose_step(changes={"daily_budget": 900}), final_step],
         write_provider=provider,
     )
-    state = await runtime.graph.ainvoke(
-        {"messages": [{"role": "user", "content": "raise it"}]}, config=config()
-    )
+    state = await run_until_interrupt(runtime, config(), "raise it")
     proposal = _last_tool(state)["proposal"]
     assert {"budget_delta", "budget_increase"} <= set(proposal["risk_flags"])
     record = runtime.components.proposal_service.proposals.list_for_thread("t-1")[0]

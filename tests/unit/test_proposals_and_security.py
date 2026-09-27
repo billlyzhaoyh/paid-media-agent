@@ -18,7 +18,7 @@ from paid_media_agent.domain.proposals import (
     stamp_digest,
     transition,
 )
-from paid_media_agent.middleware.redaction import redact, sanitize_exception
+from paid_media_agent.redaction import redact, sanitize_exception
 from paid_media_agent.tools.artifacts import ArtifactError, ArtifactStore
 from paid_media_agent.tools.writes import ApprovalSigner
 

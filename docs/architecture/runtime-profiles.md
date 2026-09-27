@@ -3,8 +3,20 @@
 ## Shared assembly
 
 `build_agent_components` is the center. It receives typed settings, a runtime profile, and an
-authorized tool catalog. It returns the model, tools, middleware, and interrupt policy. It performs
-no network calls and stores no process-global mutable state.
+authorized tool catalog. It returns the model, tools, dispatcher, approval gate, and system prompt.
+It performs no network calls and stores no process-global mutable state. `build_agent` binds them
+to the loop in `harness/loop.py` over the profile's state store.
+
+## Agent loop
+
+`harness/` is a small loop the project owns. `Agent.send` appends the user message, calls the model,
+runs its tool calls through the dispatcher, and repeats until the model answers without tools or the
+per-run model-call budget is spent. Transient model errors retry with backoff; a failed call ends the
+run with a readable message. Every tool call gets exactly one result before the next model call,
+including calls left unanswered by a crash. An approval-gated call is stored as pending and the run
+stops; `Agent.resume` approves or rejects it and continues. Models are reached through one
+OpenAI-compatible adapter in `harness/models.py`; provider reasoning blocks are stored with the
+message and replayed unchanged.
 
 ## One configured profile
 
@@ -13,11 +25,11 @@ approval policy from `PAID_MEDIA_APPROVER_IDS`. `PAID_MEDIA_DATA_MODE=sample` us
 `live` requires connected providers and excludes synthetic platforms. The default `auto` mode
 selects providers from configured credentials and otherwise uses fixtures. Two callers compile it:
 
-- `runtime/self_hosted.py::build_self_hosted_runtime` compiles the components behind the FastAPI
-  boundary and the Slack adapter. Proposals, claims, receipts, dedupe keys, and thread ownership
-  live in the DuckDB file at `PAID_MEDIA_STATE_PATH`; conversation checkpoints are process memory.
-- `runtime/local.py::build_configured_runtime` compiles them with an in-memory database and
-  checkpointer for `paid-media-agent ask` and `report`.
+- `runtime/self_hosted.py::build_self_hosted_runtime` runs the components behind the FastAPI
+  boundary and the Slack adapter. Conversations, paused calls, proposals, claims, receipts, dedupe
+  keys, and thread ownership live in the DuckDB file at `PAID_MEDIA_STATE_PATH`.
+- `runtime/local.py::build_configured_runtime` runs them with an in-memory database for
+  `paid-media-agent ask` and `report`.
 
 `build_local_runtime` is the fixture-only variant that takes an injected model: the demo and the
 test suite.
@@ -58,8 +70,7 @@ Capability and approval policy may not.
   agree on one reviewed set. With a live catalog the profile uses `PipeboardReadProvider` and the
   gated `PipeboardWriteProvider` and marks the provider as not fake; the fixture fake is used only
   with the fixture catalog, so a production receipt can never come from a fake.
-- `runtime/local.py::compile_graph` uses a `FilesystemBackend` rooted at the checkout, skills from
-  `/skills/`, and permissions that deny `.env`, `.venv`, `.git`, `workspace/state/`, and any write
-  outside `/workspace/`.
+- `harness/files.py` roots the file tools at the checkout, reads skills from `/skills/`, and denies
+  `.env`, `.venv`, `.git`, `workspace/state/`, and any write outside `/workspace/`.
 - No generic MCP connector binds provider tools to the model directly, which would bypass the
   authorized catalog. Tools always enter through the assembly.

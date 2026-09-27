@@ -3,23 +3,21 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
 from uuid import UUID
-
-from langchain_core.messages import AIMessage, ToolMessage
-from langchain_core.runnables import RunnableConfig
-from langgraph.graph.state import CompiledStateGraph
-from langgraph.types import Command
 
 from paid_media_agent.domain.common import JsonValue
 from paid_media_agent.domain.presentation import ProposalView, ReceiptView
 from paid_media_agent.domain.proposals import ProposalState
+from paid_media_agent.harness.loop import Agent, EventHandler, RunEvent
+from paid_media_agent.harness.messages import AssistantMessage, Conversation, Message, ToolMessage
 from paid_media_agent.persistence.interfaces import ReceiptRepository, ThreadOwnershipStore
 from paid_media_agent.tools.artifacts import ArtifactError, ArtifactStore
 from paid_media_agent.tools.reports import RENDER_REPORT_TOOL
 from paid_media_agent.tools.writes import ProposalService, WriteDenied
+
+__all__ = ["AgentRunner", "EventHandler", "RunEvent", "RunOutcome", "ThreadAccessDenied"]
 
 
 @dataclass(frozen=True)
@@ -31,62 +29,41 @@ class RunOutcome:
     receipt: ReceiptView | None
 
 
-@dataclass(frozen=True)
-class RunEvent:
-    kind: Literal["start", "text", "tool"]
-    text: str = ""
-    id: str = ""
-    name: str = ""
-    status: Literal["in_progress", "complete", "error"] = "in_progress"
-
-
-EventHandler = Callable[[RunEvent], Awaitable[None]]
-
-
 class ThreadAccessDenied(Exception):
     pass
 
 
-def _content_text(content: Any) -> str:
-    """Model content is a string or a list of blocks; keep only the text either way."""
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        texts = [
-            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
-        ]
-        return "\n".join(t for t in texts if t).strip()
-    return str(content)
+def _content_text(content: str) -> str:
+    return content.strip()
 
 
-def _last_assistant_text(messages: list[Any]) -> str:
-    """Prose from the most recent assistant message, so an interrupt does not discard it."""
+def _last_assistant_text(messages: Sequence[Message]) -> str:
+    """Prose from the most recent assistant message, so a pause does not discard it."""
     for message in reversed(messages):
-        if getattr(message, "type", "") == "ai":
-            return _content_text(message.content)[:2000]
+        if isinstance(message, AssistantMessage) and message.content:
+            return message.content[:2000]
     return ""
 
 
 class AgentRunner:
-    """Runs the graph for a caller-owned thread and exposes proposal actions."""
+    """Runs the agent for a caller-owned thread and exposes proposal actions."""
 
     def __init__(
         self,
         *,
-        graph: CompiledStateGraph[Any, Any, Any, Any],
+        agent: Agent,
         service: ProposalService,
         receipts: ReceiptRepository,
         threads: ThreadOwnershipStore,
     ) -> None:
-        self._graph = graph
+        self._agent = agent
         self._service = service
         self._receipts = receipts
         self._threads = threads
 
-    def _config(self, thread_id: str, caller_ref: str) -> RunnableConfig:
+    def _claim(self, thread_id: str, caller_ref: str) -> None:
         if not self._threads.claim(thread_id, caller_ref):
             raise ThreadAccessDenied("thread belongs to another caller")
-        return RunnableConfig(configurable={"thread_id": thread_id, "caller_ref": caller_ref})
 
     def latest_proposal(self, thread_id: str) -> ProposalView | None:
         records = self._service.proposals.list_for_thread(thread_id)
@@ -97,13 +74,11 @@ class AgentRunner:
     ) -> set[str]:
         if self._threads.owner(thread_id) != caller_ref:
             raise ThreadAccessDenied("thread belongs to another caller")
-        config = RunnableConfig(configurable={"thread_id": thread_id, "caller_ref": caller_ref})
-        snapshot = await self._graph.aget_state(config)
         files: set[str] = set()
-        for message in snapshot.values.get("messages", []):
+        for message in self._agent.conversation(thread_id).messages:
             if not isinstance(message, ToolMessage) or message.name != RENDER_REPORT_TOOL:
                 continue
-            if message.status == "error" or not isinstance(message.content, str):
+            if message.status == "error":
                 continue
             try:
                 result = json.loads(message.content)
@@ -122,20 +97,17 @@ class AgentRunner:
                         files.add(file["path"])
         return files
 
-    async def _outcome(
-        self, thread_id: str, state: dict[str, Any], config: RunnableConfig
-    ) -> RunOutcome:
-        snapshot = await self._graph.aget_state(config)
-        interrupted = bool(snapshot.interrupts)
-        messages = state.get("messages", [])
+    def _outcome(self, thread_id: str, conversation: Conversation) -> RunOutcome:
+        messages = conversation.messages
         text = ""
-        if messages:
-            text = _content_text(messages[-1].content)
+        if messages and isinstance(messages[-1], AssistantMessage):
+            text = messages[-1].content
         proposal = self.latest_proposal(thread_id)
         receipt = None
         if proposal is not None:
             stored = self._receipts.get(proposal.proposal_id)
             receipt = ReceiptView.from_receipt(stored) if stored else None
+        interrupted = conversation.awaiting_approval
         if interrupted and proposal is not None:
             prose = _last_assistant_text(messages)
             text = (prose + "\n\n" if prose else "") + "A change is waiting for review."
@@ -147,70 +119,12 @@ class AgentRunner:
             receipt=receipt,
         )
 
-    async def _run(
-        self, inputs: Any, config: RunnableConfig, on_event: EventHandler | None
-    ) -> dict[str, Any]:
-        if on_event is None:
-            return await self._graph.ainvoke(inputs, config=config)
-        await on_event(RunEvent("start"))
-        started: set[str] = set()
-        completed: set[str] = set()
-        async for chunk in self._graph.astream(
-            inputs, config=config, stream_mode=["messages", "updates"]
-        ):
-            if not isinstance(chunk, tuple) or len(chunk) != 2:
-                continue
-            mode, data = chunk
-            if mode == "messages":
-                message, metadata = data
-                if isinstance(message, AIMessage) and metadata.get("langgraph_node") == "model":
-                    content = message.content
-                    text = (
-                        content
-                        if isinstance(content, str)
-                        else "".join(
-                            block.get("text", "")
-                            for block in content
-                            if isinstance(block, dict) and block.get("type") == "text"
-                        )
-                    )
-                    if text:
-                        await on_event(RunEvent("text", text=text, id=message.id or ""))
-            elif mode == "updates" and isinstance(data, dict):
-                for update in data.values():
-                    if not isinstance(update, dict):
-                        continue
-                    messages = update.get("messages", [])
-                    if not isinstance(messages, list):
-                        messages = [messages]
-                    for message in messages:
-                        if isinstance(message, AIMessage):
-                            for call in message.tool_calls:
-                                call_id = call.get("id") or ""
-                                if call_id and call_id not in started:
-                                    started.add(call_id)
-                                    await on_event(RunEvent("tool", id=call_id, name=call["name"]))
-                        elif (
-                            isinstance(message, ToolMessage)
-                            and message.tool_call_id not in completed
-                        ):
-                            completed.add(message.tool_call_id)
-                            await on_event(
-                                RunEvent(
-                                    "tool",
-                                    id=message.tool_call_id,
-                                    name=message.name or "Tool",
-                                    status="error" if message.status == "error" else "complete",
-                                )
-                            )
-        return (await self._graph.aget_state(config)).values
-
     async def send(
         self, *, thread_id: str, caller_ref: str, text: str, on_event: EventHandler | None = None
     ) -> RunOutcome:
-        config = self._config(thread_id, caller_ref)
-        state = await self._run({"messages": [{"role": "user", "content": text}]}, config, on_event)
-        return await self._outcome(thread_id, state, config)
+        self._claim(thread_id, caller_ref)
+        conversation = await self._agent.send(thread_id, caller_ref, text, on_event)
+        return self._outcome(thread_id, conversation)
 
     async def resume(
         self,
@@ -221,15 +135,15 @@ class AgentRunner:
         message: str = "",
         on_event: EventHandler | None = None,
     ) -> RunOutcome:
-        config = self._config(thread_id, caller_ref)
-        snapshot = await self._graph.aget_state(config)
-        if not snapshot.interrupts:
-            return await self._outcome(thread_id, snapshot.values, config)
-        payload: dict[str, JsonValue] = {"type": decision}
-        if decision == "reject" and message:
-            payload["message"] = message
-        state = await self._run(Command(resume={"decisions": [payload]}), config, on_event)
-        return await self._outcome(thread_id, state, config)
+        self._claim(thread_id, caller_ref)
+        conversation = await self._agent.resume(
+            thread_id,
+            caller_ref,
+            "approve" if decision == "approve" else "reject",
+            message,
+            on_event,
+        )
+        return self._outcome(thread_id, conversation)
 
     def proposal_by_routing_id(self, routing_id: str) -> ProposalView | None:
         record = self._service.proposals.get_by_routing_id(routing_id)
@@ -242,16 +156,12 @@ class AgentRunner:
     async def approve(
         self, *, proposal_id: UUID, approver_ref: str, on_event: EventHandler | None = None
     ) -> RunOutcome:
-        """Host creates the claim, then the graph resumes and the executor verifies it."""
+        """Host creates the claim, then the paused call resumes and the executor verifies it."""
         record = self._service.get(proposal_id)
         if record is None:
             raise WriteDenied("unknown_proposal")
-        paused = await self._graph.aget_state(
-            RunnableConfig(configurable={"thread_id": record.changeset.thread_id})
-        )
-        if not paused.interrupts:
-            # Conversation checkpoints are process memory: after a restart no run is waiting, and
-            # a claim created now could never be used by the conversation that proposed it.
+        if not self._agent.conversation(record.changeset.thread_id).pending:
+            # The conversation moved on without a decision, so no paused call would use a claim.
             raise WriteDenied(
                 "conversation_expired", "no paused conversation; propose the change again"
             )

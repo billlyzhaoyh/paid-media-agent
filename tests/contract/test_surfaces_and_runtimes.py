@@ -34,7 +34,7 @@ def _slack_event(team: str, channel: str, ts: str, user: str, text: str, event_i
     }
 
 
-async def test_slack_review_and_button_approval_resume_the_same_graph(
+async def test_slack_review_and_button_approval_resume_the_same_agent(
     settings: Settings, project_root: Path
 ) -> None:
     state = FixtureState()
@@ -53,7 +53,7 @@ async def test_slack_review_and_button_approval_resume_the_same_graph(
     )
     threads = Store().repositories.threads
     runner = AgentRunner(
-        graph=runtime.graph,
+        agent=runtime.agent,
         service=runtime.components.proposal_service,
         receipts=runtime.profile.receipts,
         threads=threads,
@@ -148,7 +148,7 @@ async def test_api_and_slack_share_persisted_state(settings: Settings, project_r
 
     holder = Holder()
     holder.settings = api_settings  # type: ignore[attr-defined]
-    holder.graph = runtime.graph  # type: ignore[attr-defined]
+    holder.agent = runtime.agent  # type: ignore[attr-defined]
     holder.components = runtime.components  # type: ignore[attr-defined]
     holder.profile = runtime.profile  # type: ignore[attr-defined]
     holder.catalog = runtime.catalog  # type: ignore[attr-defined]
@@ -273,7 +273,7 @@ async def test_signed_http_ack_precedes_agent_work_and_verifies_requests(
     app = create_app(
         SimpleNamespace(
             settings=configured,
-            graph=runtime.graph,
+            agent=runtime.agent,
             components=runtime.components,
             profile=runtime.profile,
             catalog=runtime.catalog,
@@ -324,8 +324,9 @@ async def test_artifacts_require_thread_owner_and_persisted_report_reference(
     from types import SimpleNamespace
 
     import httpx
-    from langchain_core.messages import ToolMessage
     from pydantic import SecretStr
+
+    from paid_media_agent.harness.messages import AssistantMessage, ToolCall, ToolMessage
 
     configured = settings.model_copy(
         update={"paid_media_api_tokens": SecretStr("alice-token:alice,bob-token:bob")}
@@ -336,22 +337,23 @@ async def test_artifacts_require_thread_owner_and_persisted_report_reference(
     output = runtime.profile.workspace_root / "out"
     (output / "report.html").write_text("<p>Alice's report</p>")
     (output / "other.html").write_text("<p>Other report</p>")
-    await runtime.graph.aupdate_state(
-        {"configurable": {"thread_id": "alice-thread", "caller_ref": "alice"}},
-        {
-            "messages": [
-                ToolMessage(
-                    name="render_report",
-                    tool_call_id="report-1",
-                    content=json.dumps({"files": [{"path": "report.html"}]}),
-                )
-            ]
-        },
+    conversations = runtime.agent.conversations
+    conversations.append(
+        "alice-thread",
+        AssistantMessage(tool_calls=(ToolCall("report-1", "render_report", {}),)),
+    )
+    conversations.append(
+        "alice-thread",
+        ToolMessage(
+            tool_call_id="report-1",
+            name="render_report",
+            content=json.dumps({"files": [{"path": "report.html"}]}),
+        ),
     )
     app = create_app(
         SimpleNamespace(
             settings=configured,
-            graph=runtime.graph,
+            agent=runtime.agent,
             components=runtime.components,
             profile=runtime.profile,
             catalog=runtime.catalog,
@@ -373,10 +375,10 @@ async def test_artifacts_require_thread_owner_and_persisted_report_reference(
         assert (await client.get("/artifacts/report.html", headers=alice)).status_code == 404
 
 
-async def test_restart_keeps_proposals_but_refuses_approving_an_expired_conversation(
+async def test_restart_keeps_the_paused_approval_and_executes_it_once(
     settings: Settings, project_root: Path, tmp_path: Path
 ) -> None:
-    """Proposals, claims, and thread owners are in the state file; checkpoints are not (yet)."""
+    """Proposals, claims, thread owners, and the paused call all live in the state file."""
     import httpx
     from pydantic import SecretStr
 
@@ -403,20 +405,77 @@ async def test_restart_keeps_proposals_but_refuses_approving_an_expired_conversa
         )
     assert sent.json()["interrupted"] is True
     proposal_id = sent.json()["proposal"]["proposal_id"]
+    assert first.profile.write_provider.mutation_calls == []  # type: ignore[attr-defined]
     first.store.close()
 
     restarted = build_self_hosted_runtime(
-        configured, project_root=project_root, model=ScriptedChatModel(steps=[])
+        configured, project_root=project_root, model=ScriptedChatModel(steps=[final_step])
     )
+    assert restarted.agent.conversation("t1").awaiting_approval, "the pause survives a restart"
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(create_app(restarted)), base_url="http://test"
     ) as client:
         stored = await client.get(f"/proposals/{proposal_id}", headers=reviewer)
-        approved = await client.post(f"/proposals/{proposal_id}/approve", headers=reviewer)
         foreign = await client.post("/threads/t1/messages", json={"text": "hi"}, headers=reviewer)
+        approved = await client.post(f"/proposals/{proposal_id}/approve", headers=reviewer)
+        again = await client.post(f"/proposals/{proposal_id}/approve", headers=reviewer)
     assert stored.json()["proposal"]["state"] == "awaiting_approval"
-    assert approved.status_code == 409 and "conversation_expired" in approved.json()["detail"]
     assert foreign.status_code == 403, "thread ownership survives the restart"
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["receipt"]["status"] == "verified"
+    assert again.status_code == 409 and "conversation_expired" in again.json()["detail"]
+    assert not restarted.agent.conversation("t1").awaiting_approval
     assert restarted.profile.approvals.latest_unused(UUID(proposal_id), 1) is None
-    assert restarted.profile.write_provider.mutation_calls == []  # type: ignore[attr-defined]
+    assert len(restarted.profile.write_provider.mutation_calls) == 1  # type: ignore[attr-defined]
     restarted.store.close()
+
+
+async def test_approving_after_the_conversation_moved_on_is_expired(
+    settings: Settings, project_root: Path, tmp_path: Path
+) -> None:
+    """A new message abandons the paused call, so a later approval has nothing to resume."""
+    import httpx
+    from pydantic import SecretStr
+
+    from paid_media_agent.harness.loop import ABANDONED
+    from paid_media_agent.harness.messages import ToolMessage
+    from paid_media_agent.runtime.self_hosted import build_self_hosted_runtime
+    from paid_media_agent.testing.demo_script import write_demo_steps
+    from paid_media_agent.testing.scripted_model import ScriptedChatModel
+
+    configured = settings.model_copy(
+        update={
+            "paid_media_state_path": tmp_path / "pma.duckdb",
+            "paid_media_api_tokens": SecretStr("tok-req:alice,tok-rev:bob"),
+            "paid_media_approver_ids": "bob",
+        }
+    )
+    requester, reviewer = {"Authorization": "Bearer tok-req"}, {"Authorization": "Bearer tok-rev"}
+    runtime = build_self_hosted_runtime(
+        configured,
+        project_root=project_root,
+        model=ScriptedChatModel(steps=[*write_demo_steps()[:2], final_step]),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(create_app(runtime)), base_url="http://test"
+    ) as client:
+        sent = await client.post(
+            "/threads/t1/messages", json={"text": "lower the budget"}, headers=requester
+        )
+        proposal_id = sent.json()["proposal"]["proposal_id"]
+        moved_on = await client.post(
+            "/threads/t1/messages", json={"text": "actually, never mind"}, headers=requester
+        )
+        approved = await client.post(f"/proposals/{proposal_id}/approve", headers=reviewer)
+    assert sent.json()["interrupted"] is True
+    assert moved_on.status_code == 200 and moved_on.json()["interrupted"] is False
+    assert approved.status_code == 409 and "conversation_expired" in approved.json()["detail"]
+    abandoned = [
+        m
+        for m in runtime.agent.conversation("t1").messages
+        if isinstance(m, ToolMessage) and m.name == "execute_change"
+    ]
+    assert [(m.status, m.content) for m in abandoned] == [("error", ABANDONED)]
+    assert runtime.profile.approvals.latest_unused(UUID(proposal_id), 1) is None
+    assert runtime.profile.write_provider.mutation_calls == []  # type: ignore[attr-defined]
+    runtime.store.close()

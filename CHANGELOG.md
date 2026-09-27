@@ -4,7 +4,7 @@
 
 ### Added
 
-- Paid-media analysis through a shared Deep Agents assembly, with a credential-free fixture demo.
+- Paid-media analysis through one shared assembly and agent loop, with a credential-free fixture demo.
 - A local setup console and CLI for models, account connections, and running the agent.
 - Pipeboard tool discovery and read-only direct adapters behind a host-controlled account catalog.
 - Deterministic period comparisons and HTML/PDF reports with source reconciliation.
@@ -17,10 +17,15 @@ Live provider writes remain disabled by default and require the documented relea
 
 ### Changed
 
+- Replace LangChain, LangGraph, and Deep Agents with a small agent loop in `harness/`. One
+  OpenAI-compatible adapter reaches Anthropic, OpenAI, Gemini, OpenRouter, and other providers with
+  no extra packages; reasoning blocks are replayed unchanged. Conversations and changes paused for
+  approval are stored in DuckDB, so an approval survives a restart and runs once. Platform tools are
+  bound after `discover_tools` finds them, replacing provider tool search and the LLM selector.
+  Pipeboard uses the MCP SDK directly. Adds `PAID_MEDIA_MODEL_ZERO_DATA_RETENTION` for OpenRouter;
+  removes `PAID_MEDIA_TOOL_SELECTOR_MODEL` and the per-provider extras.
 - Remove Managed Deep Agents, LangSmith (sandbox, gateway, deploy wizard), and Postgres. `serve`
-  runs the API and Slack Socket Mode in one process; Docker runs one container. After a restart,
-  approving a conversation that was paused for approval returns `conversation_expired` and nothing
-  executes.
+  runs the API and Slack Socket Mode in one process; Docker runs one container.
 - Clarify the README's capabilities, setup, deployment, and company customization guidance.
 - Rebrand as Paid Media Agent by StructureML: StructureML mark, console palette and IBM Plex
   fonts, and warm report defaults with a distinct decrease color. Self-hosted PDFs install IBM Plex.

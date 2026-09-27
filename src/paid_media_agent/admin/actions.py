@@ -35,10 +35,11 @@ from paid_media_agent.admin.envfile import (
 )
 from paid_media_agent.admin.model_catalog import ModelCatalogError, list_models
 from paid_media_agent.admin.model_presets import (
-    _module_available,
     model_key_env,
     model_preset_payloads,
+    provider_supported,
 )
+from paid_media_agent.assembly import TOOL_SELECTION
 from paid_media_agent.config import AccountBinding, ModelConfig, Settings
 from paid_media_agent.doctor import Check, run_doctor
 from paid_media_agent.domain.common import (
@@ -47,12 +48,10 @@ from paid_media_agent.domain.common import (
     JsonValue,
     Platform,
 )
-from paid_media_agent.middleware.redaction import sanitize_exception
-from paid_media_agent.middleware.tool_selection import capabilities_for, plan_selection
+from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.runtime.profiles import load_write_policy_file
 from paid_media_agent.runtime.self_hosted import state_path
 from paid_media_agent.store import Store, StoreBusy
-from paid_media_agent.surfaces.runner import _content_text
 from paid_media_agent.tools.catalog import AuthorizedToolCatalog, CatalogEntry, ToolClass
 from paid_media_agent.tools.fixtures import build_fixture_catalog, load_fixture_dataset
 
@@ -148,8 +147,6 @@ def status(root: Path) -> ActionResult:
     if not kill_switch.is_absolute():
         kill_switch = root / kill_switch
     model, model_error = model_or_invalid(settings)
-    caps = capabilities_for(model)
-    plan = plan_selection(model, max_tools=settings.paid_media_max_selected_tools)
     key_env = settings.paid_media_model_api_key_env if model_error else model_key_env(settings)
     state = state_path(settings, root)
     failing = [c.name for c in checks if c.status == "fail"]
@@ -166,11 +163,8 @@ def status(root: Path) -> ActionResult:
             "spec": settings.paid_media_model if model_error else model.spec,
             "error": model_error,
             "provider": model.provider,
-            "verified": caps.verified,
-            "native_tool_search": caps.native_tool_search,
-            "selection": plan.strategy.value,
-            "selection_reason": plan.reason,
-            "package_installed": bool(model.provider) and _module_available(model.provider),
+            "selection": TOOL_SELECTION,
+            "provider_supported": bool(model.provider) and provider_supported(settings),
         },
         "pipeboard": {
             "token_set": settings.pipeboard_api_token is not None,
@@ -306,15 +300,12 @@ def model_test(root: Path, *, invoke: Callable[[str], str] | None = None) -> Act
         return _result(
             "model_test", "skipped", "scripted model needs no provider", {"spec": model.spec}
         )
-    if not _module_available(model.provider):
-        provider_extra = {"google_genai": "google", "mistralai": "mistral"}.get(
-            model.provider, model.provider
-        )
-        extra = "" if model.provider in {"anthropic", "openai"} else f" --extra {provider_extra}"
+    if not provider_supported(settings):
         return _result(
             "model_test",
             "fail",
-            f"provider package for {model.provider} is not installed; run uv sync{extra}",
+            f"unknown provider {model.provider}; set PAID_MEDIA_MODEL_BASE_URL for an "
+            "OpenAI-compatible endpoint",
         )
     env = read_env(root)
     key_name = model_key_env(settings)
@@ -328,14 +319,17 @@ def model_test(root: Path, *, invoke: Callable[[str], str] | None = None) -> Act
     started = time.monotonic()
     try:
         if invoke is None:
-            from paid_media_agent.assembly import resolve_model
+            from paid_media_agent.harness.messages import UserMessage
+            from paid_media_agent.harness.models import resolve_model
 
             chat = resolve_model(
                 model,
                 api_key_env=settings.paid_media_model_api_key_env,
                 timeout_seconds=settings.paid_media_model_timeout_seconds,
+                zero_data_retention=settings.paid_media_model_zero_data_retention,
             )
-            reply = _content_text(chat.invoke("Reply with the single word OK.").content)
+            ping = UserMessage("Reply with the single word OK.")
+            reply = asyncio.run(chat.complete(system="", messages=[ping], tools=[])).content
         else:
             reply = invoke(model.spec)
     except Exception as exc:
@@ -346,7 +340,6 @@ def model_test(root: Path, *, invoke: Callable[[str], str] | None = None) -> Act
             {"spec": model.spec},
         )
     latency_ms = int((time.monotonic() - started) * 1000)
-    plan = plan_selection(model, max_tools=settings.paid_media_max_selected_tools)
     return _result(
         "model_test",
         "ok",
@@ -354,7 +347,7 @@ def model_test(root: Path, *, invoke: Callable[[str], str] | None = None) -> Act
         {
             "spec": model.spec,
             "latency_ms": latency_ms,
-            "selection": plan.strategy.value,
+            "selection": TOOL_SELECTION,
             "reply_preview": reply[:40],
         },
         command="paid-media-agent test model --json",
@@ -560,14 +553,13 @@ def accounts_discover(
                 result = await direct_providers[entry.platform].call_read(entry, {})
                 payload: Any = result.payload
             else:
-                tool = (
-                    live.loader.langchain_tool(entry.qualified_name)
-                    if hasattr(live.loader, "langchain_tool")
-                    else None
+                loader = live.loader
+                address = (
+                    loader.address(entry.qualified_name) if hasattr(loader, "address") else None
                 )
-                if tool is None:
+                if address is None:
                     return entry.qualified_name, None, None
-                payload = await invoke_mcp_tool(tool, {}, timeout=60)
+                payload = await invoke_mcp_tool(loader.client, address, {}, timeout=60)
         except Exception as exc:
             return entry.qualified_name, None, sanitize_exception(exc)
         return entry.qualified_name, payload, None
@@ -886,35 +878,17 @@ def ask_question(root: Path, question: str, *, model: Any | None = None) -> Acti
     if not text or len(text) > MAX_QUESTION_CHARS:
         return _result("ask", "fail", "question must be 1 to 2000 characters")
     try:
-        from langchain_core.runnables import RunnableConfig
-
-        from paid_media_agent.assembly import resolve_model
         from paid_media_agent.runtime.local import build_configured_runtime
 
-        chat = (
-            model
-            if model is not None
-            else resolve_model(
-                settings.model_settings(),
-                api_key_env=settings.paid_media_model_api_key_env,
-                timeout_seconds=settings.paid_media_model_timeout_seconds,
-            )
+        runtime = build_configured_runtime(settings, project_root=root, model=model)
+        conversation = asyncio.run(
+            runtime.agent.send(f"console-{secrets.token_hex(4)}", "local-user", text)
         )
-        runtime = build_configured_runtime(settings, project_root=root, model=chat)
-        config = RunnableConfig(
-            configurable={
-                "thread_id": f"console-{secrets.token_hex(4)}",
-                "caller_ref": "local-user",
-            }
-        )
-        state = asyncio.run(
-            runtime.graph.ainvoke({"messages": [{"role": "user", "content": text}]}, config=config)
-        )
-        answer_text = _content_text(state["messages"][-1].content)
+        answer_text = conversation.messages[-1].content.strip()
     except Exception as exc:
         return _result("ask", "fail", f"run failed: {sanitize_exception(exc)}")
     if answer_text.startswith("Model call failed"):
-        # The retry middleware turns provider failures into a message; surface them as a failure.
+        # The loop turns provider failures into a message; surface them as a failure.
         return _result("ask", "fail", sanitize_exception(RuntimeError(answer_text)))
     return _result(
         "ask",
@@ -922,7 +896,7 @@ def ask_question(root: Path, question: str, *, model: Any | None = None) -> Acti
         "answered",
         {
             "answer": answer_text[:6000],
-            "selection": runtime.components.metadata.selection.strategy.value,
+            "selection": runtime.components.metadata.selection,
             "catalog_revision": runtime.catalog.revision,
         },
         command='paid-media-agent ask "..."',

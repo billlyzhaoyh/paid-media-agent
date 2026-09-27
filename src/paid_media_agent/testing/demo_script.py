@@ -8,12 +8,9 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import AIMessage, BaseMessage
-from langchain_core.runnables import RunnableConfig
-from langgraph.types import Command
-
 from paid_media_agent.config import Settings, project_root
 from paid_media_agent.domain.presentation import ProposalView
+from paid_media_agent.harness.messages import AssistantMessage, Message, ToolCall
 from paid_media_agent.testing.scripted_model import (
     ScriptedChatModel,
     Step,
@@ -29,40 +26,39 @@ DEMO_QUESTION = (
 )
 
 
-def _discover(_: Sequence[BaseMessage]) -> AIMessage:
+def _discover(_: Sequence[Message]) -> AssistantMessage:
     return tool_call_message(
         "discover_tools", {"query": "campaign performance daily spend conversions"}
     )
 
 
-def _list_accounts(_: Sequence[BaseMessage]) -> AIMessage:
+def _list_accounts(_: Sequence[Message]) -> AssistantMessage:
     return tool_call_message("list_accounts", {})
 
 
-def _read_all(messages: Sequence[BaseMessage], *, anchor: date) -> AIMessage:
+def _read_all(messages: Sequence[Message], *, anchor: date) -> AssistantMessage:
     accounts: dict[str, Any] = next(
         (r for r in last_tool_results(messages) if "accounts" in r), {"accounts": []}
     )
     calls = []
     for account in accounts["accounts"]:
         calls.append(
-            {
-                "name": f"{account['platform']}__get_campaign_performance",
-                "args": {
+            ToolCall(
+                id=f"call_read_{account['alias']}",
+                name=f"{account['platform']}__get_campaign_performance",
+                args={
                     "account_alias": account["alias"],
                     "start_date": (anchor - timedelta(days=27)).isoformat(),
                     "end_date": anchor.isoformat(),
                 },
-                "id": f"call_read_{account['alias']}",
-                "type": "tool_call",
-            }
+            )
         )
-    return AIMessage(
-        content="Reading each connected account for the union window.", tool_calls=calls
+    return AssistantMessage(
+        content="Reading each connected account for the union window.", tool_calls=tuple(calls)
     )
 
 
-def _compare(messages: Sequence[BaseMessage], *, anchor: date) -> AIMessage:
+def _compare(messages: Sequence[Message], *, anchor: date) -> AssistantMessage:
     reads = [r for r in last_tool_results(messages) if r.get("kind") == "read_result"]
     unavailable = [
         r.get("_tool_name", "unknown")
@@ -129,15 +125,15 @@ def compose_answer(summary: dict[str, Any], reads: Sequence[dict[str, Any]]) -> 
     return "\n".join(lines)
 
 
-def _answer(messages: Sequence[BaseMessage]) -> AIMessage:
+def _answer(messages: Sequence[Message]) -> AssistantMessage:
     results = all_tool_results(messages)
     summary = next((r for r in reversed(results) if r.get("kind") == "analysis_summary"), None)
     reads = [r for r in results if r.get("kind") == "read_result"]
     if summary is None:
         failures = [r for r in results if r.get("error") or r.get("denied")]
         detail = failures[-1] if failures else {}
-        return AIMessage(content=f"The deterministic comparison did not complete: {detail}")
-    return AIMessage(content=compose_answer(summary, reads))
+        return AssistantMessage(content=f"The deterministic comparison did not complete: {detail}")
+    return AssistantMessage(content=compose_answer(summary, reads))
 
 
 def demo_steps(anchor: date | None = None) -> list[Step]:
@@ -155,7 +151,7 @@ def build_demo_model(steps: list[Step] | None = None) -> ScriptedChatModel:
     return ScriptedChatModel(steps=steps or demo_steps())
 
 
-def _propose(messages: Sequence[BaseMessage]) -> AIMessage:  # noqa: ARG001
+def _propose(messages: Sequence[Message]) -> AssistantMessage:  # noqa: ARG001
     return tool_call_message(
         "propose_change",
         {
@@ -170,25 +166,25 @@ def _propose(messages: Sequence[BaseMessage]) -> AIMessage:  # noqa: ARG001
     )
 
 
-def _execute(messages: Sequence[BaseMessage]) -> AIMessage:
+def _execute(messages: Sequence[Message]) -> AssistantMessage:
     proposal = next((r for r in last_tool_results(messages) if "proposal" in r), None)
     if proposal is None:
-        return AIMessage(content="The proposal could not be staged.")
+        return AssistantMessage(content="The proposal could not be staged.")
     return tool_call_message(
         "execute_change", {"proposal_id": proposal["proposal"]["proposal_id"], "revision": 1}
     )
 
 
-def _report_receipt(messages: Sequence[BaseMessage]) -> AIMessage:
+def _report_receipt(messages: Sequence[Message]) -> AssistantMessage:
     results = last_tool_results(messages)
     receipt = next((r for r in results if "receipt" in r), None)
     if receipt is None:
-        return AIMessage(
+        return AssistantMessage(
             content=f"No receipt was returned: {results[-1] if results else 'no tool result'}"
         )
     view = receipt["receipt"]
     verified = ", ".join(f"{fv['field']}={fv['value']}" for fv in view["verified_state"])
-    return AIMessage(
+    return AssistantMessage(
         content=(
             f"Receipt for proposal {view['proposal_id']} revision {view['revision']}: status={view['status']}, "
             f"mutation_attempted={view['mutation_attempted']}, readback_attempts={view['readback_attempts']}, "
@@ -223,15 +219,11 @@ async def run_demo(
     )
     model = build_demo_model(steps)
     runtime = build_local_runtime(settings, project_root=root, model=model)
-    config: RunnableConfig = {
-        "configurable": {"thread_id": "demo-thread", "caller_ref": "local-user"}
-    }
-    state = await runtime.graph.ainvoke(
-        {"messages": [{"role": "user", "content": DEMO_QUESTION}]}, config=config
-    )
-    answer = state["messages"][-1].content
+    thread, caller = "demo-thread", "local-user"
+    conversation = await runtime.agent.send(thread, caller, DEMO_QUESTION)
+    answer = conversation.messages[-1].content
     analysis = next(
-        (r for r in all_tool_results(state["messages"]) if r.get("kind") == "analysis_summary"),
+        (r for r in all_tool_results(conversation.messages) if r.get("kind") == "analysis_summary"),
         None,
     )
     if not analysis or not analysis.get("reconciled"):
@@ -240,25 +232,16 @@ async def run_demo(
         "answer": answer,
         "audit": runtime.components.read_dispatcher.audit,
         "catalog_revision": runtime.catalog.revision,
-        "selection": runtime.components.metadata.selection.strategy.value,
+        "selection": runtime.components.metadata.selection,
         "analysis": analysis,
     }
     if not with_proposal:
         return result
-    state = await runtime.graph.ainvoke(
-        {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": "Reduce the Performance Max daily budget to 240 and execute it.",
-                }
-            ]
-        },
-        config=config,
+    conversation = await runtime.agent.send(
+        thread, caller, "Reduce the Performance Max daily budget to 240 and execute it."
     )
-    snapshot = runtime.graph.get_state(config)
-    if not snapshot.interrupts:
-        raise ValueError(str(state["messages"][-1].content))
+    if not conversation.awaiting_approval:
+        raise ValueError(conversation.messages[-1].content)
     service = runtime.components.proposal_service
     records = service.proposals.list_for_thread("demo-thread")
     record = records[-1]
@@ -266,10 +249,8 @@ async def run_demo(
     result["proposal"] = view.model_dump(mode="json")
     # The demo operator approves through the host service, which creates the signed claim.
     service.approve(record.changeset.proposal_id, approver_ref="local-user")
-    state = await runtime.graph.ainvoke(
-        Command(resume={"decisions": [{"type": "approve"}]}), config=config
-    )
-    result["receipt_message"] = state["messages"][-1].content
+    conversation = await runtime.agent.resume(thread, caller, "approve")
+    result["receipt_message"] = conversation.messages[-1].content
     receipt = runtime.profile.receipts.get(record.changeset.proposal_id)
     if receipt is None or receipt.status != "verified":
         raise ValueError(str(result["receipt_message"]))

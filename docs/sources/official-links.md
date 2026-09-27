@@ -3,24 +3,19 @@
 Check the relevant primary source before changing an external contract. Update the owning
 architecture page when the supported behavior changes.
 
-## Deep Agents
+## Models and state
 
-- [Customize Deep Agents](https://docs.langchain.com/oss/python/deepagents/customization)
-- [Deep Agents human-in-the-loop](https://docs.langchain.com/oss/python/deepagents/human-in-the-loop)
+- [OpenAI Chat Completions function calling](https://developers.openai.com/api/docs/guides/function-calling)
+- [Anthropic OpenAI SDK compatibility](https://docs.anthropic.com/en/api/openai-sdk)
+- [Gemini OpenAI compatibility](https://ai.google.dev/gemini-api/docs/openai)
+- [OpenRouter reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)
+- [OpenRouter zero data retention](https://openrouter.ai/docs/guides/features/zdr)
+- [MCP Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports)
 - [DuckDB concurrency](https://duckdb.org/docs/stable/connect/concurrency)
 
-## Models and tool disclosure
-
-- [LangChain prebuilt middleware](https://docs.langchain.com/oss/python/langchain/middleware/built-in)
-- [OpenAI tool search](https://developers.openai.com/api/docs/guides/tools-tool-search)
-- [OpenAI tools overview](https://developers.openai.com/api/docs/guides/tools)
-- [Anthropic tool search](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
-- [Anthropic tool reference](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-reference)
-
-LangChain documents `ProviderToolSearchMiddleware` for supported Anthropic and OpenAI models and
-`LLMToolSelectorMiddleware` as the portable model-based filter. The provider docs define the actual
-deferred-loading contracts. Keep the repository capability registry narrower than or equal to those
-current contracts.
+The loop sends every provider the Chat Completions shape and replays `reasoning_details` unchanged
+after tool results, which Gemini and Claude require to continue reasoning. Check a provider's
+compatibility page before relying on a feature beyond tool calling and text.
 
 ## Pipeboard
 
@@ -44,7 +39,6 @@ catalog establishes the exact tools and annotations available to a configured us
 - [Slack Bolt for Python Socket Mode](https://docs.slack.dev/tools/bolt-python/concepts/socket-mode/)
 - [Slack Block Kit](https://docs.slack.dev/block-kit/)
 - [Slack request verification](https://docs.slack.dev/authentication/verifying-requests-from-slack/)
-- [LangChain Agent Chat UI](https://docs.langchain.com/oss/python/langchain/ui)
 
 Socket Mode removes the need for a public event URL but is not eligible for the public Slack
 Marketplace. Signed HTTP events are the hosted alternative. Block Kit content must include an

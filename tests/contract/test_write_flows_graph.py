@@ -1,4 +1,4 @@
-"""Approval, mutation, and readback contracts through the real graph."""
+"""Approval, mutation, and readback contracts through the real agent loop."""
 
 from __future__ import annotations
 
@@ -10,8 +10,6 @@ from queue import Queue
 from threading import Barrier
 
 import pytest
-from langchain_core.messages import AIMessage, ToolMessage
-from langgraph.checkpoint.memory import InMemorySaver
 
 from paid_media_agent.config import Settings
 from paid_media_agent.domain.common import JsonValue
@@ -21,6 +19,7 @@ from paid_media_agent.domain.proposals import (
     ProposalState,
     WriteReceipt,
 )
+from paid_media_agent.harness.messages import AssistantMessage, Conversation, ToolMessage
 from paid_media_agent.tools.catalog import CatalogEntry, RawTool, build_authorized_catalog
 from paid_media_agent.tools.fixtures import (
     FIXTURE_LOCAL_POLICY,
@@ -43,13 +42,13 @@ from tests.contract.helpers import (
 WRITE_STEPS = [propose_step(), execute_step, final_step]
 
 
-def _receipt_text(state: dict) -> str:  # type: ignore[type-arg]
-    return str(state["messages"][-1].content)
+def _receipt_text(conversation: Conversation) -> str:
+    return conversation.messages[-1].content
 
 
-def _last_tool(state: dict) -> dict:  # type: ignore[type-arg]
+def _last_tool(conversation: Conversation) -> dict:  # type: ignore[type-arg]
     return json.loads(
-        next(m for m in reversed(state["messages"]) if isinstance(m, ToolMessage)).content
+        next(m for m in reversed(conversation.messages) if isinstance(m, ToolMessage)).content
     )
 
 
@@ -60,14 +59,16 @@ async def test_happy_path_interrupts_then_verifies(settings: Settings, project_r
         settings, project_root, WRITE_STEPS, fixture_state=state, write_provider=provider
     )
     cfg = config()
-    await run_until_interrupt(runtime, cfg)
-    snapshot = runtime.graph.get_state(cfg)
-    assert snapshot.interrupts, "execute_change must pause for human review"
-    request = snapshot.interrupts[0].value
-    assert request["action_requests"][0]["name"] == "execute_change"
-    assert request["review_configs"][0]["allowed_decisions"] == ["approve", "reject"]
+    paused = await run_until_interrupt(runtime, cfg)
+    assert paused.awaiting_approval, "execute_change must pause for human review"
+    assert [call.name for call in paused.pending] == ["execute_change"]
+    assert runtime.agent.conversation(cfg.thread_id).pending == paused.pending, "pause is persisted"
     service = runtime.components.proposal_service
     record = service.proposals.list_for_thread("t-1")[0]
+    assert paused.pending[0].args == {
+        "proposal_id": str(record.changeset.proposal_id),
+        "revision": record.changeset.revision,
+    }
     assert record.state is ProposalState.AWAITING_APPROVAL
     assert record.changeset.before[0].value == 300.0 and record.changeset.after[0].value == 240
     assert provider.mutation_calls == [], "nothing executes before approval"
@@ -86,7 +87,7 @@ async def test_happy_path_interrupts_then_verifies(settings: Settings, project_r
 async def test_resume_by_an_approver_records_the_claim_and_executes(
     settings: Settings, project_root: Path
 ) -> None:
-    """A card approval resumes the graph without a host-made claim; the acting approver's
+    """A card approval resumes the loop without a host-made claim; the acting approver's
     decision is recorded as the claim for the presented revision."""
     state = FixtureState()
     provider = FakeWriteProvider(state)
@@ -282,14 +283,12 @@ async def test_foreign_account_and_bad_target_cannot_be_proposed(
         propose_step(target_ref="m-201"),  # target from another account
         propose_step(changes={"daily_budget": 240, "status": "PAUSED"}),  # field outside policy
         propose_step(tool_name="google_ads__delete_campaign"),
-        lambda _m: AIMessage(content="end"),
+        lambda _m: AssistantMessage(content="end"),
     ]
     runtime, _ = build_runtime(settings, project_root, steps, write_provider=provider)
-    state = await runtime.graph.ainvoke(
-        {"messages": [{"role": "user", "content": "go"}]}, config=config()
-    )
+    conversation = await run_until_interrupt(runtime, config(), "go")
     reasons = [
-        json.loads(m.content)["reason"] for m in state["messages"] if isinstance(m, ToolMessage)
+        json.loads(m.content)["reason"] for m in conversation.messages if isinstance(m, ToolMessage)
     ]
     assert reasons == [
         "platform_scope",
@@ -410,12 +409,11 @@ async def test_readback_timeout_is_unknown_without_retrying_mutation(
     assert len(provider.mutation_calls) == 1
 
 
-async def test_process_recovery_resumes_from_checkpoint_with_new_graph(
+async def test_process_recovery_resumes_persisted_pause_with_new_agent(
     settings: Settings, project_root: Path
 ) -> None:
     state = FixtureState()
     provider = FakeWriteProvider(state)
-    checkpointer = InMemorySaver()
     from paid_media_agent.runtime.profiles import fixture_profile
     from paid_media_agent.tools.catalog import StaticCatalogProvider
     from paid_media_agent.tools.fixtures import build_fixture_catalog
@@ -437,12 +435,11 @@ async def test_process_recovery_resumes_from_checkpoint_with_new_graph(
         catalog=catalog,
         catalog_provider=catalog_provider,
         profile=profile,
-        checkpointer=checkpointer,
     )
     cfg = config()
     await run_until_interrupt(runtime, cfg)
     record = runtime.components.proposal_service.proposals.list_for_thread("t-1")[0]
-    # "Restart": a brand-new graph and model over the same checkpointer and persisted repositories.
+    # "Restart": a brand-new agent and model over the same state store and repositories.
     restarted, _ = build_runtime(
         settings,
         project_root,
@@ -450,9 +447,9 @@ async def test_process_recovery_resumes_from_checkpoint_with_new_graph(
         catalog=catalog,
         catalog_provider=catalog_provider,
         profile=profile,
-        checkpointer=checkpointer,
     )
-    assert restarted.graph.get_state(cfg).interrupts
+    assert restarted.agent is not runtime.agent
+    assert restarted.agent.conversation(cfg.thread_id).awaiting_approval
     restarted.components.proposal_service.approve(
         record.changeset.proposal_id, approver_ref="reviewer-1"
     )
@@ -472,7 +469,7 @@ async def test_reject_decision_leaves_provider_untouched(
     record = service.proposals.list_for_thread("t-1")[0]
     service.reject(record.changeset.proposal_id, actor_ref="reviewer-1", message="not now")
     final = await resume(runtime, cfg, decision="reject")
-    tool_message = next(m for m in reversed(final["messages"]) if isinstance(m, ToolMessage))
+    tool_message = next(m for m in reversed(final.messages) if isinstance(m, ToolMessage))
     assert tool_message.status == "error" and "rejected" in tool_message.content
     assert service.get(record.changeset.proposal_id).state is ProposalState.REJECTED  # type: ignore[union-attr]
     assert provider.mutation_calls == []

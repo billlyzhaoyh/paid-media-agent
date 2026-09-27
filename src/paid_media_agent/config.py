@@ -28,16 +28,9 @@ class ModelConfig(BaseModel):
     provider: str
     model: str
     base_url: AnyHttpUrl | None = None
-    tool_selector_model: str | None = None
 
     @classmethod
-    def parse(
-        cls,
-        spec: str,
-        *,
-        base_url: str | None = None,
-        tool_selector_model: str | None = None,
-    ) -> ModelConfig:
+    def parse(cls, spec: str, *, base_url: str | None = None) -> ModelConfig:
         """Parse a provider:model specification."""
         raw = spec.strip()
         provider, sep, model = raw.partition(":")
@@ -47,7 +40,6 @@ class ModelConfig(BaseModel):
             provider=provider.strip().lower(),
             model=model.strip(),
             base_url=AnyHttpUrl(base_url) if base_url else None,
-            tool_selector_model=tool_selector_model or None,
         )
 
     @property
@@ -110,11 +102,12 @@ class Settings(BaseSettings):
 
     paid_media_model: str = DEFAULT_MODEL_SPEC
     paid_media_model_base_url: str | None = None
-    paid_media_tool_selector_model: str | None = None
     paid_media_model_api_key_env: str | None = None
     """Env var holding the model API key when the provider does not read its default one."""
     paid_media_model_timeout_seconds: int = Field(default=120, ge=10)
-    """Per-request model timeout. A stalled gateway call otherwise blocks a run indefinitely."""
+    """Per-request model timeout. A stalled provider call otherwise blocks a run indefinitely."""
+    paid_media_model_zero_data_retention: bool = False
+    """Ask OpenRouter to route only to endpoints with a zero-data-retention policy."""
     paid_media_max_model_calls: int = Field(default=40, ge=5)
     """Model calls per run before the agent stops and reports; bounds runaway tool loops."""
     paid_media_runtime: RuntimeName = "local"
@@ -130,6 +123,7 @@ class Settings(BaseSettings):
     out; tests pin it to the shipped dates. Set it only when reproducing a specific window."""
     paid_media_account_config_path: Path = Path("config/accounts.example.toml")
     paid_media_max_selected_tools: int = Field(default=6, ge=1, le=40)
+    """Platform read tools bound at once; discover_tools replaces the oldest beyond this."""
     paid_media_result_offload_chars: int = Field(default=6000, ge=500)
 
     pipeboard_api_token: SecretStr | None = None
@@ -173,7 +167,6 @@ class Settings(BaseSettings):
     @field_validator(
         "paid_media_fixture_anchor",
         "paid_media_model_base_url",
-        "paid_media_tool_selector_model",
         "paid_media_model_api_key_env",
         "paid_media_live_write_catalog_revision",
         mode="before",
@@ -205,11 +198,7 @@ class Settings(BaseSettings):
         return value
 
     def model_settings(self) -> ModelConfig:
-        return ModelConfig.parse(
-            self.paid_media_model,
-            base_url=self.paid_media_model_base_url,
-            tool_selector_model=self.paid_media_tool_selector_model,
-        )
+        return ModelConfig.parse(self.paid_media_model, base_url=self.paid_media_model_base_url)
 
     def live_write_canary_tools(self) -> frozenset[str]:
         return frozenset(

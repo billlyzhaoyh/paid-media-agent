@@ -52,15 +52,16 @@ and `SLACK_TRANSPORT=socket_mode`, the same process connects Slack in Socket Mod
 `uv run paid-media-agent slack` is an alias of `serve`.
 
 State lives in one DuckDB file, `PAID_MEDIA_STATE_PATH` (default `workspace/state/pma.duckdb`):
-proposals, approval claims, receipts, Slack dedupe keys, and thread ownership. DuckDB lets a single
+conversations, changes paused for approval, proposals, approval claims, receipts, Slack dedupe
+keys, and thread ownership. DuckDB lets a single
 process hold the file for writing, and while it does no other process can open it, even read-only.
 That is why the API and Slack run in one process and Docker runs one container. A second process
 that needs the file reports that `serve` is running; stop it or use its API.
 `uv run paid-media-agent test state` opens the file and applies migrations.
 
-Conversation checkpoints are still process memory. Proposals and receipts survive a restart, but
-a conversation paused for approval does not: approving it afterwards returns 409
-`conversation_expired`, and the change must be proposed again. Nothing executes in that case.
+A change paused for approval survives a restart: approve it afterwards and it runs once. If the
+conversation moves on before a decision, the paused call is abandoned; approving it then returns
+409 `conversation_expired` and nothing executes.
 
 Follow [Self-hosting](docs/self-hosting.md) for API credentials, Slack tokens, Docker, and hosting.
 Install the `self-host`, `slack`, and `reports` extras, or use the Docker image, which includes
@@ -92,13 +93,24 @@ Do not infer a connection from a saved key. Check the catalog and one real read 
 
 ## Models
 
-`PAID_MEDIA_MODEL` accepts `provider:model`. Anthropic and OpenAI ship with the base install.
-Other providers have optional extras:
-`google`, `groq`, `xai`, `mistral`, and `deepseek`.
+`PAID_MEDIA_MODEL` accepts `provider:model`. Every provider is reached through its OpenAI-compatible
+Chat Completions endpoint, so none needs an extra package:
 
-For an OpenAI-compatible endpoint, set `PAID_MEDIA_MODEL_BASE_URL` and
-`PAID_MEDIA_MODEL_API_KEY_ENV` to the name of its key environment variable. Native tool search is
-used only for verified models and endpoints; other models use the portable tool selector.
+| Provider | Example | Key |
+| --- | --- | --- |
+| `anthropic` | `anthropic:claude-sonnet-4-6` | `ANTHROPIC_API_KEY` |
+| `openai` | `openai:gpt-5.4-mini` | `OPENAI_API_KEY` |
+| `google_genai` | `google_genai:gemini-3.8-flash` | `GOOGLE_API_KEY` |
+| `openrouter` | `openrouter:anthropic/claude-haiku-4.5` | `OPENROUTER_API_KEY` |
+| `groq`, `xai`, `deepseek`, `mistralai`, `moonshot`, `zhipu` | `groq:<model>` | the provider's key |
+
+For any other OpenAI-compatible endpoint, set `PAID_MEDIA_MODEL_BASE_URL` and
+`PAID_MEDIA_MODEL_API_KEY_ENV` to the name of its key environment variable. With OpenRouter,
+`PAID_MEDIA_MODEL_ZERO_DATA_RETENTION=true` routes only to endpoints that do not retain prompts.
+
+Reasoning models return reasoning blocks with each tool call; the loop stores them with the
+conversation and sends them back unchanged. Platform tools are bound to the model only after
+`discover_tools` finds them, at most `PAID_MEDIA_MAX_SELECTED_TOOLS` at a time.
 
 ## Writes
 

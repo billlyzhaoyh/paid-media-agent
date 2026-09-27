@@ -125,7 +125,7 @@ def test_status_and_routes_reflect_configuration(
     routes = {r.id: r for r in build_routes(result.detail)}
     assert {s.id: s.status for s in routes["local"].steps}["model"] == "done"
     assert {s.id: s.status for s in routes["pipeboard"].steps}["pb_test"] == "todo"
-    assert result.detail["model"]["selection"] == "provider_native"
+    assert result.detail["model"]["selection"] == "discover_tools"
     assert "sk-ant-" not in actions.as_json(result)
 
 
@@ -176,9 +176,10 @@ def test_fixture_discovery_and_alias_mapping_switch_the_active_file(
 
 def test_live_discovery_parses_listing_tools(workspace: Path) -> None:
     write_env(workspace, {"PIPEBOARD_API_TOKEN": "pb_" + "d" * 20})
-    from langchain_core.tools import StructuredTool
+    from typing import Any
 
     from paid_media_agent.tools.catalog import RawTool, build_authorized_catalog
+    from paid_media_agent.tools.pipeboard import McpResult, ToolAddress
 
     raw = [
         RawTool(
@@ -197,25 +198,9 @@ def test_live_discovery_parses_listing_tools(workspace: Path) -> None:
         ),
     ]
 
-    async def google(**kwargs: object) -> str:
-        return '{"customers": [{"customer_id": "111-222", "descriptive_name": "Acme Search", "currency_code": "USD", "time_zone": "America/Chicago"}]}'
-
-    async def meta(**kwargs: object) -> str:
-        return '{"data": [{"id": "act_999", "name": "Acme Social", "currency": "EUR"}]}'
-
-    tools = {
-        "google_ads__list_google_ads_customers": StructuredTool(
-            name="list_google_ads_customers",
-            description="d",
-            args_schema={"type": "object", "properties": {}},
-            coroutine=google,
-        ),
-        "meta_ads__get_ad_accounts": StructuredTool(
-            name="get_ad_accounts",
-            description="d",
-            args_schema={"type": "object", "properties": {}},
-            coroutine=meta,
-        ),
+    responses = {
+        "google_ads__list_google_ads_customers": '{"customers": [{"customer_id": "111-222", "descriptive_name": "Acme Search", "currency_code": "USD", "time_zone": "America/Chicago"}]}',
+        "meta_ads__get_ad_accounts": '{"data": [{"id": "act_999", "name": "Acme Social", "currency": "EUR"}]}',
     }
     # New Pipeboard platforms use advertiser ids, nested ad accounts, and GA4 properties.
     additional = [
@@ -250,21 +235,25 @@ def test_live_discovery_parses_listing_tools(workspace: Path) -> None:
                 annotations={"readOnlyHint": True},
             )
         )
-
-        async def listing(response: str = payload) -> str:
-            return response
-
-        tools[f"{platform}__{name}"] = StructuredTool(
-            name=name,
-            description="List",
-            args_schema={"type": "object", "properties": {}},
-            coroutine=listing,
-        )
+        responses[f"{platform}__{name}"] = payload
     catalog = build_authorized_catalog(raw, source="pipeboard")
+    called: list[tuple[str, str, dict[str, Any]]] = []
+
+    class Client:
+        async def call_tool(self, url: str, name: str, arguments: dict[str, Any]) -> McpResult:
+            called.append((url, name, arguments))
+            return McpResult(is_error=False, structured=None, text=responses[url])
 
     class Loader:
-        def langchain_tool(self, name: str) -> StructuredTool | None:
-            return tools.get(name)
+        client = Client()
+
+        def address(self, qualified: str) -> ToolAddress | None:
+            # The fake routes by URL, so the qualified name doubles as the endpoint.
+            return (
+                ToolAddress(qualified, qualified.split("__", 1)[1])
+                if qualified in responses
+                else None
+            )
 
     result = actions.accounts_discover(
         workspace, loader=lambda _s, _r: actions.LiveCatalog(catalog=catalog, loader=Loader())
@@ -279,6 +268,8 @@ def test_live_discovery_parses_listing_tools(workspace: Path) -> None:
     assert {"tt-1", "pin-1", "snap-1", "123"} <= rows.keys()
     assert rows["123"]["name"] == "Website"
     assert "parent-account" not in rows and "org-1" not in rows
+    assert sorted(c[0] for c in called) == sorted(responses), "each listing tool is called once"
+    assert all(args == {} for _, _, args in called)
 
 
 def test_pipeboard_connection_accepts_a_subset_of_platforms(workspace: Path) -> None:
@@ -392,10 +383,12 @@ def test_slack_test_never_leaks_and_uses_an_injected_client(workspace: Path) -> 
 def test_state_test_opens_the_duckdb_file_and_reports_a_busy_one(
     workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from paid_media_agent.store.migrations import MIGRATIONS
+
     monkeypatch.delenv("PAID_MEDIA_STATE_PATH", raising=False)
     path = workspace / "workspace" / "state" / "pma.duckdb"
     result = actions.state_test(workspace)
-    assert result.ok and result.detail == {"path": str(path), "migrations": 1}
+    assert result.ok and result.detail == {"path": str(path), "migrations": len(MIGRATIONS)}
     assert path.is_file(), "opening the store creates the file"
     assert actions.state_test(workspace).ok, "the probe releases the file"
     routes = {r.id: r for r in build_routes(actions.status(workspace).detail)}
@@ -455,8 +448,8 @@ def test_custom_provider_keys_and_key_env(workspace: Path, monkeypatch: pytest.M
     result = actions.status(workspace)
     assert result.detail["model_key_env"] == "MOONSHOT_API_KEY"
     assert result.detail["model_key_set"] is True
-    assert result.detail["model"]["selection"] == "portable_selector", (
-        "proxy base URL disables native search"
+    assert result.detail["model"]["selection"] == "discover_tools", (
+        "every provider and base URL uses the same selection"
     )
     presets = {p["id"]: p for p in result.detail["model_presets"]}
     assert [p for p, preset in presets.items() if preset.get("recommended")] == ["anthropic"]
@@ -486,7 +479,7 @@ def test_ask_runs_the_configured_profile_with_an_injected_model(workspace: Path)
     )
     assert result.ok, result.summary
     assert "Comparison window" in result.detail["answer"]
-    assert result.detail["selection"] == "none"
+    assert result.detail["selection"] == "discover_tools"
     assert actions.ask_question(workspace, "   ").status == "fail"
 
 
@@ -503,17 +496,16 @@ def test_blank_env_values_clear_console_exports_but_not_shell_values(
     apply_env_file(workspace)
     assert "PAID_MEDIA_MODEL_BASE_URL" not in os.environ, "console-exported value is cleared"
     assert os.environ["ANTHROPIC_API_KEY"] == "from-shell", "shell values survive blank .env lines"
-    assert actions.status(workspace).detail["model"]["selection"] == "provider_native"
+    assert actions.status(workspace).detail["model"]["selection"] == "discover_tools"
 
 
 def test_ask_reports_model_failures_as_failures(workspace: Path) -> None:
-    from langchain_core.messages import AIMessage
-
+    from paid_media_agent.harness.messages import AssistantMessage
     from paid_media_agent.testing.scripted_model import ScriptedChatModel
 
     write_env(workspace, {"PAID_MEDIA_MODEL": "scripted:demo"})
     broken = ScriptedChatModel(
-        steps=[lambda _m: AIMessage(content="Model call failed after 3 attempts with X")]
+        steps=[lambda _m: AssistantMessage(content="Model call failed after 3 attempts with X")]
     )
     result = actions.ask_question(workspace, "hello", model=broken)
     assert result.status == "fail" and "Model call failed" in result.summary

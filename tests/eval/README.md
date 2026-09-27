@@ -1,13 +1,13 @@
 # Question eval
 
-Fifteen business questions with expectations, run against a live agent server on the synthetic
-fixtures and graded against ground truth computed from the same fixtures. Not part of `pytest`;
-it needs a model.
+Fifteen business questions with expectations, run through the agent loop in-process on the
+synthetic fixtures with your configured model, and graded against ground truth computed from the
+same fixtures. Not part of `pytest`; it needs a model key.
 
 ```bash
-uv run langgraph dev --no-browser --port 2025          # or any server exposing the graph
-uv run python tests/eval/run_questions.py http://127.0.0.1:2025 results.jsonl
-uv run python tests/eval/grade.py results.jsonl        # numeric checks + a review table
+PAID_MEDIA_MODEL=openrouter:anthropic/claude-haiku-4.5 \
+  uv run python tests/eval/run_questions.py results.jsonl      # optional: question ids to run
+uv run python tests/eval/grade.py results.jsonl                # numeric checks + a review table
 ```
 
 `grade.py` verifies the figures that have a deterministic answer (spend, CPA per window) and

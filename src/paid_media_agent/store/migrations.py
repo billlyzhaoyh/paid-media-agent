@@ -41,7 +41,39 @@ CREATE TABLE threads (
 );
 """
 
-MIGRATIONS: tuple[tuple[str, str], ...] = (("0001_operational", OPERATIONAL),)
+CONVERSATIONS = """
+CREATE TABLE messages (
+    thread_id VARCHAR NOT NULL,
+    seq INTEGER NOT NULL,
+    role VARCHAR NOT NULL,
+    content VARCHAR NOT NULL,
+    tool_calls JSON,
+    tool_call_id VARCHAR,
+    tool_name VARCHAR,
+    status VARCHAR,
+    provider_state JSON,
+    created_at TIMESTAMP NOT NULL,
+    PRIMARY KEY (thread_id, seq)
+);
+CREATE TABLE pending_tool_calls (
+    thread_id VARCHAR NOT NULL,
+    tool_call_id VARCHAR NOT NULL,
+    tool_name VARCHAR NOT NULL,
+    args JSON NOT NULL,
+    created_at TIMESTAMP NOT NULL,
+    PRIMARY KEY (thread_id, tool_call_id)
+);
+CREATE TABLE thread_tools (
+    thread_id VARCHAR PRIMARY KEY,
+    activated JSON NOT NULL,
+    updated_at TIMESTAMP NOT NULL
+);
+"""
+
+MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ("0001_operational", OPERATIONAL),
+    ("0002_conversations", CONVERSATIONS),
+)
 
 
 def apply_migrations(conn: duckdb.DuckDBPyConnection) -> None:

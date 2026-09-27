@@ -9,12 +9,12 @@ from datetime import date
 from typing import Any
 
 import jsonschema
-from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, ConfigDict
 
 from paid_media_agent.config import AccountRegistry
 from paid_media_agent.domain.common import DataQualityFlag, EntityType, JsonValue, Platform
-from paid_media_agent.middleware.redaction import sanitize_exception
+from paid_media_agent.harness.tools import ToolContext, ToolSpec
+from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.tools.artifacts import ArtifactStore
 from paid_media_agent.tools.catalog import (
     AuthorizedToolCatalog,
@@ -346,46 +346,40 @@ def _bounded_preview(payload: dict[str, JsonValue], limit: int = 1200) -> dict[s
 
 def build_platform_read_tools(
     catalog: AuthorizedToolCatalog, dispatcher: ReadDispatcher
-) -> list[BaseTool]:
+) -> list[ToolSpec]:
     """One model-facing tool per authorized read entry. Mutation entries are never bound."""
     aliases_by_platform = {
         platform: dispatcher.accounts.aliases(platform)
         for platform in {e.platform for e in catalog.entries}
     }
-    tools: list[BaseTool] = []
-    for entry in catalog.read_entries():
-        tools.append(
-            _make_read_tool(entry, aliases_by_platform.get(entry.platform, ()), dispatcher)
-        )
-    return tools
+    return [
+        _make_read_tool(entry, aliases_by_platform.get(entry.platform, ()), dispatcher)
+        for entry in catalog.read_entries()
+    ]
 
 
 def _make_read_tool(
     entry: CatalogEntry, aliases: Sequence[str], dispatcher: ReadDispatcher
-) -> BaseTool:
+) -> ToolSpec:
     schema_hash = entry.schema_hash
     name = entry.qualified_name
 
-    async def _run(**kwargs: Any) -> str:
+    async def _run(kwargs: dict[str, Any], _context: ToolContext) -> str:
         try:
             result = await dispatcher.execute(name, kwargs, selection_schema_hash=schema_hash)
         except ReadDenied as exc:
             return json.dumps({"denied": True, "reason": exc.reason, "detail": exc.detail})
+        except ProviderTimeout:
+            raise  # the dispatcher retries an idempotent read once
         except ProviderError as exc:
             return json.dumps({"error": True, "detail": sanitize_exception(exc)})
         return result.model_dump_json()
 
     description = f"[{entry.platform.value}] {entry.description}".strip()
-    return StructuredTool(
+    return ToolSpec(
         name=name,
         description=description[:1024],
-        args_schema=model_facing_schema(entry, aliases),
-        coroutine=_run,
-        metadata={
-            "paid_media": {
-                "platform": entry.platform.value,
-                "schema_hash": schema_hash,
-                "class": "read",
-            }
-        },
+        parameters=model_facing_schema(entry, aliases),
+        handler=_run,
+        kind="read",
     )

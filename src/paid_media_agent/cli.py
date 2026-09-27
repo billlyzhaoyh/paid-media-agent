@@ -16,7 +16,7 @@ import click
 from paid_media_agent.admin import actions
 from paid_media_agent.config import Settings, project_root
 from paid_media_agent.domain.common import Platform
-from paid_media_agent.middleware.redaction import sanitize_exception
+from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.testing.demo_script import run_demo
 
 
@@ -42,9 +42,8 @@ def _emit(result: actions.ActionResult, as_json: bool) -> None:
 def main() -> None:
     """Paid Media Agent command line.
 
-    Every command sees the project `.env` the same way `langgraph dev` and the managed build do:
-    allowlisted values are exported into this process before the command runs, so provider SDKs
-    that read their key from the environment work without a manual `export`.
+    Every command sees the project `.env` the same way: allowlisted values are exported into this
+    process before the command runs, so model and provider keys work without a manual `export`.
     """
     from paid_media_agent.admin.envfile import apply_env_file
 

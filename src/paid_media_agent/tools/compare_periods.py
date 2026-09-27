@@ -6,13 +6,13 @@ import json
 from datetime import date
 from typing import Any
 
-from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
 from paid_media_agent.domain.analysis import ANALYSIS_SCHEMA_VERSION, PlatformComparison
 from paid_media_agent.domain.common import DataQualityFlag, EntityType, Platform
 from paid_media_agent.domain.metrics import MetricWindow
-from paid_media_agent.middleware.redaction import sanitize_exception
+from paid_media_agent.harness.tools import ToolContext, ToolSpec, parameters_for
+from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.tools.artifacts import ArtifactError, ArtifactStore
 from paid_media_agent.tools.compute import (
     ComputeError,
@@ -124,21 +124,21 @@ def run_compare_periods(artifacts: ArtifactStore, args: ComparePeriodsArgs) -> d
     return summary.model_dump(mode="json")
 
 
-def build_compare_periods_tool(artifacts: ArtifactStore) -> BaseTool:
-    def _run(**kwargs: Any) -> str:
+def build_compare_periods_tool(artifacts: ArtifactStore) -> ToolSpec:
+    def _run(kwargs: dict[str, Any], _context: ToolContext) -> str:
         try:
             args = ComparePeriodsArgs.model_validate(kwargs)
             return json.dumps(run_compare_periods(artifacts, args))
         except (ComputeError, ArtifactError, NormalizationError, ValueError) as exc:
             return json.dumps({"error": True, "detail": sanitize_exception(exc)})
 
-    return StructuredTool(
+    return ToolSpec(
         name=COMPARE_PERIODS_TOOL,
         description=(
             "Deterministically compare a current window with a previous window of equal length across "
             "performance_rows artifacts. Returns a compact summary with an analysis artifact id. "
             "Missing metrics stay missing; a cross-platform total appears only when sources are compatible."
         ),
-        args_schema=ComparePeriodsArgs,
-        func=_run,
+        parameters=parameters_for(ComparePeriodsArgs),
+        handler=_run,
     )

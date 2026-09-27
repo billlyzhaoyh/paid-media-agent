@@ -42,7 +42,7 @@ def create_app(runtime: Any) -> Any:
     settings = runtime.settings
     token_map = settings.api_token_map()
     runner = AgentRunner(
-        graph=runtime.graph,
+        agent=runtime.agent,
         service=runtime.components.proposal_service,
         receipts=runtime.profile.receipts,
         threads=runtime.threads,
@@ -84,7 +84,7 @@ def create_app(runtime: Any) -> Any:
             "persistence": runtime.persistence,
             "catalog_revision": runtime.catalog.revision,
             "catalog_source": runtime.catalog.source,
-            "selection": runtime.components.metadata.selection.strategy.value,
+            "selection": runtime.components.metadata.selection,
             "writes_enabled": settings.paid_media_writes_enabled,
         }
 

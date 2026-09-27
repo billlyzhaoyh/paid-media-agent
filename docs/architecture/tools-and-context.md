@@ -16,15 +16,14 @@ Setup actions load a fresh live catalog even when the runtime is currently using
 Account discovery calls independent listing tools concurrently and recognizes ad accounts, TikTok
 advertisers, and GA4 properties. Fixture coverage remains Google, Meta, and Reddit.
 
-## Selection paths
+## Tool disclosure
 
-`ProviderToolSearchMiddleware` is enabled only by an explicit compatible-model registry. The portable
-path uses `LLMToolSelectorMiddleware` with bounded output. Selection tests compare both paths against
-the same authorized catalog.
-
-Do not create a third custom search/run mini-protocol unless measured framework behavior cannot meet
-the authorization and context budgets. One catalog and two framework-supported disclosure paths are
-enough.
+Core, write, and file tools are bound to every model call. Platform read tools are bound only after
+`discover_tools` finds them: its catalog search activates the matching tools for the thread, at most
+`PAID_MEDIA_MAX_SELECTED_TOOLS` at a time, dropping the oldest. Activation only decides which
+schemas the model sees. Authorization is separate: any authorized read can be called, and nothing
+outside the authorized catalog can be, whatever the model names. The same path works for every
+model provider; there is no provider-specific tool search.
 
 ## Results
 
@@ -47,8 +46,11 @@ unbounded provider payloads.
 ## Filesystem
 
 The runtime may read wiki and skill files, write analysis artifacts, and render reports. It cannot
-read secret files, coding-agent files, original business sources, or paths outside its configured
-filesystem root. Runtime skills, including curated company context, are read-only.
+read secret files, coding-agent files, original business sources, the state file, or paths outside
+the project. Runtime skills, including curated company context, are read-only. `harness/files.py`
+checks each path as written and after resolving links, and search never descends into denied or
+hidden directories. The system prompt lists each skill's name and description; the model reads a
+skill's `SKILL.md` and linked pages only when it needs them.
 
 ## Trusted tool boundary
 
@@ -57,18 +59,16 @@ filesystem root. Runtime skills, including curated company context, are read-onl
   `destructive_hint`, `no_account_scope`, `mutation_not_admitted`, `duplicate_tool_name`.
 - The revision is a hash over qualified name, schema hash, class, reason, and description. A schema
   change on one tool changes both its `schema_hash` and the catalog revision.
-- `tools/reads.py` binds one model-facing tool per READ entry. The provider account argument is
+- `tools/reads.py` builds one model-facing tool per READ entry. The provider account argument is
   replaced by `account_alias`; the host injects the provider id and rejects any raw id in arguments.
-  Arguments are validated with `jsonschema` against the current schema at call time because
-  LangChain does not validate dict-form schemas.
-- `middleware/authorization.py` hides `task`, `execute`, and `delete` from the model request and
-  denies any call outside the assembled surface, so a hallucinated or stale name fails closed.
-- `middleware/tool_selection.py` holds the exact-match capability registry. `PortableToolSelectorMiddleware`
-  wraps `LLMToolSelectorMiddleware`; a selection that names an unbound tool degrades to core tools
-  for that turn instead of aborting the run.
-- Live Pipeboard loading (`tools/pipeboard.py`) keeps the bearer token inside the MCP connection map
-  and never in state. Tool annotations arrive as LangChain tool metadata; a tool without
-  `readOnlyHint` is treated as mutation and denied.
+- `harness/tools.py` is the single path every call takes. `ToolDispatcher` denies any name outside
+  the assembled tools, denies direct calls to non-read catalog entries, and validates arguments
+  with `jsonschema` against the schema the model saw, so a hallucinated or stale call fails closed.
+  It then runs the tool, retries an idempotent read once after a provider timeout, offloads
+  oversized results to artifacts, redacts secrets, and turns any exception into an error result.
+- Live Pipeboard loading (`tools/pipeboard.py`) uses the MCP SDK's Streamable HTTP client with one
+  short session per request. The bearer token lives only in that client's HTTP headers, never in
+  state. A tool without `readOnlyHint` in its MCP annotations is treated as a mutation and denied.
 
 ## Direct adapters
 

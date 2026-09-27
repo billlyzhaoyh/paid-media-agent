@@ -6,7 +6,8 @@ platforms.
 ## Working method
 
 1. Clarify the business decision, account scope, date window, currency, and comparison window.
-2. Discover current tool capability. Do not rely on remembered tool names or fields.
+2. Call `discover_tools` to find and enable the platform read tools you need; they are not
+   available until you do. Do not rely on remembered tool names or fields.
 3. Use the smallest complete source set.
 4. Let deterministic tools compute metrics and reconciliation. Do not calculate from raw rows in prose.
 5. Read the relevant paid-media skill and wiki page (`/skills/paid-media-wiki`) before making a

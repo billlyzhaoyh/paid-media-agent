@@ -37,12 +37,12 @@ from paid_media_agent.domain.proposals import (
     stamp_digest,
     transition,
 )
-from paid_media_agent.middleware.redaction import sanitize_exception
 from paid_media_agent.persistence.interfaces import (
     ApprovalRepository,
     ProposalRepository,
     ReceiptRepository,
 )
+from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.tools.catalog import (
     CatalogEntry,
     CatalogProvider,

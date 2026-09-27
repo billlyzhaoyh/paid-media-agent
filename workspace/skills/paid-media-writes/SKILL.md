@@ -18,7 +18,7 @@ conversion, audience, or another provider resource.
    changed fields, the reason, a measurement plan, and a reversal plan. The host reads the current
    value, derives risk flags, builds the typed proposal, and persists it. Nothing executes.
 6. In one reply: write the proposal fields and risk flags exactly as returned as your message text,
-   and call `execute_change` with the proposal id and revision in that same message. The runtime interrupts and
+   and call `execute_change` with the proposal id and revision in that same message. The runtime pauses and
    shows a generic approve or reject card under your text, so the text is the reviewer's evidence.
    Do not ask for approval in prose and do not wait for a chat reply first.
    Only the runtime approval action authorizes execution; chat text does not.

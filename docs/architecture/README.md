@@ -16,8 +16,8 @@ code; surfaces only translate inputs and presentation.
 1. One shared agent assembly.
 2. Direct model providers, no required model gateway.
 3. Deny-by-default host-side tool authorization.
-4. Provider-native deferred search only for verified OpenAI and Anthropic support.
-5. Portable LLM tool selection for other models.
+4. One model adapter and one tool-disclosure path for every provider.
+5. The project owns its agent loop; state, including paused approvals, lives in its database.
 6. Model judgment, deterministic computation.
 7. Read-only tools direct; mutations behind exact approval.
 8. Account identity and credentials remain host-owned.

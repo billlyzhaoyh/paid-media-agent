@@ -5,7 +5,7 @@ process and use the same proposal service, approval policy, and DuckDB state.
 
 ## Slack
 
-The agent summarizes a proposed action before `execute_change` interrupts for approval.
+The agent summarizes a proposed action before `execute_change` pauses for approval.
 
 One async Bolt app serves Socket Mode and signed HTTP. Bolt verifies requests
 and acknowledges events before starting the run. `SlackDelivery` sends assistant Markdown and

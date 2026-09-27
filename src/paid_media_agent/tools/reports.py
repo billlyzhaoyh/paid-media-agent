@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field, ValidationError
 
 from paid_media_agent.domain.analysis import PeriodComparison
 from paid_media_agent.domain.reports import NARRATIVE_MAX, Recommendation
-from paid_media_agent.middleware.redaction import sanitize_exception
+from paid_media_agent.harness.tools import ToolContext, ToolSpec, parameters_for
+from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.reports.bridge import ArtifactBridge, BridgeError
 from paid_media_agent.reports.render import (
     PdfEngine,
@@ -78,20 +78,20 @@ def run_render_report(
 
 def build_render_report_tool(
     artifacts: ArtifactStore, *, pdf_engine: PdfEngine | None = None
-) -> BaseTool:
-    def _run(**kwargs: Any) -> str:
+) -> ToolSpec:
+    def _run(kwargs: dict[str, Any], _context: ToolContext) -> str:
         try:
             args = RenderReportArgs.model_validate(kwargs)
             return json.dumps(run_render_report(artifacts, args, pdf_engine=pdf_engine))
         except (ArtifactError, BridgeError, ValidationError, ValueError) as exc:
             return json.dumps({"error": True, "detail": sanitize_exception(exc)})
 
-    return StructuredTool(
+    return ToolSpec(
         name=RENDER_REPORT_TOOL,
         description=(
             "Render a reconciled report (HTML, and PDF when available) from an analysis artifact. "
             "You supply the title, a short executive summary, and structured recommendations; code owns layout and numbers."
         ),
-        args_schema=RenderReportArgs,
-        func=_run,
+        parameters=parameters_for(RenderReportArgs),
+        handler=_run,
     )

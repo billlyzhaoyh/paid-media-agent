@@ -5,16 +5,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from typing import Any, Protocol
 
-from langchain_core.messages import ToolMessage
-from langchain_core.tools import BaseTool
 from pydantic import SecretStr
 
 from paid_media_agent.config import Settings
 from paid_media_agent.domain.common import JsonValue, Platform
-from paid_media_agent.middleware.redaction import sanitize_exception
+from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.tools.catalog import (
     DEFAULT_LOCAL_POLICY,
     AuthorizedToolCatalog,
@@ -29,45 +29,94 @@ from paid_media_agent.tools.providers import ProviderError, ProviderResult, Prov
 logger = logging.getLogger(__name__)
 
 PIPEBOARD_SOURCE = "pipeboard"
-STREAMABLE_HTTP = "streamable_http"
 CATALOG_LOAD_TIMEOUT_SECONDS = 20
 _OPERATION_REF_KEYS = ("operation_ref", "operation_id", "resource_name", "id", "campaign_id")
+_ANNOTATION_KEYS = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint", "title")
 
 
-def pipeboard_connections(
-    endpoints: Mapping[Platform, str], token: SecretStr
-) -> dict[str, dict[str, Any]]:
-    """Connection map for `MultiServerMCPClient`. The bearer token lives only in this dict."""
-    headers = {"Authorization": f"Bearer {token.get_secret_value()}"}
-    return {
-        platform.value: {"transport": STREAMABLE_HTTP, "url": url, "headers": headers}
-        for platform, url in endpoints.items()
-    }
+@dataclass(frozen=True)
+class McpTool:
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    annotations: dict[str, Any] | None
 
 
-def raw_tools_from_langchain(platform: str, endpoint: str, tools: list[BaseTool]) -> list[RawTool]:
-    raw: list[RawTool] = []
-    for tool in tools:
-        schema = (
-            tool.args_schema if isinstance(tool.args_schema, dict) else tool.get_input_jsonschema()
+@dataclass(frozen=True)
+class McpResult:
+    is_error: bool
+    structured: dict[str, Any] | None
+    text: str
+
+
+class McpClient(Protocol):
+    async def list_tools(self, platform: Platform, url: str) -> list[McpTool]: ...
+
+    async def call_tool(self, url: str, name: str, arguments: dict[str, Any]) -> McpResult: ...
+
+
+class StreamableHttpMcpClient:
+    """One short MCP session per request. The bearer token lives only in the HTTP headers."""
+
+    def __init__(self, token: SecretStr, *, timeout_seconds: float = 60.0) -> None:
+        self._headers = {"Authorization": f"Bearer {token.get_secret_value()}"}
+        self._timeout = timeout_seconds
+
+    @asynccontextmanager
+    async def _session(self, url: str) -> AsyncIterator[Any]:
+        import httpx
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamable_http_client
+
+        async with (
+            httpx.AsyncClient(headers=self._headers, timeout=self._timeout) as http,
+            streamable_http_client(url, http_client=http) as (read, write, _),
+            ClientSession(read, write) as session,
+        ):
+            await session.initialize()
+            yield session
+
+    async def list_tools(self, platform: Platform, url: str) -> list[McpTool]:  # noqa: ARG002
+        tools: list[McpTool] = []
+        async with self._session(url) as session:
+            cursor: str | None = None
+            while True:
+                page = await session.list_tools(cursor=cursor)
+                for tool in page.tools:
+                    hints = (
+                        tool.annotations.model_dump(exclude_none=True) if tool.annotations else {}
+                    )
+                    tools.append(
+                        McpTool(
+                            name=tool.name,
+                            description=tool.description or "",
+                            input_schema=dict(tool.inputSchema),
+                            annotations={k: hints[k] for k in _ANNOTATION_KEYS if k in hints}
+                            if "readOnlyHint" in hints
+                            else None,
+                        )
+                    )
+                cursor = page.nextCursor
+                if not cursor:
+                    return tools
+
+    async def call_tool(self, url: str, name: str, arguments: dict[str, Any]) -> McpResult:
+        async with self._session(url) as session:
+            result = await session.call_tool(name, arguments)
+        texts = [getattr(item, "text", "") for item in result.content]
+        return McpResult(
+            is_error=bool(result.isError),
+            structured=result.structuredContent
+            if isinstance(result.structuredContent, dict)
+            else None,
+            text="\n".join(t for t in texts if t),
         )
-        metadata = tool.metadata or {}
-        annotations = {
-            k: v
-            for k, v in metadata.items()
-            if k in ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint", "title")
-        }
-        raw.append(
-            RawTool(
-                platform=platform,
-                name=tool.name,
-                description=tool.description or "",
-                input_schema=dict(schema),
-                annotations=annotations if "readOnlyHint" in metadata else None,
-                source_endpoint=endpoint,
-            )
-        )
-    return raw
+
+
+@dataclass(frozen=True)
+class ToolAddress:
+    url: str
+    name: str
 
 
 class PipeboardCatalogLoader:
@@ -79,14 +128,16 @@ class PipeboardCatalogLoader:
         settings: Settings,
         policy: LocalPolicy = DEFAULT_LOCAL_POLICY,
         extra_raw_tools: list[RawTool] | None = None,
+        client: McpClient | None = None,
     ) -> None:
         if settings.pipeboard_api_token is None:
             raise ValueError("PIPEBOARD_API_TOKEN is not configured")
         self._settings = settings
         self._policy = policy
         self._extra_raw_tools = list(extra_raw_tools or [])
+        self.client: McpClient = client or StreamableHttpMcpClient(settings.pipeboard_api_token)
         self._catalog: AuthorizedToolCatalog | None = None
-        self._tools_by_name: dict[str, BaseTool] = {}
+        self._addresses: dict[str, ToolAddress] = {}
 
     @property
     def policy(self) -> LocalPolicy:
@@ -99,20 +150,12 @@ class PipeboardCatalogLoader:
         return self._catalog
 
     async def refresh(self) -> AuthorizedToolCatalog:
-        from langchain_mcp_adapters.client import MultiServerMCPClient
-
-        token = self._settings.pipeboard_api_token
-        assert token is not None  # noqa: S101 - checked in __init__
         endpoints = self._settings.pipeboard_endpoints()
-        client = MultiServerMCPClient(pipeboard_connections(endpoints, token))  # type: ignore[arg-type]
-        raw_tools: list[RawTool] = []
-        tools_by_name: dict[str, BaseTool] = {}
 
-        async def load_endpoint(platform: Platform) -> list[BaseTool]:
+        async def load_endpoint(platform: Platform, url: str) -> list[McpTool]:
             try:
                 return await asyncio.wait_for(
-                    client.get_tools(server_name=platform.value),
-                    timeout=CATALOG_LOAD_TIMEOUT_SECONDS,
+                    self.client.list_tools(platform, url), timeout=CATALOG_LOAD_TIMEOUT_SECONDS
                 )
             except Exception as exc:
                 logger.warning(
@@ -120,60 +163,62 @@ class PipeboardCatalogLoader:
                 )
                 return []
 
-        loaded = await asyncio.gather(*(load_endpoint(p) for p in endpoints))
+        loaded = await asyncio.gather(*(load_endpoint(p, u) for p, u in endpoints.items()))
+        raw_tools: list[RawTool] = []
+        addresses: dict[str, ToolAddress] = {}
         for (platform, url), tools in zip(endpoints.items(), loaded, strict=True):
-            raw_tools.extend(raw_tools_from_langchain(platform.value, url, tools))
             for tool in tools:
+                raw_tools.append(
+                    RawTool(
+                        platform=platform.value,
+                        name=tool.name,
+                        description=tool.description,
+                        input_schema=tool.input_schema,
+                        annotations=tool.annotations,
+                        source_endpoint=url,
+                    )
+                )
                 # Catalog lookup keeps the first entry and denies duplicate qualified names.
-                tools_by_name.setdefault(qualified_name(platform, tool.name), tool)
+                addresses.setdefault(
+                    qualified_name(platform, tool.name), ToolAddress(url, tool.name)
+                )
         catalog = build_authorized_catalog(
             [*raw_tools, *self._extra_raw_tools], policy=self._policy, source=PIPEBOARD_SOURCE
         )
         self._catalog = catalog
-        self._tools_by_name = tools_by_name
+        self._addresses = addresses
         return catalog
 
-    def langchain_tool(self, qualified_name: str) -> BaseTool | None:
-        return self._tools_by_name.get(qualified_name)
+    def address(self, qualified: str) -> ToolAddress | None:
+        return self._addresses.get(qualified)
+
+
+def _payload(result: McpResult) -> dict[str, JsonValue]:
+    """Structured content when the server sends it; otherwise text, parsed when it is JSON."""
+    if result.structured is not None:
+        return result.structured
+    try:
+        parsed = json.loads(result.text)
+    except json.JSONDecodeError:
+        return {"text": result.text}
+    return parsed if isinstance(parsed, dict) else {"items": parsed}
 
 
 async def invoke_mcp_tool(
-    tool: BaseTool, arguments: dict[str, JsonValue], *, timeout: float
+    client: McpClient, address: ToolAddress, arguments: Mapping[str, JsonValue], *, timeout: float
 ) -> dict[str, JsonValue]:
-    """Invoke a loaded MCP tool as a tool call so structured content and error status are visible."""
-    call = {"name": tool.name, "args": dict(arguments), "id": "host-call", "type": "tool_call"}
+    """Call one MCP tool with a timeout; server-reported errors become sanitized provider errors."""
     try:
-        message = await asyncio.wait_for(tool.ainvoke(call), timeout=timeout)
+        result = await asyncio.wait_for(
+            client.call_tool(address.url, address.name, dict(arguments)), timeout=timeout
+        )
     except TimeoutError as exc:
         raise ProviderTimeout("provider call timed out") from exc
     except Exception as exc:
         raise ProviderError(sanitize_exception(exc)) from None
-    if isinstance(message, ToolMessage):
-        if message.status == "error":
-            raise ProviderError(sanitize_exception(RuntimeError(str(message.content)[:300])))
-        structured = getattr(message.artifact, "structured_content", None)
-        if isinstance(structured, dict):
-            return structured
-        return _payload_from_content(message.content)
-    return _payload_from_content(message)
-
-
-def _payload_from_content(content: Any) -> dict[str, JsonValue]:
-    """Coerce MCP content into a JSON object. Text results are parsed when they are JSON."""
-    if isinstance(content, dict):
-        return content
-    if isinstance(content, list):
-        texts = [item.get("text", "") if isinstance(item, dict) else str(item) for item in content]
-        content = "\n".join(t for t in texts if t)
-    if isinstance(content, str):
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError:
-            return {"text": content}
-        if isinstance(parsed, dict):
-            return parsed
-        return {"items": parsed}
-    return {"text": str(content)}
+    if result.is_error:
+        raise ProviderError(sanitize_exception(RuntimeError(result.text[:300])))
+    return _payload(result)
 
 
 class PipeboardReadProvider:
@@ -186,10 +231,12 @@ class PipeboardReadProvider:
     async def call_read(
         self, entry: CatalogEntry, arguments: dict[str, JsonValue]
     ) -> ProviderResult:
-        tool = self._loader.langchain_tool(entry.qualified_name)
-        if tool is None:
+        address = self._loader.address(entry.qualified_name)
+        if address is None:
             raise ProviderError("tool is not loaded in the current catalog")
-        payload = await invoke_mcp_tool(tool, arguments, timeout=self._timeout)
+        payload = await invoke_mcp_tool(
+            self._loader.client, address, arguments, timeout=self._timeout
+        )
         return ProviderResult(payload=payload)
 
 
@@ -203,12 +250,14 @@ class PipeboardWriteProvider:
     async def call_mutation(
         self, entry: CatalogEntry, arguments: dict[str, JsonValue]
     ) -> dict[str, JsonValue]:
-        tool = self._loader.langchain_tool(entry.qualified_name)
-        if tool is None:
+        address = self._loader.address(entry.qualified_name)
+        if address is None:
             raise ProviderError("mutation tool is not loaded in the current catalog")
         if entry.read_only_hint is not False:
             raise ProviderError("refusing to mutate through a tool without readOnlyHint=false")
-        payload = await invoke_mcp_tool(tool, arguments, timeout=self._timeout)
+        payload = await invoke_mcp_tool(
+            self._loader.client, address, arguments, timeout=self._timeout
+        )
         for key in _OPERATION_REF_KEYS:
             value = payload.get(key)
             if value is not None and "operation_ref" not in payload:

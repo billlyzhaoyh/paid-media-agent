@@ -22,7 +22,8 @@ repository.
   company context. Raw sources are not runtime skills.
 - `workspace/in/`, `analysis/`, `out/`, `logs/`, `state/`: local inputs, generated files, and the
   DuckDB state file, ignored by Git.
-- `src/paid_media_agent/assembly.py`: shared model, tools, middleware, and approval policy.
+- `src/paid_media_agent/assembly.py`: shared model, tools, and approval gate. `harness/` is the
+  agent loop: model adapter, tool dispatch, approvals, file tools, and skills.
 - `src/paid_media_agent/tools/`: account-scoped provider calls, deterministic analysis, reports,
   and approved mutations. `runtime/` supplies profiles and provider implementations; `store/` owns
   DuckDB state. One process holds the state file, so `serve` runs the API and Slack together.

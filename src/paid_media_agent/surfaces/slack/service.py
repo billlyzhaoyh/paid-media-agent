@@ -185,7 +185,7 @@ def build_slack_service(runtime: Any) -> SlackApplicationService:
     from paid_media_agent.surfaces.runner import AgentRunner
 
     runner = AgentRunner(
-        graph=runtime.graph,
+        agent=runtime.agent,
         service=runtime.components.proposal_service,
         receipts=runtime.profile.receipts,
         threads=runtime.threads,

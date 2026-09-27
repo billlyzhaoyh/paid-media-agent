@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
-from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
 from paid_media_agent.config import AccountRegistry
 from paid_media_agent.domain.common import Platform
+from paid_media_agent.harness.tools import ToolContext, ToolSpec, parameters_for
 from paid_media_agent.tools.catalog import CatalogProvider
 
 LIST_ACCOUNTS_TOOL = "list_accounts"
@@ -26,8 +27,8 @@ class _NoArgs(BaseModel):
     pass
 
 
-def build_list_accounts_tool(accounts: AccountRegistry) -> BaseTool:
-    def _list() -> str:
+def build_list_accounts_tool(accounts: AccountRegistry) -> ToolSpec:
+    def _list(_args: dict[str, Any], _context: ToolContext) -> str:
         return json.dumps(
             {
                 "accounts": [
@@ -42,18 +43,21 @@ def build_list_accounts_tool(accounts: AccountRegistry) -> BaseTool:
             }
         )
 
-    return StructuredTool.from_function(
-        func=_list,
+    return ToolSpec(
         name=LIST_ACCOUNTS_TOOL,
         description="List configured account aliases with platform, currency, and timezone. Use aliases in every read.",
-        args_schema=_NoArgs,
+        parameters=parameters_for(_NoArgs),
+        handler=_list,
     )
 
 
-def build_discover_tools_tool(catalog_provider: CatalogProvider) -> BaseTool:
-    def _discover(query: str, platform: Platform | None = None) -> str:
+def build_discover_tools_tool(catalog_provider: CatalogProvider) -> ToolSpec:
+    def _discover(args: dict[str, Any], context: ToolContext) -> str:
+        parsed = _DiscoverArgs.model_validate(args)
         catalog = catalog_provider.current()
-        entries = catalog.search(query, platform=platform)
+        entries = catalog.search(parsed.query, platform=parsed.platform)
+        # The tools found here are bound to the model's later calls in this thread.
+        context.activate([e.qualified_name for e in entries])
         return json.dumps(
             {
                 "catalog_revision": catalog.revision,
@@ -68,13 +72,13 @@ def build_discover_tools_tool(catalog_provider: CatalogProvider) -> BaseTool:
                     }
                     for e in entries
                 ],
-                "note": "Only authorized read tools are listed. Changes go through propose_change.",
+                "note": "These tools are now available to call. Only authorized reads are listed; changes go through propose_change.",
             }
         )
 
-    return StructuredTool.from_function(
-        func=_discover,
+    return ToolSpec(
         name=DISCOVER_TOOLS_TOOL,
-        description="Search the current authorized read-tool catalog by keywords. Call this before assuming a tool exists.",
-        args_schema=_DiscoverArgs,
+        description="Search the authorized read-tool catalog by keywords and make the matching tools available. Call this before using a platform tool.",
+        parameters=parameters_for(_DiscoverArgs),
+        handler=_discover,
     )
