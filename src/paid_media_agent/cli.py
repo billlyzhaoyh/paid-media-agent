@@ -1,4 +1,5 @@
-"""Command-line entry: setup console, demo, doctor, tests, accounts, reports, history, and serve.
+"""Command-line entry: setup console, demo, doctor, tests, accounts, reports, history, bandit,
+and serve.
 
 Every console action has a subcommand with `--json`, so coding agents and humans share one path.
 """
@@ -903,6 +904,319 @@ def anomalies(
         click.echo("  No flags.")
     for note in result["notes"]:
         click.echo(f"  note: {note}")
+
+
+# ---------------------------------------------------------------- budget bandit
+
+
+@main.group()
+def bandit() -> None:
+    """Budget allocation across campaigns (CBS-style bandit), on simulated accounts for now."""
+
+
+_PREDICTOR = click.option(
+    "--predictor",
+    type=click.Choice(["none", "local", "tabpfn"]),
+    default=None,
+    help="Global model: tabpfn uses TabPFN (billed tokens); otherwise a local pooled regression.",
+)
+
+
+def _bandit_config(pseudo_samples: int, policy: str = "thompson") -> Any:
+    from paid_media_agent.bandit.recommend import BanditConfig
+
+    return BanditConfig(policy=policy, pseudo_samples=pseudo_samples)  # type: ignore[arg-type]
+
+
+@bandit.command("simulate")
+@click.option("--scenario", default="bandit", show_default=True, help="Scenario id for the file.")
+@click.option("--campaigns", type=click.IntRange(2, 30), default=5, show_default=True)
+@click.option("--warmup", type=click.IntRange(28, 365), default=42, show_default=True)
+@click.option("--days", type=click.IntRange(7, 365), default=60, show_default=True)
+@click.option("--seed", type=int, default=7, show_default=True)
+@click.option(
+    "--policy", type=click.Choice(["thompson", "greedy"]), default="thompson", show_default=True
+)
+@click.option("--pseudo-samples", type=click.IntRange(0, 4096), default=512, show_default=True)
+@_PREDICTOR
+@click.option("--start", "start_date", default=None, help="First simulated day (YYYY-MM-DD).")
+@click.option("--force", is_flag=True, help="Replace an existing scenario file.")
+@click.option("--json", "as_json", is_flag=True)
+def bandit_simulate(
+    scenario: str,
+    campaigns: int,
+    warmup: int,
+    days: int,
+    seed: int,
+    policy: str,
+    pseudo_samples: int,
+    predictor: str | None,
+    start_date: str | None,
+    force: bool,
+    as_json: bool,
+) -> None:
+    """Let the bandit run a simulated account after a warm-up, and compare it with the truth.
+
+    The account runs on an operator's budget schedule for --warmup days, then the bandit sets
+    budgets every seven days. Every decision is logged in the scenario file (bandit_runs,
+    bandit_decisions). Static budgets and an oracle that knows the true curves run on the same
+    account in memory, for comparison.
+    """
+    from dataclasses import replace
+
+    from paid_media_agent.bandit.evaluate import run_closed_loop
+    from paid_media_agent.predict.factory import build_predictor
+    from paid_media_agent.runtime.self_hosted import state_path
+    from paid_media_agent.sim.scenario import scenario_path
+    from paid_media_agent.sim.simulator import ScenarioParams
+    from paid_media_agent.store import Store
+
+    settings = Settings()
+    _configure_logging(settings)
+    if predictor is not None:
+        settings = settings.model_copy(update={"paid_media_predictor": predictor})
+    start = _day(start_date, date.today() - timedelta(days=warmup + days))
+    assert start is not None  # noqa: S101 - a default is supplied
+    try:
+        path = scenario_path(state_path(settings, project_root()).parent, scenario)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--scenario") from None
+    if path.exists():
+        if not force:
+            raise click.ClickException(f"{path} exists; pass --force to replace it")
+        for stale in (path, path.with_name(path.name + ".wal")):
+            stale.unlink(missing_ok=True)
+    params = ScenarioParams(
+        scenario_id=scenario, seed=seed, n_campaigns=campaigns, start=start, cold_starts=0
+    )
+    config = _bandit_config(pseudo_samples, policy)
+    store = Store(path)
+    try:
+        result = asyncio.run(
+            run_closed_loop(
+                params,
+                policy,  # type: ignore[arg-type]
+                warmup_days=warmup,
+                days=days,
+                config=config,
+                predictor=build_predictor(settings, store),
+                store=store,
+            )
+        )
+        decisions = store.fetch_dicts(
+            """
+            SELECT r.decision_day, d.entity_ref, d.current_budget, d.final_budget,
+                d.post_mean, d.post_cov, d.constrained_by, t.kappa2 AS true_kappa2
+            FROM bandit_decisions d
+            JOIN bandit_runs r USING (run_id)
+            LEFT JOIN (SELECT DISTINCT entity_ref, kappa2 FROM sim_truth) t USING (entity_ref)
+            ORDER BY r.decision_day, d.entity_ref
+            """
+        )
+        prior = store.fetch("SELECT DISTINCT prior_source FROM bandit_runs")
+    finally:
+        store.close()
+    baselines = {
+        name: asyncio.run(
+            run_closed_loop(
+                replace(params, scenario_id=f"{scenario}-{name}"),
+                name,  # type: ignore[arg-type]
+                warmup_days=warmup,
+                days=days,
+                config=config,
+            )
+        ).expected_conversions
+        for name in ("static", "oracle")
+    }
+    rows = []
+    for d in decisions:
+        mean = json.loads(d["post_mean"]) if d["post_mean"] else None
+        cov = json.loads(d["post_cov"]) if d["post_cov"] else None
+        rows.append(
+            {
+                "decision_day": d["decision_day"].isoformat(),
+                "entity_ref": d["entity_ref"],
+                "budget": d["current_budget"],
+                "new_budget": None if d["final_budget"] is None else round(d["final_budget"], 2),
+                "kappa2": None if mean is None else round(mean[1], 3),
+                "kappa2_sd": None if cov is None else round(cov[1][1] ** 0.5, 3),
+                "true_kappa2": None if d["true_kappa2"] is None else round(d["true_kappa2"], 3),
+                "constrained_by": d["constrained_by"],
+            }
+        )
+    summary = {
+        "path": str(path),
+        "policy": policy,
+        "global_model": sorted(p for (p,) in prior),
+        "decisions": result.decisions,
+        "expected_conversions": round(result.expected_conversions, 1),
+        "static": round(baselines["static"], 1),
+        "oracle": round(baselines["oracle"], 1),
+        "regret": round(baselines["oracle"] - result.expected_conversions, 1),
+        "violations": result.violations,
+    }
+    if as_json:
+        click.echo(json.dumps({**summary, "rows": rows}, indent=2))
+        return
+    click.echo(
+        f"Scenario {scenario}: {warmup} warm-up days, then {policy} for {days} days -> {path}"
+    )
+    for row in rows:
+        moved = (
+            "-"
+            if row["new_budget"] is None or not row["budget"]
+            else f"{row['new_budget'] / row['budget'] - 1:+.0%}"
+        )
+        kappa = "-" if row["kappa2"] is None else f"{row['kappa2']:.2f}±{row['kappa2_sd']:.2f}"
+        click.echo(
+            f"  {row['decision_day']}  {row['entity_ref']:<8} {row['budget']:>9.2f} -> "
+            f"{row['new_budget'] or 0:>9.2f} {moved:>5}  kappa2 {kappa:<10} "
+            f"true {row['true_kappa2']}  {','.join(row['constrained_by'])}"
+        )
+    click.echo(
+        f"Expected conversions over {days} days: {summary['expected_conversions']} "
+        f"(static {summary['static']}, oracle {summary['oracle']}; regret {summary['regret']}). "
+        f"Constraint violations: {len(result.violations)}."
+    )
+
+
+@bandit.command("evaluate")
+@click.option("--seeds", type=click.IntRange(1, 50), default=3, show_default=True)
+@click.option("--campaigns", type=click.IntRange(2, 30), default=5, show_default=True)
+@click.option("--warmup", type=click.IntRange(28, 365), default=42, show_default=True)
+@click.option("--days", type=click.IntRange(7, 365), default=60, show_default=True)
+@click.option("--pseudo-samples", type=click.IntRange(0, 4096), default=512, show_default=True)
+@_PREDICTOR
+@click.option("--json", "as_json", is_flag=True)
+def bandit_evaluate(
+    seeds: int,
+    campaigns: int,
+    warmup: int,
+    days: int,
+    pseudo_samples: int,
+    predictor: str | None,
+    as_json: bool,
+) -> None:
+    """Regret of every policy, and payout error of every model, on simulated accounts."""
+    import numpy as np
+
+    from paid_media_agent.bandit.evaluate import (
+        POLICIES,
+        compare_policies,
+        kappa_contraction,
+        payout_error,
+    )
+    from paid_media_agent.predict.factory import build_predictor
+    from paid_media_agent.sim.simulator import ScenarioParams
+    from paid_media_agent.store import Store
+
+    settings = Settings()
+    _configure_logging(settings)
+    if predictor is not None:
+        settings = settings.model_copy(update={"paid_media_predictor": predictor})
+    ledger = Store()  # the token guard's ledger for this evaluation
+    global_model = build_predictor(settings, ledger)
+    config = _bandit_config(pseudo_samples)
+    start = date(2026, 1, 5)
+
+    async def run() -> dict[str, Any]:
+        regret: dict[str, list[float]] = {p: [] for p in POLICIES if p != "oracle"}
+        contraction: list[dict[str, float]] = []
+        violations = 0
+        payout: list[dict[str, Any]] = []
+        for seed in range(1, seeds + 1):
+            params = ScenarioParams(
+                scenario_id=f"eval-{seed}",
+                seed=seed,
+                n_campaigns=campaigns,
+                start=start,
+                cold_starts=0,
+                shock_rate=0.0,
+            )
+            results = await compare_policies(
+                params, warmup_days=warmup, days=days, config=config, predictor=global_model
+            )
+            oracle = results["oracle"].expected_conversions
+            for policy, result in results.items():
+                violations += len(result.violations)
+                if policy != "oracle":
+                    regret[policy].append(oracle - result.expected_conversions)
+            contraction.append(kappa_contraction(results["thompson"]))
+            payout.append(
+                await payout_error(
+                    ScenarioParams(
+                        scenario_id=f"payout-{seed}",
+                        seed=seed,
+                        n_campaigns=campaigns,
+                        days=warmup + days,
+                        start=start,
+                        cold_starts=1,
+                    ),
+                    config=config,
+                    predictor=global_model,
+                )
+            )
+        return {
+            "regret": regret,
+            "contraction": contraction,
+            "violations": violations,
+            "payout": payout,
+        }
+
+    out = asyncio.run(run())
+    tokens = ledger.fetch(
+        "SELECT coalesce(sum(tokens_estimated), 0) FROM predictor_calls WHERE status = 'ok'"
+    )[0][0]
+    ledger.close()
+    if as_json:
+        click.echo(json.dumps({**out, "tabpfn_tokens": tokens}, indent=2, default=float))
+        return
+    click.echo(
+        f"Closed loop: {seeds} seed(s), {campaigns} campaigns, {warmup} warm-up days, "
+        f"{days} bandit days. Regret = oracle's expected conversions minus the policy's."
+    )
+    click.echo(f"  {'policy':<10} {'mean':>8} {'sd':>7}  per seed")
+    for policy, values in out["regret"].items():
+        click.echo(
+            f"  {policy:<10} {float(np.mean(values)):>8.1f} {float(np.std(values)):>7.1f}  "
+            + " ".join(f"{v:.1f}" for v in values)
+        )
+    keys = ("error_first", "error_last", "sd_first", "sd_last")
+    means = {k: float(np.mean([c[k] for c in out["contraction"] if k in c])) for k in keys}
+    click.echo(
+        f"  thompson kappa2: |error| {means['error_first']:.3f} -> {means['error_last']:.3f}, "
+        f"posterior sd {means['sd_first']:.3f} -> {means['sd_last']:.3f} (first -> last decision)"
+    )
+    click.echo(f"  constraint violations: {out['violations']}")
+    model_names: tuple[str, ...] = ("local", "global", "cbs")
+    if not any(p[m][g]["n"] for p in out["payout"] for m in p for g in p[m]):
+        click.echo("Payout error: the history is too short for a forecast cutoff (needs 42 days).")
+        model_names = ()
+    else:
+        click.echo("Payout error, conversions per day (next 14 days at the spend that happened):")
+        click.echo(
+            f"  {'model':<8} {'group':<11} {'n':>6} {'bias':>7} {'mae':>7} {'rmse':>7} {'cov80':>6}"
+        )
+    for model in model_names:
+        for group in ("all", "cold_start"):
+            rows = [p[model][group] for p in out["payout"] if p[model][group]["n"]]
+            if not rows:
+                continue
+            n = sum(r["n"] for r in rows)
+
+            def pooled(key: str, rows: list[dict[str, Any]] = rows, n: int = n) -> str:
+                """Day-weighted across seeds; RMSE pools the squared errors."""
+                if key == "rmse":
+                    return f"{(sum(r['rmse'] ** 2 * r['n'] for r in rows) / n) ** 0.5:.3f}"
+                values = [r[key] * r["n"] for r in rows if r[key] is not None]
+                return f"{sum(values) / n:.3f}" if values else "-"
+
+            click.echo(
+                f"  {model:<8} {group:<11} {n:>6} {pooled('bias'):>7} {pooled('mae'):>7} "
+                f"{pooled('rmse'):>7} {pooled('coverage80'):>6}"
+            )
+    if tokens:
+        click.echo(f"TabPFN tokens used: {tokens}")
 
 
 # ---------------------------------------------------------------- self-hosted runtime

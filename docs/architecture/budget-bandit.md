@@ -1,0 +1,193 @@
+# Budget bandit
+
+`bandit/` splits a total daily budget across one account's campaigns to maximise conversions. It
+follows Lyft's Contextual Budgeting System (CBS): Han & Gabor, *Contextual Bandits for
+Advertising Budget Allocation* (AdKDD 2020), and Han & Arndt, *Budget Allocation as a Multi-Agent
+System of Contextual & Continuous Bandits* (KDD 2021). For now it runs on simulated accounts only
+(`paid-media-agent bandit`). A later slice turns its recommendations into proposals that go through
+the normal approval flow; it never changes a budget on its own.
+
+## One decision
+
+`recommend()` in `bandit/recommend.py` makes one decision. It follows the steps of CBS's
+Algorithm 1.
+
+1. **History** (`arms.py`). It loads each campaign's days as they stood on the decision day
+   (`analytics/panel.py`, the same reader the anomaly checks use), along with the budget, status,
+   pacing ratio (median spend ÷ budget over 14 days), and the date of the last budget change.
+   Conversions are counted as follows:
+   - matured days as reported;
+   - recent days divided by the share the account's lag curve says has arrived (the paper's
+     surrogate reward);
+   - days with under 75% arrived are left out.
+
+   A campaign is allocated only if it is enabled, has a daily budget, spent in the account's
+   last three complete days, and has three settled days.
+2. **Data checks.** The run stops trusting today's data when any of these fails:
+   - the newest settled day is more than seven days old;
+   - under 80% of campaigns report it;
+   - total spend that day is outside 0.2 to 5 times its recent median.
+
+   It then reuses each campaign's last good curve from `bandit_decisions` and records
+   `fallback_used` (CBS §6).
+3. **Global model** (`prior.py`). One model learns log(conversions + 1) from every campaign's days,
+   so a campaign with little budget variation borrows what the others show. It predicts 512
+   pseudo-samples per campaign, at spends across its recent range (at least ±25% of its median),
+   averaged over weekdays. The samples sit on a 64-point grid with weight 8 each, which keeps
+   TabPFN requests small.
+   - **By default** the model is a pooled regression: a level per campaign, weekday effects, and
+     one elasticity shared by all campaigns, with a 28-day half-life on older days (CBS §6.1).
+   - **With `--predictor tabpfn`**, TabPFN predicts from campaign, platform, weekday, day index,
+     and log spend.
+4. **Local model** (`posterior.py`). Each campaign's curve is fitted by normal-inverse-gamma
+   Bayesian linear regression, with centred weekday terms, on its history plus the
+   pseudo-samples:
+
+   ```
+   log(y + 1) = kappa1 + kappa2 * log(x / u + 1)
+   ```
+
+   When the fit is not a valid curve, the prior precision on kappa2 rises through 0, 1, 4, 16,
+   64, 256 toward 0.5 until kappa1 ≥ 0 and kappa2 ± 1 sd lies inside (0, 1) (CBS §6.2).
+5. **Policy** (`policy.py`). **Thompson sampling** draws one (kappa1, kappa2) per campaign. A draw
+   is rejected if it falls outside the valid region or outside the middle quartiles of either
+   parameter (the paper's production guardrails). **Greedy** uses the posterior mean.
+6. **Allocation** (`allocate.py`). Water-filling finds the budgets that give every campaign the
+   same marginal conversions per unit of budget, by bisection on that price, within each
+   campaign's bounds:
+   - at most 25% up or down;
+   - at most 1.5 times the highest spend seen, divided by pacing;
+   - at least 1;
+   - no change within seven days of the last one, whose effect has not been measured yet.
+
+   An optional `max_cpia` stops a campaign where its next conversion would cost more (CBS's
+   profitability constraint). The total defaults to the current total of the campaigns being
+   allocated.
+
+Every run writes one `bandit_runs` row and one `bandit_decisions` row per campaign. A decision row
+holds:
+- the bounds and which bound bound it;
+- the posterior;
+- the Thompson draw and the rejected-draw count;
+- the Thompson, greedy, and final budgets;
+- the expected conversions;
+- a propensity: the share of 200 redrawn allocations within 5% of the chosen budget, for
+  off-policy evaluation later.
+
+## The spend unit
+
+The curve measures spend `x` in units of the campaign's trailing cost per conversion, `u`. At the
+campaign's usual spend, `x / u ≈ y`, so the fit gives kappa1 = (1 − kappa2)·log(y + 1). The
+curve therefore passes through zero conversions at zero spend (kappa1 ≥ 0) exactly when it has
+diminishing returns (kappa2 ≤ 1), and the fitted kappa2 is the campaign's elasticity of
+conversions to spend.
+
+Other units break one of CBS's constraints:
+- **Currency:** realistic costs per conversion make kappa1 negative.
+- **The campaign's median spend:** puts `x / u` near 1. There the `+ 1` halves the slope of
+  log(x / u + 1), so the fitted kappa2 doubles to above 1 and the curve reads as convex.
+
+## Choices measured in simulation
+
+The closed-loop evaluation below chose these settings. Each change was measured on 8 seeds.
+
+| Setting | Tried | Effect |
+| --- | --- | --- |
+| Pseudo-samples per campaign | 32, 128, 512 | Mean regret (before the noise fix below): Thompson 36, 32, 28; greedy 39, 29, 25; CPA rule 32. With few pseudo-samples, noisy history swings each campaign's elasticity; CBS tuned 128 to 512. |
+| Noise estimate counts pseudo-samples | yes, no | Counting them shrank the noise variance about 6×; 80% intervals covered 30 to 37% of days. Counting real days only brings coverage to 77 to 81%. |
+| Lognormal mean correction | off, on | Regret unchanged (27.9, 26.9). It fixes the level: log(y + 1) back-transforms to the median day, about 0.5 conversions a day low. |
+| Local recency weighting | 28-day half-life, none | No clear difference in a prototype on 4 accounts; CBS weights the global model, so only the global model does. |
+
+## Evaluation
+
+`bandit/evaluate.py` scores the bandit on simulated accounts, where the true curves are known
+([History and simulation](history-and-simulation.md)).
+
+**Closed-loop regret.** Every policy runs the same account. First comes a six-week warm-up on an
+operator's budget schedule, then the policy sets budgets every seven days for 60 days. The store,
+views, and bounds are the ones a live run uses. Campaign-days share their noise across policies.
+A policy's score is the expected conversions its realised spend buys under the true curves.
+Regret is the oracle's score minus the policy's; the oracle knows the true curves and faces the
+same bounds.
+
+The baselines:
+- **Static** keeps the warm-up's final budgets.
+- **CPA rule** is a common manual heuristic. Weekly, it raises by 20% the campaigns whose last two
+  weeks' cost per conversion is more than 10% below the account's, cuts by 20% those more than
+  10% above, and rescales to the same total.
+
+**Payout error** is CBS's Tables 1 and 2. At weekly cutoffs, each model predicts the next two
+weeks' daily conversions at the spend that actually happened. Errors are reported overall and for
+cold-start campaigns (under seven settled days). Coverage is the share of days inside each
+model's central 80% interval. The models:
+- **local** is the history-only Bayesian regression;
+- **global** is the pooled model or TabPFN alone;
+- **cbs** combines them.
+
+### Results
+
+**Pooled global model, 8 seeds** (`paid-media-agent bandit evaluate --seeds 8`): 5 campaigns, a
+42-day warm-up, then 60 days under the policy. Regret is in expected conversions over the 60
+days; the oracle earns 1,700 to 3,600.
+
+| Policy | Mean regret | SD | Per seed |
+| --- | --- | --- | --- |
+| Static | 169.5 | 98.1 | 106.0, 227.4, 396.6, 191.8, 119.5, 138.9, 107.8, 68.1 |
+| CPA rule | 32.3 | 9.7 | 16.3, 17.5, 36.2, 46.6, 36.0, 37.8, 35.8, 32.7 |
+| Greedy | 22.9 | 16.1 | 12.7, 1.0, 7.9, 22.7, 38.9, 54.3, 26.1, 19.7 |
+| Thompson sampling | 26.7 | 18.6 | 10.5, 2.9, 8.9, 14.6, 35.8, 56.8, 38.8, 45.6 |
+
+- **Against static budgets:** Thompson sampling cuts regret by 84%.
+- **Against the CPA rule:** it has the lower regret on average, but wins on only 5 of 8 seeds.
+- **Against greedy:** over 60 days, greedy does slightly better. Exploration pays back over
+  longer horizons than this, and the guardrails keep it small.
+- **Constraints:** no decision broke a bound, a step limit, a hold, or the total.
+- **Contraction:** between the first and last decisions, the mean absolute error of the posterior
+  elasticity falls from 0.22 to 0.10, and its sd falls from 0.15 to 0.08.
+
+Payout error over the same 8 accounts, in conversions per day (3,248 campaign-days; 126 cold-start):
+
+| Model | Group | Bias | MAE | RMSE | 80% coverage |
+| --- | --- | --- | --- | --- | --- |
+| Local | all | 0.10 | 2.34 | 3.31 | 0.79 |
+| Local | cold start | 0.45 | 2.15 | 2.82 | 0.75 |
+| Global (pooled) | all | −0.35 | 2.36 | 3.45 | − |
+| Global (pooled) | cold start | −0.07 | 2.26 | 3.05 | − |
+| CBS | all | 0.14 | 2.34 | 3.31 | 0.79 |
+| CBS | cold start | 0.43 | 2.18 | 2.91 | 0.70 |
+
+Poisson noise dominates the error: a campaign at six conversions a day varies by about 2.4 from
+day to day. The three models forecast about equally well. The combined model's value is in the
+curve's shape away from recent spend, which these forecasts at actual spend barely test. The
+intervals are close to calibrated overall and somewhat narrow for cold starts.
+
+**TabPFN as the global model, 3 seeds** (`--predictor tabpfn`, 790,000 tokens):
+
+| Policy | Mean regret | Per seed |
+| --- | --- | --- |
+| CPA rule | 23.3 | 16.3, 17.5, 36.2 |
+| Greedy | 59.0 | 133.0, 15.0, 29.0 |
+| Thompson sampling | 61.0 | 135.1, 6.9, 41.1 |
+
+The pooled model's Thompson regret on the same seeds is 10.5, 2.9, 8.9. TabPFN forecasts
+conversions at actual spend as well as the pooled model does (MAE 2.31), but its curve over each
+campaign's narrow spend range is flatter than the truth: implied elasticities of 0.14 to 0.37,
+against 0.55 to 0.9. Its pseudo-samples therefore pull every campaign's elasticity down. It stays
+available for comparison but is not recommended for allocation.
+
+## Limitations
+
+- **Simulation only.** The simulated curves have exactly the shape the local model assumes, and
+  real campaigns will fit it less well. Recommendations on real accounts, as proposals through
+  the approval flow, are the next slice.
+- **Overconfident posterior.** With 512 pseudo-samples, the posterior is narrower than the real
+  error when the global model is wrong about a campaign (CBS notes the same skew). Campaigns cut
+  to a fraction of their budget show it most. In `bandit simulate --seed 3`, two campaigns cut by
+  about 90% end at elasticity 0.84 ± 0.07 and 0.91 ± 0.05, against true 0.58 and 0.755. The run
+  still came within 9 conversions of the oracle over 60 days.
+- **One account at a time.** Budgets are split within one account and currency. Shared and
+  lifetime budgets are not allocated.
+- **CPIA cap from configuration only.** `max_cpia` is applied uniformly; it is not yet read from
+  each campaign's target CPA.
+- **Fallback curves skip the mean correction.** A reused (fallback) curve lacks it, because only
+  the curve parameters are stored.

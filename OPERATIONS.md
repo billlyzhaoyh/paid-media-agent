@@ -44,6 +44,8 @@ Add `--help` for options and `--json` where supported for machine-readable outpu
 | `uv run paid-media-agent history --view daily` | Show stored history: coverage, daily, settings, changes, lag |
 | `uv run paid-media-agent simulate --days 180` | Simulate campaigns with known response curves into their own file |
 | `uv run paid-media-agent anomalies --days 7` | Flag recent campaign-days outside their expected range |
+| `uv run paid-media-agent bandit simulate` | Let the budget bandit run a simulated account and compare it with the truth |
+| `uv run paid-media-agent bandit evaluate --seeds 3` | Regret and forecast error of the bandit and its baselines on simulated accounts |
 | `uv run paid-media-agent writes kill-switch on` | Stop mutations |
 | `uv run paid-media-agent test state` | Open the DuckDB state file and apply migrations |
 | `uv run paid-media-agent serve` | Start the API, and Slack in Socket Mode when configured |
@@ -125,6 +127,22 @@ least 20,000 tokens; a repeated identical check is answered from the cache. Any 
 falls back to the day-over-day rule and says so. `predictor_calls` in the state file logs every
 call. `PAID_MEDIA_ANOMALY_BAND` (default 0.95, or `--band` on the command) sets how much of normal
 variation the expected range covers: 0.8 catches more at the cost of more false alarms.
+
+## Budget allocation (simulation only)
+
+`paid-media-agent bandit` runs the budget bandit on simulated accounts: it splits a total daily
+budget across campaigns to maximise conversions, CBS-style (a global model, one curve per
+campaign, and Thompson sampling). Nothing here reads or changes a live account yet.
+
+- `bandit simulate` warms a scenario up on an operator's budget schedule, then lets the bandit set
+  budgets weekly. It prints each decision next to the true elasticity and writes every run to
+  `bandit_runs` and `bandit_decisions` in `workspace/state/sim-<scenario>.duckdb`.
+- `bandit evaluate` compares the bandit with static budgets, a CPA rule, and an oracle over several
+  seeds, and reports each model's forecast error and interval coverage.
+
+Both use a local pooled regression as the global model. `--predictor tabpfn` uses TabPFN instead:
+one call per decision (at least 10,000 tokens each), under the same caps and cache as anomaly
+checks. See [Budget bandit](docs/architecture/budget-bandit.md).
 
 ## Direct platforms
 

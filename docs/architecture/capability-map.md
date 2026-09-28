@@ -9,6 +9,7 @@
 | Build history | reads, `sync`, `backfill`, scheduled jobs | `analytics/ingest.py`, `analytics/sync.py`, `scheduler.py` | pulls, snapshots, settings, `job_runs` | provider failure listed as unavailable |
 | Simulate accounts | `paid-media-agent simulate` | `sim/simulator.py`, `sim/scenario.py` | `sim-<scenario>.duckdb` with `sim_truth` | invalid scenario name |
 | Check anomalies | `check_anomalies`; `paid-media-agent anomalies`; `anomalies` job | `analytics/anomalies.py`, `predict/` | `anomaly_checks`, `anomaly_flags`, `predictor_calls` | too little history, predictor unavailable (rule runs, labelled) |
+| Allocate budgets (simulated) | `paid-media-agent bandit simulate`, `bandit evaluate` | `bandit/` over `analytics/panel.py`; `predict/` for TabPFN | `bandit_runs`, `bandit_decisions` in the scenario file | data checks fail (last good curves reused), no valid curve (budget held) |
 | Summarize performance | `summarize_window` | `tools/summary.py` | per-entity totals, pacing, and daily series artifact | unsupported metric, grain, or window |
 | Compare performance | `compare_periods` | `tools/compute.py` | `PeriodComparison` artifact | incompatible window, grain, unit, or currency |
 | Generate report | `render_report` | `reports/render.py` + bridge | artifact receipt | reconciliation or render failure |

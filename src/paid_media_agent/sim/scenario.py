@@ -4,12 +4,14 @@ Each simulated day: the morning settings observation records that day's budgets,
 and the next morning's pull re-reports the trailing window, so the store holds the same repeated
 snapshots, maturing conversions, and settings history a daily sync would build. Ground truth goes
 to `sim_truth`. Scenarios live in their own database file, never in the production state file.
+Budgets come from an operator's schedule (`run_scenario`) or from a policy (`ScenarioDriver`).
 """
 
 from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -95,93 +97,122 @@ def _truth_rows(outcomes: list[DayOutcome], sim: Simulator) -> list[dict[str, ob
     ]
 
 
-def run_scenario(
-    store: Store, params: ScenarioParams, *, window_days: int = SYNC_WINDOW_DAYS
-) -> ScenarioRun:
-    """Simulate `params.days` days into `store` and return what was written."""
-    if not SCENARIO_ID.match(params.scenario_id):
-        raise ValueError("scenario id must be lowercase letters, digits, '-' or '_'")
-    sim = Simulator(params)
-    budgets = budget_schedule(sim)
-    binding = scenario_binding(params)
-    recorder = AnalyticsRecorder(store)
-    store.write(
-        "INSERT INTO sim_scenarios VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [
-            params.scenario_id,
-            params.seed,
-            params.n_campaigns,
-            params.days,
-            params.start,
-            json.dumps(params.as_json()),
-            utc_now(),
-        ],
-    )
-    pulls = rows = truth = external = 0
-    tool = f"{params.platform.value}__get_campaign_performance"
-    for index in range(params.days):
+class ScenarioDriver:
+    """Runs a scenario one day at a time into `store`, with budgets chosen by the caller.
+
+    Each day: the morning settings observation records that day's budgets, the day runs, and the
+    next morning's pull re-reports the trailing window. `run_scenario` drives it with an operator's
+    budget schedule; the bandit's closed-loop evaluation drives it with a policy.
+    """
+
+    def __init__(
+        self, store: Store, params: ScenarioParams, *, window_days: int = SYNC_WINDOW_DAYS
+    ) -> None:
+        if not SCENARIO_ID.match(params.scenario_id):
+            raise ValueError("scenario id must be lowercase letters, digits, '-' or '_'")
+        self.store = store
+        self.params = params
+        self.sim = Simulator(params)
+        self.binding = scenario_binding(params)
+        self._recorder = AnalyticsRecorder(store)
+        self._window_days = window_days
+        self._tool = f"{params.platform.value}__get_campaign_performance"
+        self.pulls = self.rows = self.truth = self.external = 0
+        store.write(
+            "INSERT INTO sim_scenarios VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                params.scenario_id,
+                params.seed,
+                params.n_campaigns,
+                params.days,
+                params.start,
+                json.dumps(params.as_json()),
+                utc_now(),
+            ],
+        )
+
+    def run_day(self, index: int, budgets: Mapping[str, float]) -> list[DayOutcome]:
+        """Record the morning's budgets, run day `index`, and pull the next morning."""
+        p, sim, binding = self.params, self.sim, self.binding
         day = sim.day(index)
+        active = sim.active(index)
         listing = {
             "campaigns": [
                 {
                     "id": c.entity_ref,
                     "name": c.name,
                     "status": "ENABLED",
-                    "daily_budget": budgets[c.entity_ref][index],
+                    "daily_budget": round(float(budgets[c.entity_ref]), 2),
                 }
-                for c in sim.active(index)
+                for c in active
             ]
         }
-        settings = recorder.record_settings(
+        settings = self._recorder.record_settings(
             source="simulator",
             binding=binding,
-            tool_name=f"{params.platform.value}__list_campaigns",
+            tool_name=f"{p.platform.value}__list_campaigns",
             catalog_revision=None,
             payload=listing,
             observed_at=_at(day),
         )
         if settings is not None:
-            pulls += 1
-            external += settings.external_changes
-        outcomes = sim.step(index, {ref: days[index] for ref, days in budgets.items()})
+            self.pulls += 1
+            self.external += settings.external_changes
+        outcomes = sim.step(
+            index, {c.entity_ref: round(float(budgets[c.entity_ref]), 2) for c in active}
+        )
         if outcomes:
-            store.write(
+            self.store.write(
                 "INSERT INTO sim_truth SELECT ?, ?, * FROM (" + json_rows(_TRUTH_SHAPE) + ")",  # noqa: S608
-                [params.scenario_id, params.platform.value, json.dumps(_truth_rows(outcomes, sim))],
+                [p.scenario_id, p.platform.value, json.dumps(_truth_rows(outcomes, sim))],
             )
-            truth += len(outcomes)
-        reported = sim.report(index + 1, window_days)
+            self.truth += len(outcomes)
+        reported = sim.report(index + 1, self._window_days)
         if not reported:
-            continue
+            return outcomes
         # The newest reported day is still settling, as on a real platform.
         normalized, _ = normalize_rows(
-            platform=params.platform,
+            platform=p.platform,
             account_ref=binding.alias,
-            currency=params.currency,
+            currency=p.currency,
             timezone="UTC",
             rows=reported,
             entity_type=EntityType.CAMPAIGN,
             data_complete_through=day - timedelta(days=1),
         )
-        recorder.record_performance(
+        self._recorder.record_performance(
             source="simulator",
             binding=binding,
-            tool_name=tool,
+            tool_name=self._tool,
             catalog_revision=None,
             rows=normalized,
-            requested=(sim.day(max(0, index + 1 - window_days)), day),
+            requested=(sim.day(max(0, index + 1 - self._window_days)), day),
             data_complete_through=day - timedelta(days=1),
             pulled_at=_at(day + timedelta(days=1)),
         )
-        pulls += 1
-        rows += len(normalized)
-    return ScenarioRun(
-        params=params,
-        campaigns=sim.campaigns,
-        days=params.days,
-        pulls=pulls,
-        snapshot_rows=rows,
-        truth_rows=truth,
-        shocks=len(sim.shocks),
-        external_changes=external,
-    )
+        self.pulls += 1
+        self.rows += len(normalized)
+        return outcomes
+
+    def result(self) -> ScenarioRun:
+        return ScenarioRun(
+            params=self.params,
+            campaigns=self.sim.campaigns,
+            days=self.params.days,
+            pulls=self.pulls,
+            snapshot_rows=self.rows,
+            truth_rows=self.truth,
+            shocks=len(self.sim.shocks),
+            external_changes=self.external,
+        )
+
+
+def run_scenario(
+    store: Store, params: ScenarioParams, *, window_days: int = SYNC_WINDOW_DAYS
+) -> ScenarioRun:
+    """Simulate `params.days` days of an operator's budget schedule into `store`."""
+    driver = ScenarioDriver(store, params, window_days=window_days)
+    budgets = budget_schedule(driver.sim)
+    for index in range(params.days):
+        driver.run_day(index, {ref: days[index] for ref, days in budgets.items()})
+    return driver.result()

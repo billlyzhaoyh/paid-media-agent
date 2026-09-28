@@ -331,6 +331,60 @@ CREATE TABLE anomaly_flags (
 );
 """
 
+BANDIT = """
+CREATE TABLE bandit_runs (
+    run_id UUID PRIMARY KEY,
+    mode VARCHAR NOT NULL,
+    scenario_id VARCHAR,
+    account_alias VARCHAR,
+    decision_day DATE NOT NULL,
+    policy VARCHAR NOT NULL,
+    policy_version VARCHAR NOT NULL,
+    objective VARCHAR NOT NULL,
+    total_budget DOUBLE NOT NULL,
+    currency VARCHAR,
+    prior_source VARCHAR NOT NULL,
+    config JSON NOT NULL,
+    seed BIGINT,
+    data_checks JSON NOT NULL,
+    fallback_used BOOLEAN NOT NULL,
+    notes JSON NOT NULL,
+    created_at TIMESTAMP NOT NULL
+);
+CREATE TABLE bandit_decisions (
+    run_id UUID NOT NULL,
+    arm_key VARCHAR NOT NULL,
+    platform VARCHAR NOT NULL,
+    provider_account_id VARCHAR NOT NULL,
+    account_alias VARCHAR NOT NULL,
+    entity_ref VARCHAR NOT NULL,
+    entity_name VARCHAR,
+    eligible BOOLEAN NOT NULL,
+    ineligible_reason VARCHAR,
+    current_budget DOUBLE,
+    pacing_ratio DOUBLE,
+    spend_unit DOUBLE,
+    n_history INTEGER NOT NULL,
+    n_pseudo INTEGER NOT NULL,
+    prior_precision_kappa2 DOUBLE,
+    post_mean JSON,
+    post_cov JSON,
+    sampled_kappa1 DOUBLE,
+    sampled_kappa2 DOUBLE,
+    rejected_draws INTEGER,
+    budget_thompson DOUBLE,
+    budget_greedy DOUBLE,
+    final_budget DOUBLE,
+    lower_bound DOUBLE,
+    upper_bound DOUBLE,
+    constrained_by VARCHAR[] NOT NULL,
+    expected_conversions DOUBLE,
+    propensity DOUBLE,
+    proposal_id UUID,
+    PRIMARY KEY (run_id, arm_key)
+);
+"""
+
 MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("0001_operational", OPERATIONAL),
     ("0002_conversations", CONVERSATIONS),
@@ -338,6 +392,7 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("0004_simulation", SIMULATION),
     ("0005_jobs", JOBS),
     ("0006_predictions", PREDICTIONS),
+    ("0007_bandit", BANDIT),
 )
 
 

@@ -74,14 +74,17 @@ On three seeds of eight weekly checks (about 450 campaign-days each):
 
 | Method | Precision | Recall | False alarms per seed |
 | --- | --- | --- | --- |
-| ±50% day-over-day rule | 0.08 | 0.94 | 166 |
-| Local band, 95% | 0.23 | 0.74 | 35 |
-| TabPFN band, 95% | 0.35 | 0.72 | 18 |
-| Local band, 80% | 0.08 | 0.89 | 151 |
-| TabPFN band, 80% | 0.10 | 0.94 | 129 |
+| ±50% day-over-day rule | 0.07 | 0.90 | 169 |
+| Local band, 95% | 0.24 | 0.80 | 33 |
+| TabPFN band, 95% | 0.34 | 0.78 | 21 |
+| Local band, 80% | 0.07 | 0.85 | 153 |
+| TabPFN band, 80%\* | 0.10 | 0.94 | 129 |
 
-At the rule's recall, the TabPFN band has fewer false alarms; at the default 95% it has a ninth
-of them and misses more. Budget changes cause 17 to 20 of the rule's false alarms per seed and 1
+\*Measured on the earlier simulator, whose curves had a spend threshold; the other rows are
+current. On that simulator the rest of the table was within 0.06 of these numbers.
+
+At the rule's recall, the TabPFN band has fewer false alarms; at the default 95% it has an eighth
+of them and misses more. Budget changes cause 17 to 21 of the rule's false alarms per seed and 2
 to 4 of the 95% bands'. The bands miss shocks on low-volume campaigns, where a drop to zero or a
 doubling is within normal Poisson variation. The local band is calibrated but less sharp than
 TabPFN.
@@ -89,7 +92,7 @@ TabPFN.
 Known limitation: training includes every past day, anomalies too. A shock a few days before the
 window can widen the range for the same campaign and hide a second one; TabPFN is more affected
 than the local band because it weights recent, similar rows. Two mitigations were tried and
-rejected on this backtest: dropping training days more than 4 to 8 robust deviations from their
+rejected on this backtest (on the earlier simulator): dropping training days more than 4 to 8 robust deviations from their
 expectation (TabPFN precision 0.35 to 0.28, false alarms 18 to 26) and dropping days earlier
 checks flagged (the band narrows with each check and false alarms grow). Neither improved recall.
 
@@ -103,12 +106,25 @@ now; `paid-media-agent sync` uses it when `serve` holds the file. Every run is k
 
 ## Simulation
 
-`sim/simulator.py` generates campaigns whose final conversions follow the response curve the budget
-allocator assumes, `log(y + 1) = kappa1 + kappa2 * log(x + 1)` for spend `x`. It adds weekday
-seasonality, Poisson noise, pacing below budget, conversions that arrive over several days,
-labelled shocks (tracking outage, overspend, conversion surge), and campaigns that start late.
-Budgets change at random intervals, like an operator's, so each curve can be identified from history.
+`sim/simulator.py` generates campaigns whose expected final conversions follow a power law in
+spend `x`, `E[y] = exp(kappa1) * x ** kappa2` with `0.55 <= kappa2 <= 0.9`. Zero spend buys
+nothing and each extra unit buys less, which are the assumptions the
+[budget bandit](budget-bandit.md) makes. The simulator adds:
+
+- weekday seasonality;
+- Poisson noise;
+- pacing below budget;
+- conversions that arrive over several days;
+- labelled shocks (tracking outage, overspend, conversion surge);
+- campaigns that start late.
+
+Budgets change at random intervals, like an operator's, so each curve can be identified from
+history. Each campaign-day draws its noise from its own seeded generator. Two runs that set
+different budgets therefore share their pacing and noise draws (common random numbers), and
+policies can be compared directly.
 
 `paid-media-agent simulate --scenario NAME` runs a scenario through the same ingest path as real
 reads into `workspace/state/sim-NAME.duckdb`, with the ground truth in `sim_truth`. Simulated data
-never enters the production state file. A seed fixes the whole scenario.
+never enters the production state file. A seed fixes the whole scenario. `ScenarioDriver` runs
+one day at a time with budgets from the caller; `run_scenario` drives it with the operator's
+schedule, and the bandit's evaluation drives it with a policy.

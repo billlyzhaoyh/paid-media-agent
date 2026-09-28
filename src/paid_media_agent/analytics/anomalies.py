@@ -27,6 +27,13 @@ from typing import Any, Literal
 
 import numpy as np
 
+from paid_media_agent.analytics.panel import (
+    PanelRow,
+    completeness,
+    lag_curves,
+    load_panel,
+    maturity_days,
+)
 from paid_media_agent.predict.protocol import (
     PredictionRequest,
     Predictor,
@@ -53,25 +60,6 @@ _COLUMNS: dict[Metric, tuple[str, ...]] = {
     "conversions": ("entity", "platform", "weekday", "t", "med7", "lag7", "naive", "spend"),
 }
 _KIND: dict[Metric, TargetKind] = {"spend": "amount", "conversions": "count"}
-
-
-@dataclass(frozen=True)
-class PanelRow:
-    platform: str
-    provider_account_id: str
-    account_alias: str
-    entity_ref: str
-    entity_name: str
-    day: date
-    spend: float
-    conversions: float | None
-    is_complete: bool
-    age_days: int
-    budget: float | None
-
-    @property
-    def key(self) -> tuple[str, str, str]:
-        return (self.platform, self.provider_account_id, self.entity_ref)
 
 
 @dataclass(frozen=True)
@@ -132,56 +120,6 @@ class AnomalyReport:
         }
 
 
-def load_panel(
-    store: Store, *, as_of: date, since: date, account_alias: str | None = None
-) -> list[PanelRow]:
-    """Campaign-days as the history stood on `as_of`, with the budget in force each day."""
-    alias_clause = "AND account_alias = ?" if account_alias else ""
-    params: list[Any] = [as_of, since, *([account_alias] if account_alias else [])]
-    rows = store.fetch(
-        f"""
-        WITH snap AS (
-            SELECT platform, provider_account_id, account_alias, entity_type, entity_ref,
-                entity_name, day, spend, conversions, is_complete, pulled_on
-            FROM entity_daily_snapshots
-            WHERE entity_type = 'campaign' AND pulled_on <= ? AND day >= ? {alias_clause}
-            QUALIFY row_number() OVER (
-                PARTITION BY platform, provider_account_id, entity_type, entity_ref, day
-                ORDER BY pulled_at DESC, pull_id DESC
-            ) = 1
-        )
-        SELECT s.platform, s.provider_account_id, s.account_alias, s.entity_ref, s.entity_name,
-            s.day, s.spend::DOUBLE, s.conversions::DOUBLE, s.is_complete, s.pulled_on - s.day,
-            st.daily_budget::DOUBLE
-        FROM snap s
-        ASOF LEFT JOIN entity_settings_snapshots st
-            ON st.platform = s.platform
-            AND st.provider_account_id = s.provider_account_id
-            AND st.entity_type = s.entity_type
-            AND st.entity_ref = s.entity_ref
-            AND CAST(s.day + 1 AS TIMESTAMP) > st.observed_at
-        ORDER BY s.platform, s.provider_account_id, s.entity_ref, s.day
-        """,  # noqa: S608 - the only interpolation is a constant clause
-        params,
-    )
-    return [PanelRow(*row) for row in rows]
-
-
-def _maturity(store: Store) -> dict[str, int]:
-    return {p: int(d) for p, d in store.fetch("SELECT platform, days FROM maturity_days")}
-
-
-def _lag_curves(store: Store) -> dict[str, dict[int, float]]:
-    """Share of final conversions reported by each age, per account, where enough days exist."""
-    curves: dict[str, dict[int, float]] = defaultdict(dict)
-    for account, age, share in store.fetch(
-        "SELECT provider_account_id, age_days, completeness::DOUBLE FROM conversion_lag "
-        "WHERE entity_days >= 20 AND completeness IS NOT NULL"
-    ):
-        curves[account][int(age)] = min(1.0, float(share))
-    return curves
-
-
 @dataclass
 class _Series:
     """One metric's rows with features, targets, and per-row metadata."""
@@ -226,10 +164,8 @@ def _build(
     for row in panel:
         by_entity[row.key][row.day] = row
 
-    def completeness(row: PanelRow) -> float | None:
-        if row.age_days >= maturity.get(row.platform, 7):
-            return 1.0
-        return curves.get(row.provider_account_id, {}).get(row.age_days)
+    def share_of(row: PanelRow) -> float | None:
+        return completeness(row, maturity, curves)
 
     def value(row: PanelRow | None, of: Metric) -> float:
         if row is None:
@@ -238,7 +174,7 @@ def _build(
             return row.spend
         if row.conversions is None:
             return math.nan
-        share = completeness(row)
+        share = share_of(row)
         if share is None:
             return row.conversions
         return row.conversions / share if share >= 0.3 else math.nan
@@ -270,7 +206,7 @@ def _build(
                     naive = med7 * (row.spend / spend_med7) ** SPEND_ELASTICITY
                 extra = row.spend
                 target = row.conversions
-                share = completeness(row) or 0.0
+                share = share_of(row) or 0.0
             features = [
                 float(entities[key]),
                 float(platforms[row.platform]),
@@ -404,7 +340,7 @@ async def check_anomalies(
         end = max(complete_days)
         start = end - timedelta(days=window_days - 1)
         report.window_start, report.window_end = start, end
-        maturity, curves = _maturity(store), _lag_curves(store)
+        maturity, curves = maturity_days(store), lag_curves(store)
         for metric in METRICS:
             delay = _conversion_delay(panel, maturity, curves) if metric == "conversions" else 0
             # Ages count from the pull, which is a day after the newest complete day.

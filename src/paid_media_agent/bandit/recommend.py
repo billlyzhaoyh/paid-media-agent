@@ -1,0 +1,451 @@
+"""One budget decision: read history, fit every campaign's curve, draw, allocate, and log it.
+
+The steps follow CBS's Algorithm 1 (Han & Arndt, KDD 2021):
+
+1. Load each campaign's lag-corrected history as it stood on the decision day, and check it.
+2. Ask the global model for pseudo-samples near each campaign's recent spend.
+3. Fit each campaign's local model to its history plus pseudo-samples.
+4. Draw one curve per campaign (Thompson sampling) and one at the posterior mean (greedy).
+5. Split the total budget across the drawn curves within each campaign's bounds.
+
+Bounds keep every change reviewable: at most `max_step` up or down per decision, no more than
+`max_spend_multiple` times the highest spend seen, and nothing for a campaign whose budget changed
+within `hold_days` (its last change has not been measured yet). When the data checks fail, the
+last good posteriors are reused and the run says so (`fallback_used`). The result is a
+recommendation; applying it goes through the normal proposal and approval flow.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import secrets
+import uuid
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field
+from datetime import date, datetime
+from typing import Any, Literal
+
+import numpy as np
+
+from paid_media_agent.bandit.allocate import allocate
+from paid_media_agent.bandit.arms import Arm, DataChecks, check_data, load_arms
+from paid_media_agent.bandit.policy import GUARD_Z, draw_thompson, greedy
+from paid_media_agent.bandit.posterior import (
+    LADDER_Z,
+    PRIOR_KAPPA2,
+    Posterior,
+    PowerCurve,
+    fit_posterior,
+)
+from paid_media_agent.bandit.prior import pseudo_samples
+from paid_media_agent.predict.protocol import Predictor
+from paid_media_agent.store.db import Store, utc_now
+
+Policy = Literal["thompson", "greedy"]
+Mode = Literal["recommend", "simulate", "backtest"]
+POLICY_VERSION = "cbs-v1"
+OBJECTIVE = "max_conversions"
+PROPENSITY_BAND = 0.05
+"""A redraw counts toward the propensity when its budget is within 5% of the chosen one."""
+
+
+@dataclass(frozen=True)
+class BanditConfig:
+    policy: Policy = "thompson"
+    train_days: int = 90
+    pseudo_samples: int = 512
+    """Per campaign; CBS tuned 128 to 512. More pulls each curve toward the global model."""
+    prior_half_life_days: float = 28.0
+    max_step: float = 0.25
+    max_spend_multiple: float = 1.5
+    hold_days: int = 7
+    min_budget: float = 1.0
+    max_budget: float | None = None
+    max_cpia: float | None = None
+    """Stop a campaign where its next conversion would cost more than this (currency)."""
+    prior_kappa2: float = PRIOR_KAPPA2
+    ladder_z: float = LADDER_Z
+    guard_z: float = GUARD_Z
+    propensity_draws: int = 200
+
+    def __post_init__(self) -> None:
+        if not 0 < self.max_step < 1:
+            raise ValueError("max_step must be between 0 and 1")
+        if self.max_spend_multiple < 1:
+            raise ValueError("max_spend_multiple must be at least 1")
+        if self.pseudo_samples < 0 or self.train_days < 14 or self.hold_days < 0:
+            raise ValueError("pseudo_samples >= 0, train_days >= 14, and hold_days >= 0")
+
+
+@dataclass
+class ArmDecision:
+    arm: Arm
+    lower: float | None = None
+    upper: float | None = None
+    posterior: Posterior | None = None
+    sampled: tuple[float, float] | None = None
+    rejected_draws: int | None = None
+    budget_thompson: float | None = None
+    budget_greedy: float | None = None
+    final_budget: float | None = None
+    constrained_by: list[str] = field(default_factory=list)
+    expected_conversions: float | None = None
+    propensity: float | None = None
+
+    def as_json(self) -> dict[str, Any]:
+        arm, post = self.arm, self.posterior
+        return {
+            "account_alias": arm.account_alias,
+            "entity_ref": arm.entity_ref,
+            "entity_name": arm.entity_name,
+            "eligible": arm.eligible,
+            "reason": arm.reason,
+            "current_budget": arm.current_budget,
+            "final_budget": _round(self.final_budget),
+            "change": None
+            if not arm.current_budget or self.final_budget is None
+            else round(self.final_budget / arm.current_budget - 1, 4),
+            "bounds": [_round(self.lower), _round(self.upper)],
+            "constrained_by": self.constrained_by,
+            "pacing_ratio": round(arm.pacing, 3),
+            "cost_per_conversion": _round(arm.unit),
+            "history_days": arm.n_history,
+            "cold_start": arm.cold_start,
+            "kappa2": None if post is None else round(float(post.kappa_mean[1]), 3),
+            "kappa2_sd": None if post is None else round(post.kappa2_sd, 3),
+            "expected_conversions": _round(self.expected_conversions),
+            "propensity": _round(self.propensity),
+        }
+
+
+def _round(value: float | None) -> float | None:
+    return None if value is None or not math.isfinite(value) else round(value, 2)
+
+
+@dataclass
+class BanditRun:
+    run_id: uuid.UUID
+    decision_day: date
+    policy: Policy
+    total_budget: float
+    currency: str | None
+    prior_source: str
+    data_checks: DataChecks
+    fallback_used: bool
+    seed: int
+    decisions: list[ArmDecision]
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def budgets(self) -> dict[str, float]:
+        """Entity ref to the recommended daily budget, for every campaign with a budget."""
+        return {
+            d.arm.entity_ref: float(d.final_budget)
+            for d in self.decisions
+            if d.final_budget is not None
+        }
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "run_id": str(self.run_id),
+            "decision_day": self.decision_day.isoformat(),
+            "policy": self.policy,
+            "objective": OBJECTIVE,
+            "total_budget": round(self.total_budget, 2),
+            "currency": self.currency,
+            "prior_source": self.prior_source,
+            "data_checks": self.data_checks.results,
+            "fallback_used": self.fallback_used,
+            "decisions": [d.as_json() for d in self.decisions],
+            "notes": self.notes,
+        }
+
+
+def budget_bounds(arm: Arm, config: BanditConfig) -> tuple[float, float, list[str]]:
+    """The budgets this decision may choose from for one eligible campaign."""
+    current = float(arm.current_budget or 0.0)
+    if arm.days_since_change is not None and arm.days_since_change < config.hold_days:
+        return current, current, ["hold"]
+    lower = max(config.min_budget, current * (1 - config.max_step))
+    upper = current * (1 + config.max_step)
+    why: list[str] = []
+    ceiling = config.max_spend_multiple * arm.max_spend / arm.pacing
+    if ceiling < upper:
+        upper, why = ceiling, ["spend_history"]
+    if config.max_budget is not None and config.max_budget < upper:
+        upper, why = config.max_budget, ["max_budget"]
+    return lower, max(upper, lower), why
+
+
+def _last_good(store: Store, before: date, keys: set[str]) -> dict[str, tuple[Posterior, float]]:
+    rows = store.fetch(
+        """
+        SELECT d.arm_key, d.post_mean, d.post_cov, d.spend_unit
+        FROM bandit_decisions d JOIN bandit_runs r USING (run_id)
+        WHERE NOT r.fallback_used AND d.post_mean IS NOT NULL AND r.decision_day < ?
+        QUALIFY row_number() OVER (
+            PARTITION BY d.arm_key ORDER BY r.decision_day DESC, r.created_at DESC
+        ) = 1
+        """,
+        [before],
+    )
+    found = {}
+    for key, mean, cov, unit in rows:
+        if key in keys:
+            found[key] = (
+                Posterior.from_record(json.loads(mean), json.loads(cov), float(unit)),
+                float(unit),
+            )
+    return found
+
+
+def _usable(decision: ArmDecision) -> tuple[Posterior, tuple[float, float]]:
+    """A movable campaign's posterior and its valid mean curve (checked when it was made movable)."""
+    post = decision.posterior
+    mean = greedy(post) if post is not None else None
+    if post is None or mean is None:
+        raise RuntimeError(f"{decision.arm.entity_ref} has no valid curve to allocate with")
+    return post, mean
+
+
+def _allocate_curves(
+    decisions: list[ArmDecision],
+    curves: list[PowerCurve],
+    total: float,
+    config: BanditConfig,
+) -> list[float]:
+    result = allocate(
+        curves,
+        [d.arm.pacing for d in decisions],
+        [float(d.lower or 0.0) for d in decisions],
+        [float(d.upper or 0.0) for d in decisions],
+        total,
+        max_cpia=[config.max_cpia] * len(decisions),
+    )
+    return list(result.budgets)
+
+
+async def recommend(
+    store: Store,
+    predictor: Predictor | None,
+    *,
+    as_of: date,
+    config: BanditConfig | None = None,
+    total_budget: float | None = None,
+    account_alias: str | None = None,
+    mode: Mode = "recommend",
+    scenario_id: str | None = None,
+    seed: int | None = None,
+    record: bool = True,
+    clock: Callable[[], datetime] = utc_now,
+) -> BanditRun:
+    """Recommend tomorrow's budgets for one account's campaigns; nothing is changed."""
+    config = config or BanditConfig()
+    seed = secrets.randbits(63) if seed is None else seed
+    rng = np.random.default_rng(seed)
+    arms = load_arms(store, as_of=as_of, train_days=config.train_days, account_alias=account_alias)
+    accounts = {(a.platform, a.provider_account_id) for a in arms if a.eligible}
+    if len(accounts) > 1:
+        raise ValueError("budgets are allocated within one account; pass its alias")
+    checks = check_data(arms, as_of)
+    eligible = [a for a in arms if a.eligible]
+    currencies = {a.currency for a in eligible if a.currency}
+    run = BanditRun(
+        run_id=uuid.uuid4(),
+        decision_day=as_of,
+        policy=config.policy,
+        total_budget=0.0,
+        currency=next(iter(currencies), None),
+        prior_source="none",
+        data_checks=checks,
+        fallback_used=not checks.passed,
+        seed=seed,
+        decisions=[ArmDecision(arm=a) for a in arms],
+    )
+    decisions = [d for d in run.decisions if d.arm.eligible]
+    for decision in run.decisions:
+        if not decision.arm.eligible:
+            decision.final_budget = decision.arm.current_budget
+            decision.constrained_by = ["ineligible"]
+    if not decisions:
+        run.notes.append("no campaign can be allocated: none is enabled with spend and history")
+        return _finish(store, run, config, mode, scenario_id, account_alias, record, clock)
+
+    # 1-3. Curves: fresh fits, or the last good ones when the data checks failed.
+    if checks.passed:
+        pseudo = await pseudo_samples(
+            [d.arm for d in decisions],
+            as_of=as_of,
+            k=config.pseudo_samples,
+            predictor=predictor,
+            half_life_days=config.prior_half_life_days,
+        )
+        run.prior_source = f"{pseudo.source}:{pseudo.model_version}"
+        run.notes += pseudo.notes
+        for i, decision in enumerate(decisions):
+            arm = decision.arm
+            decision.posterior = fit_posterior(
+                arm.spend,
+                arm.conversions,
+                arm.weekdays,
+                arm.unit,
+                pseudo_spend=pseudo.spend.get(i),
+                pseudo_target=pseudo.target.get(i),
+                pseudo_weight=pseudo.weight,
+                prior_kappa2=config.prior_kappa2,
+                ladder_z=config.ladder_z,
+            )
+    else:
+        failed = ", ".join(k for k, v in checks.results.items() if not v["ok"])
+        run.notes.append(f"data checks failed ({failed}); reusing the last good curves")
+        previous = _last_good(store, as_of, {d.arm.key for d in decisions})
+        run.prior_source = "last_good"
+        for decision in decisions:
+            if decision.arm.key in previous:
+                decision.posterior, decision.arm.unit = previous[decision.arm.key]
+
+    # Bounds, and campaigns that stay where they are.
+    fixed_total = 0.0
+    movable: list[ArmDecision] = []
+    for decision in decisions:
+        lower, upper, why = budget_bounds(decision.arm, config)
+        decision.lower, decision.upper, decision.constrained_by = lower, upper, why
+        post = decision.posterior
+        if post is None or greedy(post) is None:
+            decision.lower = decision.upper = decision.arm.current_budget
+            decision.constrained_by = ["no_valid_curve"]
+        if decision.lower == decision.upper:
+            decision.final_budget = decision.lower
+            fixed_total += float(decision.lower or 0.0)
+        else:
+            movable.append(decision)
+    current_total = sum(float(d.arm.current_budget or 0.0) for d in decisions)
+    run.total_budget = current_total if total_budget is None else float(total_budget)
+    free = run.total_budget - fixed_total
+
+    # 4-5. Draw and allocate.
+    if movable:
+        greedy_curves = []
+        sampled_curves = []
+        for decision in movable:
+            post, mean = _usable(decision)
+            greedy_curves.append(post.curve(mean))
+            decision.sampled, decision.rejected_draws = draw_thompson(
+                post, rng, guard_z=config.guard_z
+            )
+            sampled_curves.append(post.curve(decision.sampled))
+        by_greedy = _allocate_curves(movable, greedy_curves, free, config)
+        by_thompson = _allocate_curves(movable, sampled_curves, free, config)
+        chosen = by_thompson if config.policy == "thompson" else by_greedy
+        for decision, g, t, c in zip(movable, by_greedy, by_thompson, chosen, strict=True):
+            decision.budget_greedy, decision.budget_thompson, decision.final_budget = g, t, c
+            if c <= float(decision.lower or 0.0) + 1e-6:
+                decision.constrained_by.append("lower")
+            elif c >= float(decision.upper or 0.0) - 1e-6:
+                decision.constrained_by.append("upper")
+        if config.policy == "thompson" and config.propensity_draws > 0:
+            hits = np.zeros(len(movable))
+            for _ in range(config.propensity_draws):
+                redraw = [
+                    post.curve(draw_thompson(post, rng, guard_z=config.guard_z)[0])
+                    for post, _ in map(_usable, movable)
+                ]
+                budgets = _allocate_curves(movable, redraw, free, config)
+                chosen_budgets = np.asarray([float(d.final_budget or 0.0) for d in movable])
+                hits += np.abs(np.asarray(budgets) / chosen_budgets - 1) <= PROPENSITY_BAND
+            for decision, hit in zip(movable, hits, strict=True):
+                decision.propensity = float(hit / config.propensity_draws)
+        elif config.policy == "greedy":
+            for decision in movable:
+                decision.propensity = 1.0
+    for decision in decisions:
+        post = decision.posterior
+        centre = greedy(post) if post is not None else None
+        if post is not None and centre is not None and decision.final_budget is not None:
+            decision.expected_conversions = post.curve(centre).value(
+                decision.arm.pacing * decision.final_budget
+            )
+    if free < sum(float(d.lower or 0.0) for d in movable) - 1e-6:
+        run.notes.append("the total is below the campaigns' minimum budgets; all are at minimum")
+    return _finish(store, run, config, mode, scenario_id, account_alias, record, clock)
+
+
+def _insert(table: str, columns: int) -> str:
+    return f"INSERT INTO {table} VALUES ({', '.join(['?'] * columns)})"  # noqa: S608 - constants
+
+
+def _finish(
+    store: Store,
+    run: BanditRun,
+    config: BanditConfig,
+    mode: Mode,
+    scenario_id: str | None,
+    account_alias: str | None,
+    record: bool,
+    clock: Callable[[], datetime],
+) -> BanditRun:
+    if not record:
+        return run
+    at = clock()
+    with store.transaction() as cursor:
+        cursor.execute(
+            _insert("bandit_runs", 17),
+            [
+                run.run_id,
+                mode,
+                scenario_id,
+                account_alias,
+                run.decision_day,
+                run.policy,
+                POLICY_VERSION,
+                OBJECTIVE,
+                run.total_budget,
+                run.currency,
+                run.prior_source,
+                json.dumps(asdict(config)),
+                run.seed,
+                json.dumps(run.data_checks.results),
+                run.fallback_used,
+                json.dumps(run.notes),
+                at,
+            ],
+        )
+        for d in run.decisions:
+            arm, post = d.arm, d.posterior
+            stored = post.as_record() if post is not None else None
+            cursor.execute(
+                _insert("bandit_decisions", 29),
+                [
+                    run.run_id,
+                    arm.key,
+                    arm.platform,
+                    arm.provider_account_id,
+                    arm.account_alias,
+                    arm.entity_ref,
+                    arm.entity_name,
+                    arm.eligible,
+                    arm.reason,
+                    arm.current_budget,
+                    arm.pacing,
+                    arm.unit if math.isfinite(arm.unit) else None,
+                    arm.n_history,
+                    post.n_pseudo if post is not None else 0,
+                    post.precision_kappa2 if post is not None else None,
+                    json.dumps(stored["post_mean"]) if stored else None,
+                    json.dumps(stored["post_cov"]) if stored else None,
+                    d.sampled[0] if d.sampled else None,
+                    d.sampled[1] if d.sampled else None,
+                    d.rejected_draws,
+                    d.budget_thompson,
+                    d.budget_greedy,
+                    d.final_budget,
+                    d.lower,
+                    d.upper,
+                    d.constrained_by,
+                    d.expected_conversions,
+                    d.propensity,
+                    None,
+                ],
+            )
+    return run

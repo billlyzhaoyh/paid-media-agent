@@ -26,10 +26,18 @@
   longer flags days. `tests/eval/anomaly_backtest.py` compares them on simulated accounts.
 - `simulate`: seeded synthetic campaigns with known response curves, delayed conversions, and
   labelled shocks, written to their own history file for testing prediction and allocation.
+- A budget bandit, simulation only: `bandit simulate` and `bandit evaluate` split a daily budget
+  across campaigns to maximise conversions (Lyft's Contextual Budgeting System, adapted), within
+  step, spend-history, and hold-period bounds, and log every decision in `bandit_runs` and
+  `bandit_decisions`. The global model is a local pooled regression, or TabPFN with
+  `--predictor tabpfn`.
 
 Live provider writes remain disabled by default and require the documented release gates.
 
 ### Changed
+
+- Simulated conversions follow a pure power law in spend (zero spend buys nothing), and each
+  campaign-day draws its own noise, so runs with different budgets share their noise.
 
 - Replace LangChain, LangGraph, and Deep Agents with a small agent loop in `harness/`. One
   OpenAI-compatible adapter reaches Anthropic, OpenAI, Gemini, OpenRouter, and other providers with

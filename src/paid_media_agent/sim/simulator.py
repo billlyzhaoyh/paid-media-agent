@@ -1,13 +1,17 @@
 """Synthetic campaigns with known ground truth, for testing prediction and budget allocation.
 
-Each campaign's final conversions follow the response curve the budget bandit assumes,
+Each campaign's expected final conversions follow a power law in spend,
 
-    log(y + 1) = kappa1 + kappa2 * log(x + 1),    x = spend,
+    E[y] = w(weekday) * exp(kappa1) * x ** kappa2,    x = spend, 0 < kappa2 < 1,
 
-scaled by weekday seasonality and drawn with Poisson noise. Spend is the budget times a pacing
-ratio. Conversions are reported with a delay, so a day's count grows over later pulls. Injected
-shocks are labelled, and some campaigns start partway through (cold starts). A scenario is fully
-determined by its parameters, including the seed.
+so zero spend buys nothing and each extra unit buys less (the budget bandit's assumptions).
+Conversions are Poisson draws around it. Spend is the budget times a pacing ratio. Conversions are
+reported with a delay, so a day's count grows over later pulls. Injected shocks are labelled, and
+some campaigns start partway through (cold starts).
+
+A scenario is fully determined by its parameters, including the seed. Each campaign-day draws its
+noise from its own generator, so two runs that set different budgets still share pacing and
+noise draws (common random numbers), which makes policies directly comparable.
 """
 
 from __future__ import annotations
@@ -77,7 +81,20 @@ class CampaignTruth:
 
     def response(self, spend: float) -> float:
         """Expected final conversions at `spend` on an average weekday."""
-        return max(0.0, math.exp(self.kappa1) * math.pow(spend + 1.0, self.kappa2) - 1.0)
+        return math.exp(self.kappa1) * math.pow(max(spend, 0.0), self.kappa2)
+
+    def value(self, spend: float) -> float:
+        return self.response(spend)
+
+    def marginal(self, spend: float) -> float:
+        """Extra expected conversions per unit of extra spend at `spend`."""
+        return self.kappa2 * math.exp(self.kappa1) * math.pow(max(spend, 1e-9), self.kappa2 - 1)
+
+    def spend_at_marginal(self, marginal: float) -> float:
+        """The spend at which one more unit of spend buys `marginal` conversions."""
+        if marginal <= 0:
+            return math.inf
+        return math.pow(marginal / (self.kappa2 * math.exp(self.kappa1)), 1 / (self.kappa2 - 1))
 
 
 @dataclass(frozen=True)
@@ -122,8 +139,8 @@ class Simulator:
             kappa2 = float(rng.uniform(*p.kappa2_range))
             budget = float(rng.uniform(*p.budget_range))
             cpa = float(rng.uniform(*p.cpa_range))
-            conversions = budget * p.pacing_mean / cpa
-            kappa1 = math.log(conversions + 1.0) - kappa2 * math.log(budget * p.pacing_mean + 1.0)
+            spend = budget * p.pacing_mean
+            kappa1 = math.log(spend / cpa) - kappa2 * math.log(spend)
             start = int(rng.integers(int(p.days * 0.5), int(p.days * 0.8))) if i in cold else 0
             campaigns.append(
                 CampaignTruth(
@@ -166,9 +183,12 @@ class Simulator:
 
     def step(self, index: int, budgets: Mapping[str, float]) -> list[DayOutcome]:
         """Run day `index` with the given daily budgets and return what really happened."""
-        p, rng = self.params, self._rng
+        p = self.params
         outcomes = []
-        for campaign in self.active(index):
+        for number, campaign in enumerate(self.campaigns):
+            if campaign.start_index > index:
+                continue
+            rng = np.random.default_rng([p.seed, number, index])
             budget = float(budgets[campaign.entity_ref])
             anomaly = self.shocks.get((campaign.entity_ref, index))
             spend_mult, conv_mult = SHOCK_EFFECTS[anomaly] if anomaly else (1.0, 1.0)

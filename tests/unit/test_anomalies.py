@@ -94,7 +94,8 @@ async def test_the_local_band_finds_an_overspend_and_a_tracking_break(history: S
     assert ("sim-002", LAST_DAY - timedelta(days=2), "spend", "up") in found
     assert (busiest, LAST_DAY - timedelta(days=5), "conversions", "down") in found
     assert report.flags[0].score >= report.flags[-1].score
-    assert len(report.flags) <= 6, [(f.entity_ref, f.day, f.metric) for f in report.flags]
+    # 70 campaign-day checks at a 95% band: a few ordinary days land just outside by chance.
+    assert len(report.flags) <= 8, [(f.entity_ref, f.day, f.metric) for f in report.flags]
 
 
 async def test_the_check_reads_history_as_it_stood_on_the_date(history: Store) -> None:
