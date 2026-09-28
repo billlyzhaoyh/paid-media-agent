@@ -11,6 +11,7 @@ import json
 import logging
 import sys
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any
 
 import click
@@ -130,19 +131,46 @@ def demo(with_proposal: bool, as_json: bool) -> None:
 
 @main.command()
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
-def doctor(as_json: bool) -> None:
+@click.option(
+    "--live",
+    is_flag=True,
+    help="Also read each account through its live tools and check the data path end to end.",
+)
+@click.option("--alias", "aliases", multiple=True, help="With --live: account alias. Repeatable.")
+def doctor(as_json: bool, live: bool, aliases: tuple[str, ...]) -> None:
     """Diagnose configuration without printing secret values."""
     from paid_media_agent.doctor import format_checks, run_doctor
 
     root = project_root()
-    if as_json:
+    if as_json and not live:
         _emit(actions.status(root), True)
         return
     settings = actions.load_settings(root)
     checks = run_doctor(settings, project_root=root)
-    click.echo(format_checks(checks))
+    if live:
+        checks += _live_checks(settings, aliases)
+    if as_json:
+        click.echo(json.dumps({"checks": [c.__dict__ for c in checks]}, indent=2))
+    else:
+        click.echo(format_checks(checks))
     if any(not c.ok for c in checks):
         sys.exit(1)
+
+
+def _live_checks(settings: Settings, aliases: tuple[str, ...]) -> list[Any]:
+    from paid_media_agent.analytics.live_check import run_live_checks
+    from paid_media_agent.runtime.self_hosted import build_self_hosted_runtime
+    from paid_media_agent.store import Store, StoreBusy
+
+    try:
+        runtime = _state_runtime(settings)
+    except StoreBusy:
+        # `serve` holds the state file; check against a throwaway store instead.
+        runtime = build_self_hosted_runtime(settings, project_root=project_root(), store=Store())
+    try:
+        return asyncio.run(run_live_checks(runtime, aliases=aliases))
+    finally:
+        runtime.store.close()
 
 
 # ---------------------------------------------------------------- config
@@ -550,8 +578,12 @@ def _echo_sync(summary: dict[str, Any], as_json: bool) -> None:
         return
     click.echo(
         f"{summary['source']} {summary['start']} to {summary['end']}: {summary['rows']} "
-        f"entity-days, {summary['settings']} campaign settings, {len(summary['reads'])} reads."
+        f"entity-days, {summary['settings']} campaign settings, {len(summary['reads'])} reads"
+        f" ({summary.get('calls', len(summary['reads']))} provider calls)."
     )
+    for alias, contract in (summary.get("contracts") or {}).items():
+        if not contract.startswith("rows "):
+            click.echo(f"  {alias}: read contract {contract}")
     if summary["unavailable"]:
         click.echo("  unavailable: " + "; ".join(summary["unavailable"]))
 
@@ -573,8 +605,7 @@ def sync(days: int | None, end_date: str | None, aliases: tuple[str, ...], as_js
 
     settings = Settings()
     _configure_logging(settings)
-    end = _day(end_date, date.today() - timedelta(days=1))
-    assert end is not None  # noqa: S101 - a default is supplied
+    end = _day(end_date)  # None: each account's own yesterday
     try:
         runtime = _state_runtime(settings)
     except StoreBusy:
@@ -598,6 +629,7 @@ def sync(days: int | None, end_date: str | None, aliases: tuple[str, ...], as_js
                 end=end,
                 days=days or settings.paid_media_sync_days,
                 aliases=aliases or None,
+                max_calls=settings.paid_media_sync_max_calls,
             )
         )
     finally:
@@ -605,6 +637,53 @@ def sync(days: int | None, end_date: str | None, aliases: tuple[str, ...], as_js
     _echo_sync(result.summary(), as_json)
     if not result.reads:
         sys.exit(1)
+
+
+@main.command()
+@click.option("--out", "out_dir", default=None, help="Backup folder (default: state/backups).")
+def backup(out_dir: str | None) -> None:
+    """Export the state file as Parquet; works while `serve` runs (through its API)."""
+    from paid_media_agent.store import StoreBusy
+    from paid_media_agent.store.backup import backup_state, backups_root
+
+    settings = Settings()
+    _configure_logging(settings)
+    try:
+        runtime = _state_runtime(settings)
+    except StoreBusy:
+        runtime = None
+    if runtime is None:
+        if out_dir:
+            raise click.ClickException(
+                "`serve` holds the state file; run `backup` without --out to use its job"
+            )
+        run = _server_job(settings, "backup")
+        if run["status"] != "ok":
+            raise click.ClickException(f"backup failed in `serve`: {run['detail']}")
+        click.echo(f"Backed up to {run['detail']['backup']}.")
+        return
+    try:
+        root = Path(out_dir) if out_dir else backups_root(runtime.store)
+        target, removed = backup_state(runtime.store, root)
+    finally:
+        runtime.store.close()
+    click.echo(f"Backed up to {target}." + (f" Removed {len(removed)} older." if removed else ""))
+
+
+@main.command()
+@click.argument("backup_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--to", "target", required=True, type=click.Path(path_type=Path), help="New state file."
+)
+def restore(backup_dir: Path, target: Path) -> None:
+    """Build a new state file from a backup. Never overwrites; point PAID_MEDIA_STATE_PATH at it."""
+    from paid_media_agent.store.backup import restore_backup
+
+    try:
+        restored = restore_backup(backup_dir, target)
+    except (FileExistsError, FileNotFoundError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from None
+    click.echo(f"Restored into {restored}. Set PAID_MEDIA_STATE_PATH={restored} to use it.")
 
 
 @main.command()
@@ -637,6 +716,7 @@ def backfill(
                 start=start,
                 end=end,
                 aliases=aliases or None,
+                max_calls=settings.paid_media_sync_max_calls,
             )
         )
     except ValueError as exc:

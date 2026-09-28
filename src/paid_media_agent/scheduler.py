@@ -20,12 +20,14 @@ from typing import TYPE_CHECKING, Any, Literal
 from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.store.db import Store, utc_now
 
+DEDUPE_KEEP_DAYS = 7
+
 if TYPE_CHECKING:
     from paid_media_agent.runtime.self_hosted import SelfHostedRuntime
 
 log = logging.getLogger(__name__)
 
-JOB_NAMES = ("sync", "anomalies", "allocate", "report_weekly", "report_monthly")
+JOB_NAMES = ("sync", "anomalies", "allocate", "report_weekly", "report_monthly", "backup")
 JobTrigger = Literal["scheduled", "manual"]
 
 
@@ -189,10 +191,12 @@ def build_jobs(runtime: SelfHostedRuntime, *, clock: Callable[[], datetime] = ut
             accounts=profile.accounts,
             catalog=runtime.catalog,
             dispatcher=dispatcher,
-            end=yesterday(),
             days=settings.paid_media_sync_days,
+            max_calls=settings.paid_media_sync_max_calls,
+            clock=clock,
         )
-        return run.summary()
+        pruned = runtime.store.repositories.dedupe.prune(clock() - timedelta(days=DEDUPE_KEEP_DAYS))
+        return {**run.summary(), "dedupe_pruned": pruned}
 
     async def anomalies() -> dict[str, Any]:
         from paid_media_agent.analytics.anomalies import check_anomalies
@@ -248,6 +252,14 @@ def build_jobs(runtime: SelfHostedRuntime, *, clock: Callable[[], datetime] = ut
 
         return _report
 
+    async def backup() -> dict[str, Any]:
+        from paid_media_agent.store.backup import backup_state, backups_root
+
+        target, removed = await asyncio.to_thread(
+            backup_state, runtime.store, backups_root(runtime.store), now=clock()
+        )
+        return {"backup": str(target), "removed": [str(p) for p in removed]}
+
     hour = settings.paid_media_job_hour_utc
     enabled = set(settings.scheduled_jobs())
     return [
@@ -274,4 +286,5 @@ def build_jobs(runtime: SelfHostedRuntime, *, clock: Callable[[], datetime] = ut
             hour_utc=hour,
             scheduled="report_monthly" in enabled,
         ),
+        Job("backup", backup, hour_utc=hour, scheduled="backup" in enabled),
     ]

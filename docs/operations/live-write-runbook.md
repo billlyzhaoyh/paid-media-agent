@@ -25,11 +25,16 @@ new proposal and approval.
 1. Run `uv run paid-media-agent doctor`. Confirm the model, accounts, Pipeboard token, signing key,
    and approver list are configured, and that `write_policy` shows no validation issues for the row
    you intend to release.
-2. Run the read-only live check: `PAID_MEDIA_LIVE_TESTS=1 uv run pytest tests/integration -q`.
-   Note the printed catalog revision.
+2. Run `uv run paid-media-agent doctor --live --alias <alias>` and fix every failure. It must
+   show the account's rows normalizing and a plausible budget-to-spend ratio; a ratio around 100x
+   means a money unit is wrong, and no budget may be written until it is fixed. Then run the
+   read-only integration check, `PAID_MEDIA_LIVE_TESTS=1 uv run pytest tests/integration -q`, and
+   note the printed catalog revision.
 3. Read the live schema of the target mutation. Add or update its row in the write-policy file with
    the exact `target_arg`, editable fields, readback tool, readback field mapping, and any
-   `validate_only_arg` or `idempotency_arg` the schema exposes. Restart and re-run `doctor`.
+   `validate_only_arg` or `idempotency_arg` the schema exposes. Set `provider_units` for money
+   fields the provider takes in minor units or micros (Meta budgets are minor units); proposals
+   stay in account currency. Restart and re-run `doctor`.
 4. Pick one reversible operation on one non-serving or low-spend object (a paused campaign's daily
    budget is the reference canary). Never start with activation, creation, deletion, audience,
    conversion, or permission changes.

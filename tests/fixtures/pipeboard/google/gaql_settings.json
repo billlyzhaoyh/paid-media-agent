@@ -1,0 +1,11 @@
+{
+  "_provenance": "Campaign settings from the contract's GAQL, nested camelCase. Unverified live. Campaign 333 uses a shared budget; enum values for 222 arrive as protobuf numbers.",
+  "results": [
+    {"campaign": {"id": "111", "name": "Search - Brand", "status": "ENABLED", "biddingStrategyType": "TARGET_CPA", "targetCpa": {"targetCpaMicros": "40000000"}},
+     "campaignBudget": {"amountMicros": "30000000", "period": "DAILY", "explicitlyShared": false}},
+    {"campaign": {"id": "222", "name": "PMax - All", "status": 2, "biddingStrategyType": "MAXIMIZE_CONVERSION_VALUE", "maximizeConversionValue": {"targetRoas": 3.5}},
+     "campaignBudget": {"amountMicros": "90000000", "period": 2, "explicitlyShared": false}},
+    {"campaign": {"id": "333", "name": "Search - Generic", "status": "PAUSED", "biddingStrategyType": "MAXIMIZE_CONVERSIONS"},
+     "campaignBudget": {"amountMicros": "50000000", "period": "DAILY", "explicitlyShared": true}}
+  ]
+}

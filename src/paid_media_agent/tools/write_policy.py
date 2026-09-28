@@ -5,11 +5,13 @@ from __future__ import annotations
 import hashlib
 import tomllib
 from collections.abc import Mapping
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from paid_media_agent.domain.common import FIXTURE_PLATFORMS, RiskLevel
+from paid_media_agent.domain.common import FIXTURE_PLATFORMS, JsonValue, RiskLevel
+from paid_media_agent.domain.money import MoneyUnit, to_currency, to_provider
 from paid_media_agent.domain.proposals import (
     canonical_json,
 )
@@ -32,6 +34,9 @@ class WriteOperation(BaseModel):
     """Maps proposal field -> field name in the readback payload."""
     risk: RiskLevel
     units: dict[str, str] = Field(default_factory=dict)
+    provider_units: dict[str, MoneyUnit] = Field(default_factory=dict)
+    """Money fields the provider reads and writes in minor units or micros. Proposals, receipts,
+    and change events stay in account currency; only the call arguments and readback differ."""
     readback_entity_key: str | None = "campaign"
     """Key holding the entity object inside the readback payload, or None for a flat payload."""
     validate_only_arg: str | None = None
@@ -39,10 +44,42 @@ class WriteOperation(BaseModel):
     idempotency_arg: str | None = None
     """Schema argument for a provider idempotency key, when the tool has one."""
 
+    def to_provider(self, field: str, value: JsonValue, currency: str) -> JsonValue:
+        """An account-currency value as the provider's number for `field`."""
+        unit = self.provider_units.get(field)
+        amount = _amount(value)
+        if unit is None or unit == "currency" or amount is None:
+            return value
+        return to_provider(amount, unit, currency)
+
+    def to_currency(self, field: str, value: JsonValue, currency: str) -> JsonValue:
+        """A provider value for `field` in account currency, as a JSON number."""
+        unit = self.provider_units.get(field)
+        amount = _amount(value)
+        if unit is None or unit == "currency" or amount is None:
+            return value
+        return float(to_currency(amount, unit, currency))
+
+    def as_sent(self, field: str, value: JsonValue, currency: str) -> JsonValue:
+        """What the provider will hold after the change, in account currency (rounded)."""
+        return self.to_currency(field, self.to_provider(field, value, currency), currency)
+
     def digest(self) -> str:
-        return hashlib.sha256(
-            canonical_json(self.model_dump(mode="json")).encode("utf-8")
-        ).hexdigest()[:16]
+        # Currency-unit operations keep the digest they had before provider units existed, so
+        # proposals awaiting approval across an upgrade still verify.
+        dumped = self.model_dump(
+            mode="json", exclude=set() if self.provider_units else {"provider_units"}
+        )
+        return hashlib.sha256(canonical_json(dumped).encode("utf-8")).hexdigest()[:16]
+
+
+def _amount(value: JsonValue) -> Decimal | None:
+    if value is None or isinstance(value, (bool, dict, list)):
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
 
 
 class WritePolicy(BaseModel):
@@ -79,6 +116,7 @@ class WritePolicyEntry(BaseModel):
     readback_fields: dict[str, str]
     risk: RiskLevel = RiskLevel.MEDIUM
     units: dict[str, str] = Field(default_factory=dict)
+    provider_units: dict[str, MoneyUnit] = Field(default_factory=dict)
     readback_entity_key: str | None = "campaign"
     validate_only_arg: str | None = None
     idempotency_arg: str | None = None
@@ -156,6 +194,7 @@ class WritePolicyFile(BaseModel):
                     readback_fields=entry.readback_fields,
                     risk=entry.risk,
                     units=entry.units,
+                    provider_units=entry.provider_units,
                     readback_entity_key=entry.readback_entity_key,
                     validate_only_arg=entry.validate_only_arg,
                     idempotency_arg=entry.idempotency_arg,

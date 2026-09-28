@@ -1,0 +1,7 @@
+{
+  "_provenance": "The same rows flattened to dotted snake_case keys, as a server using the Python client might return them. Unverified live.",
+  "rows": [
+    {"campaign.id": 111, "campaign.name": "Search - Brand", "segments.date": "2026-09-01", "metrics.cost_micros": 25500000, "metrics.impressions": 3100, "metrics.clicks": 410, "metrics.conversions": 12.0, "metrics.conversions_value": 960.5},
+    {"campaign.id": 222, "campaign.name": "PMax - All", "segments.date": "2026-09-01", "metrics.cost_micros": 80000000, "metrics.impressions": 22000, "metrics.clicks": 700, "metrics.conversions": 9.5, "metrics.conversions_value": 1210.0}
+  ]
+}

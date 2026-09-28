@@ -24,7 +24,8 @@ def test_policy_file_validates_against_catalog(
     policy, issues = policy_file.validate_against(catalog)
     assert set(policy.admitted_names()) == set(fixture_write_policy().admitted_names())
     assert {(i.tool_name, i.reason) for i in issues} == {
-        ("google_ads__update_campaign_bid", "not_admitted")
+        ("google_ads__update_campaign_bid", "not_admitted"),
+        ("meta_ads__update_campaign", "not_admitted"),
     }
     budget = policy.get("google_ads__update_campaign_budget")
     assert budget is not None and budget.validate_only_arg == "validate_only"

@@ -26,7 +26,7 @@ _SPEND_KEYS: dict[Platform, tuple[tuple[str, Decimal], ...]] = {
 PERFORMANCE_PLATFORMS = frozenset(_SPEND_KEYS)
 """Platforms with verified mappings into the cross-platform spend model."""
 _CONVERSION_KEYS = ("conversions", "purchases", "results")
-_VALUE_KEYS = ("conversion_value", "conversions_value", "value", "purchase_value", "action_values")
+_VALUE_KEYS = ("conversion_value", "conversions_value", "value", "purchase_value")
 _GRAIN_ID_KEYS: dict[EntityType, tuple[str, ...]] = {
     EntityType.AD_GROUP: ("ad_group_id", "adset_id", "line_item_id"),
     EntityType.AD: ("ad_id", "promoted_tweet_id"),

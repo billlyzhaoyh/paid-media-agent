@@ -36,10 +36,11 @@ Add `--help` for options and `--json` where supported for machine-readable outpu
 | `uv run paid-media-agent catalog show` | Inspect tool admission and schemas |
 | `uv run paid-media-agent policy validate` | Validate the write policy against the current catalog |
 | `uv run paid-media-agent doctor` | Check configuration, dependencies, and runtime prerequisites |
+| `uv run paid-media-agent doctor --live` | Read each account through its live tools and check the data path end to end |
 | `uv run paid-media-agent demo --with-proposal` | Offline analysis and simulated approved change |
 | `uv run paid-media-agent ask "Compare campaign performance last week"` | Run a question with your configured model |
 | `uv run paid-media-agent report --cadence weekly` | Render a report without a model |
-| `uv run paid-media-agent sync` | Pull the last 28 days and campaign settings into history |
+| `uv run paid-media-agent sync` | Pull recent days and campaign settings into history |
 | `uv run paid-media-agent backfill --start 2026-01-01` | Pull an older range into history |
 | `uv run paid-media-agent history --view daily` | Show stored history: coverage, daily, settings, changes, lag |
 | `uv run paid-media-agent simulate --days 180` | Simulate campaigns with known response curves into their own file |
@@ -51,6 +52,8 @@ Add `--help` for options and `--json` where supported for machine-readable outpu
 | `uv run paid-media-agent bandit evaluate --seeds 3` | Regret and forecast error of the bandit and its baselines on simulated accounts |
 | `uv run paid-media-agent writes kill-switch on` | Stop mutations |
 | `uv run paid-media-agent test state` | Open the DuckDB state file and apply migrations |
+| `uv run paid-media-agent backup` | Export the state file as Parquet (through `serve` when it runs) |
+| `uv run paid-media-agent restore FOLDER --to FILE` | Build a new state file from a backup |
 | `uv run paid-media-agent serve` | Start the API, and Slack in Socket Mode when configured |
 | `uv run paid-media-agent slack` | Alias of `serve` |
 
@@ -82,7 +85,8 @@ in the shared tools and skills, not tool-specific message renderers.
 
 `serve` runs the jobs in `PAID_MEDIA_JOBS` (default `sync,report_weekly,report_monthly`) at
 `PAID_MEDIA_JOB_HOUR_UTC` (default 6): a daily sync of the trailing `PAID_MEDIA_SYNC_DAYS` (28), a
-weekly report on Mondays, and a monthly report on the 1st. A server started after the hour still
+weekly report on Mondays, and a monthly report on the 1st. Add `backup` for a daily Parquet export
+of the state file. Each account's sync ends on its own yesterday, in its timezone. A server started after the hour still
 runs that day's jobs; a failed job waits for its next slot. `POST /jobs/{name}` runs one now, and
 `GET /jobs` lists recent runs. With `serve` running, `paid-media-agent sync` asks it to run the
 job over the API (it needs `PAID_MEDIA_API_TOKENS`); `backfill` and `history` need `serve` stopped.
@@ -95,8 +99,38 @@ observed from the first sync onward, so days before it show no budget. A budget 
 that did not come through this agent's approvals is logged as `external_detected`. See
 [History and simulation](docs/architecture/history-and-simulation.md).
 
-The local `report` command uses known campaign-performance adapters. Other provider schemas can
-be explored through `ask`; they need a normalization mapping before inclusion in typed reports.
+Sync and the `report` command read each platform through its read contract (below). Other
+provider schemas can be explored through `ask`; they need a contract before they reach history or
+typed reports.
+
+## Live accounts
+
+Before the first sync of a live account, run `uv run paid-media-agent doctor --live`. For each
+account it checks:
+- the catalog loaded;
+- which read contract matched, and how far that contract is verified;
+- the contract's tools and arguments are present;
+- the account id shape;
+- a read of the last three days normalizes, with conversions present;
+- budgets are plausible against spend;
+- how many provider calls a daily sync will make.
+
+Fix each failure it names before trusting history, anomalies, or budget recommendations. See
+[Live data contracts](docs/architecture/live-data-contracts.md).
+
+- **Meta** through Pipeboard:
+  - Use `provider_account_id = "act_…"`, and set `conversion_action` in `config/accounts.toml` to
+    the action type that counts as a conversion. Without it, Meta conversions are recorded as
+    missing; `doctor --live` lists the types your account reports.
+  - Daily rows cost one call per day, so a sync re-pulls only the 8-day maturity window. Run
+    `backfill` once for older days.
+  - The contract comes from Pipeboard's published source; the first live run confirms it.
+- **Google Ads** through Pipeboard: use the customer id as ten digits. The GAQL tool's response
+  shape is unverified until the first live run.
+- **Other platforms**, including Reddit, have no live contract yet. `sync` lists them as
+  unavailable; the agent can still read them for questions.
+- **Call limit.** Each sync or backfill stops after `PAID_MEDIA_SYNC_MAX_CALLS` provider calls
+  (200) and says what it skipped, because hosted MCP plans meter calls.
 HTML reports render on the host. PDF rendering requires WeasyPrint and its native libraries in the
 host process. Automatic Slack PDF uploads are not included. Use the artifact API or local output
 files for downloads.

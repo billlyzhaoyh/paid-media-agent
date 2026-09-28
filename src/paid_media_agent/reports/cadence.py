@@ -12,6 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from paid_media_agent.analytics.sync import MAX_PAGES
 from paid_media_agent.config import AccountRegistry
 from paid_media_agent.domain.analysis import PeriodComparison
 from paid_media_agent.domain.common import JsonValue
@@ -19,11 +20,11 @@ from paid_media_agent.domain.metrics import MetricWindow
 from paid_media_agent.tools.artifacts import ArtifactStore
 from paid_media_agent.tools.catalog import AuthorizedToolCatalog, qualified_name
 from paid_media_agent.tools.compare_periods import ComparePeriodsArgs, run_compare_periods
+from paid_media_agent.tools.contracts import contract_for
 from paid_media_agent.tools.reads import ACCOUNT_ALIAS_ARG, ReadDenied, ReadDispatcher
 from paid_media_agent.tools.reports import RenderReportArgs, run_render_report
 
 Cadence = Literal["weekly", "monthly"]
-PERFORMANCE_TOOL = "get_campaign_performance"
 
 
 class ReportWindows(BaseModel):
@@ -88,32 +89,47 @@ async def run_cadence_report(
         if binding is None:
             unavailable.append(f"{alias}: unknown alias")
             continue
-        entry = catalog.get(qualified_name(binding.platform, PERFORMANCE_TOOL))
-        if entry is None:
+        contract = contract_for(catalog, binding.platform)
+        if contract is None:
             unavailable.append(
-                f"{alias}: {binding.platform.value} has no campaign performance read tool"
+                f"{alias}: {binding.platform.value} has no campaign performance read contract"
             )
             continue
-        try:
-            result = await dispatcher.execute(
-                entry.qualified_name,
-                {
-                    ACCOUNT_ALIAS_ARG: alias,
-                    "start_date": windows.previous.start.isoformat(),
-                    "end_date": windows.current.end.isoformat(),
-                },
-                source="report",
-            )
-        except ReadDenied as exc:
-            unavailable.append(f"{alias}: {exc.reason}")
+        entry = catalog.get(qualified_name(binding.platform, contract.performance_tool))
+        calls = contract.performance_calls(
+            windows.previous.start, windows.current.end, entry.input_schema if entry else {}
+        )
+        failure: str | None = None
+        found: list[str] = []
+        for call in calls:
+            arguments: dict[str, JsonValue] | None = dict(call.arguments)
+            pages = 0
+            while arguments is not None and pages < MAX_PAGES:
+                try:
+                    result = await dispatcher.execute(
+                        qualified_name(binding.platform, call.tool),
+                        {ACCOUNT_ALIAS_ARG: alias, **arguments},
+                        source="report",
+                    )
+                except ReadDenied as exc:
+                    failure = exc.reason
+                    break
+                except Exception as exc:
+                    failure = type(exc).__name__
+                    break
+                pages += 1
+                if result.artifact_kind == "performance_rows":
+                    found.append(result.artifact_id)
+                arguments = result.next_page
+            if failure is not None:
+                break
+        if failure is not None:
+            unavailable.append(f"{alias}: {failure}")
             continue
-        except Exception as exc:
-            unavailable.append(f"{alias}: {type(exc).__name__}")
-            continue
-        if result.artifact_kind != "performance_rows":
+        if not found:
             unavailable.append(f"{alias}: read returned no performance rows")
             continue
-        read_ids.append(result.artifact_id)
+        read_ids.extend(found)
     if not read_ids:
         raise RuntimeError("no platform produced performance rows; nothing to compare")
     summary = run_compare_periods(

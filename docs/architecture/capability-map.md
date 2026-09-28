@@ -6,7 +6,9 @@
 | Discover tools | `discover_tools` | `tools/catalog.py` search; activates tools for the thread | catalog revision | stale or unknown tool |
 | Read platform data | `<platform>__<tool>` | `tools/reads.py` dispatcher + guard | artifact metadata | auth, scope, schema, or partial source failure |
 | Query history | `query_history`; `paid-media-agent history` | `analytics/history.py` fixed queries over the views | history tables in the state file | unknown alias; days never pulled |
-| Build history | reads, `sync`, `backfill`, scheduled jobs | `analytics/ingest.py`, `analytics/sync.py`, `scheduler.py` | pulls, snapshots, settings, `job_runs` | provider failure listed as unavailable |
+| Build history | reads, `sync`, `backfill`, scheduled jobs | `tools/contracts.py` per platform; `analytics/ingest.py`, `analytics/sync.py`, `scheduler.py` | pulls, snapshots, settings, `job_runs` | no matching contract, provider failure, or call limit, listed as unavailable |
+| Check a live connection | `paid-media-agent doctor --live` | `analytics/live_check.py` over the contracts | `doctor` pulls in history | catalog not loaded, schema gap, no rows, implausible budget unit |
+| Back up state | `paid-media-agent backup`, `restore`; `backup` job | `store/backup.py` (Parquet export under the write lock) | `state/backups/pma-<stamp>` | folder exists, not a backup, target exists |
 | Simulate accounts | `paid-media-agent simulate` | `sim/simulator.py`, `sim/scenario.py` | `sim-<scenario>.duckdb` with `sim_truth` | invalid scenario name |
 | Check anomalies | `check_anomalies`; `paid-media-agent anomalies`; `anomalies` job | `analytics/anomalies.py`, `predict/` | `anomaly_checks`, `anomaly_flags`, `predictor_calls` | too little history, predictor unavailable (rule runs, labelled) |
 | Recommend budgets | `recommend_budgets`; `paid-media-agent allocate`; `allocate` job | `bandit/` over `analytics/panel.py`; `predict/` for TabPFN | `bandit_runs`, `bandit_decisions`, `bandit_outcomes` | data checks fail (last good curves reused), no valid curve or hold (budget kept) |

@@ -1,0 +1,11 @@
+{
+  "_provenance": "Google Ads REST searchStream-style result (nested, camelCase, int64 as strings). The Pipeboard server's actual shape is unverified; the contract accepts nested or dotted keys.",
+  "results": [
+    {"campaign": {"resourceName": "customers/1234567890/campaigns/111", "id": "111", "name": "Search - Brand"},
+     "segments": {"date": "2026-09-01"},
+     "metrics": {"costMicros": "25500000", "impressions": "3100", "clicks": "410", "conversions": 12.0, "conversionsValue": 960.5}},
+    {"campaign": {"resourceName": "customers/1234567890/campaigns/222", "id": "222", "name": "PMax - All"},
+     "segments": {"date": "2026-09-01"},
+     "metrics": {"costMicros": "80000000", "impressions": "22000", "clicks": "700", "conversions": 9.5, "conversionsValue": 1210.0}}
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "_provenance": "Graph /insights response shape as returned by get_insights (json.dumps of the Graph body) in pipeboard-co/meta-ads-mcp @ 093062c6. Numbers are strings; date_start equals date_stop for a one-day time_range; the tool sends no time_increment. From published source; unverified live. Dates are rewritten per request by the test client.",
+  "data": [
+    {
+      "account_id": "1234567890",
+      "account_name": "Example Store",
+      "campaign_id": "120210000000001",
+      "campaign_name": "Prospecting - Broad",
+      "impressions": "15230",
+      "clicks": "412",
+      "spend": "40.12",
+      "cpc": "0.097379",
+      "cpm": "2.634274",
+      "ctr": "2.705187",
+      "reach": "12001",
+      "frequency": "1.269061",
+      "actions": [
+        {"action_type": "link_click", "value": "380"},
+        {"action_type": "offsite_conversion.fb_pixel_purchase", "value": "3"},
+        {"action_type": "omni_purchase", "value": "3"},
+        {"action_type": "lead", "value": "1"}
+      ],
+      "action_values": [
+        {"action_type": "offsite_conversion.fb_pixel_purchase", "value": "150.00"},
+        {"action_type": "omni_purchase", "value": "150.00"}
+      ],
+      "cost_per_action_type": [{"action_type": "omni_purchase", "value": "13.373333"}],
+      "date_start": "2026-09-01",
+      "date_stop": "2026-09-01"
+    },
+    {
+      "account_id": "1234567890",
+      "account_name": "Example Store",
+      "campaign_id": "120210000000002",
+      "campaign_name": "Retargeting - 30d",
+      "impressions": "4100",
+      "clicks": "133",
+      "spend": "19.50",
+      "reach": "2900",
+      "frequency": "1.413793",
+      "actions": [
+        {"action_type": "link_click", "value": "120"},
+        {"action_type": "offsite_conversion.fb_pixel_purchase", "value": "2"}
+      ],
+      "action_values": [
+        {"action_type": "offsite_conversion.fb_pixel_purchase", "value": "88.40"}
+      ],
+      "date_start": "2026-09-01",
+      "date_stop": "2026-09-01"
+    },
+    {
+      "account_id": "1234567890",
+      "account_name": "Example Store",
+      "campaign_id": "120210000000003",
+      "campaign_name": "Awareness - Video",
+      "impressions": "900",
+      "clicks": "4",
+      "spend": "3.10",
+      "date_start": "2026-09-01",
+      "date_stop": "2026-09-01"
+    }
+  ],
+  "paging": {"cursors": {"before": "MAZDZD", "after": "MgZDZD"}}
+}

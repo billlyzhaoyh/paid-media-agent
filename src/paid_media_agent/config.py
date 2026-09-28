@@ -57,6 +57,10 @@ class AccountBinding(BaseModel):
     provider_account_id: str = Field(min_length=1)
     currency: str = Field(pattern=r"^[A-Z]{3}$")
     timezone: str = Field(min_length=1)
+    conversion_action: str | None = Field(default=None, min_length=1, max_length=200)
+    """Which action counts as a conversion where the platform reports several (Meta `actions`,
+    e.g. `offsite_conversion.fb_pixel_purchase`). Unset, those conversions are recorded as missing
+    rather than guessed; `doctor --live` lists the action types it sees."""
 
 
 class AccountRegistry(BaseModel):
@@ -121,11 +125,16 @@ class Settings(BaseSettings):
     Relative to the project root."""
     paid_media_jobs: str = "sync,report_weekly,report_monthly"
     """Jobs `serve` runs on schedule: sync (daily), anomalies (daily, after sync), allocate
-    (Mondays: budget recommendations), report_weekly (Mondays), report_monthly (the 1st). Empty
+    (Mondays: budget recommendations), report_weekly (Mondays), report_monthly (the 1st), backup
+    (daily Parquet export of the state file, keeping the newest 14). Empty
     disables scheduling; `POST /jobs/{name}` still runs any job on demand."""
     paid_media_job_hour_utc: int = Field(default=6, ge=0, le=23)
     paid_media_sync_days: int = Field(default=28, ge=1, le=90)
-    """Trailing days each sync re-pulls, so late conversions arrive as newer snapshots."""
+    """Trailing days each sync re-pulls, so late conversions arrive as newer snapshots. A platform
+    whose read contract needs one call per day re-pulls only its maturity window."""
+    paid_media_sync_max_calls: int = Field(default=200, ge=1)
+    """Provider calls one sync or backfill may make before it stops and reports what it skipped;
+    hosted MCP plans meter calls."""
     paid_media_predictor: Literal["none", "local", "tabpfn"] = "local"
     """Anomaly checks: `local` runs on this machine; `tabpfn` sends feature rows (no names or
     account ids) to Prior Labs; `none` uses the ±50% day-over-day rule."""

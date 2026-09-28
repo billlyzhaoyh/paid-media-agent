@@ -335,6 +335,12 @@ class ProposalService:
             )
         return rows
 
+    def _currency(self, alias: str) -> str:
+        binding = self._accounts.resolve(alias)
+        if binding is None:
+            raise WriteDenied("unknown_account_alias", alias)
+        return binding.currency
+
     def _resolve_mutation(self, tool_name: str) -> tuple[CatalogEntry, WriteOperation, str]:
         catalog = self._catalog_provider.current()
         entry = catalog.get(tool_name)
@@ -375,7 +381,12 @@ class ProposalService:
             entry.account_arg: binding.provider_account_id,
             operation.target_arg: target_ref,
         }
-        args.update({k: _json_ready(v) for k, v in changes.items()})
+        args.update(
+            {
+                k: operation.to_provider(k, _json_ready(v), binding.currency)
+                for k, v in changes.items()
+            }
+        )
         try:
             jsonschema.validate(instance=args, schema=entry.input_schema)
         except jsonschema.ValidationError as exc:
@@ -414,13 +425,23 @@ class ProposalService:
         entry, operation, catalog_revision = self._resolve_mutation(tool_name)
         args = self._scoped_args(entry, account_alias, target_ref, operation, changes)
         state = await self._current_state(entry, operation, args)
-        before_values = {f: _json_ready(state.get(operation.readback_fields[f])) for f in changes}
+        currency = self._currency(account_alias)
+        before_values = {
+            f: operation.to_currency(
+                f, _json_ready(state.get(operation.readback_fields[f])), currency
+            )
+            for f in changes
+        }
         before = tuple(
             FieldValue(field=f, value=v, unit=operation.units.get(f))
             for f, v in before_values.items()
         )
         after = tuple(
-            FieldValue(field=f, value=_json_ready(v), unit=operation.units.get(f))
+            FieldValue(
+                field=f,
+                value=operation.as_sent(f, _json_ready(v), currency),
+                unit=operation.units.get(f),
+            )
             for f, v in changes.items()
         )
         changeset = stamp_digest(
@@ -476,8 +497,13 @@ class ProposalService:
         args = self._scoped_args(
             entry, record.changeset.account_ref, record.changeset.target_ref, operation, changes
         )
+        currency = self._currency(record.changeset.account_ref)
         after = tuple(
-            FieldValue(field=f, value=_json_ready(v), unit=operation.units.get(f))
+            FieldValue(
+                field=f,
+                value=operation.as_sent(f, _json_ready(v), currency),
+                unit=operation.units.get(f),
+            )
             for f, v in changes.items()
         )
         before = tuple(fv for fv in record.changeset.before if fv.field in changes)
@@ -745,6 +771,8 @@ class WriteExecutor:
         }
         expected = {fv.field: fv.value for fv in cs.after}
         before = {fv.field: fv.value for fv in cs.before}
+        binding = self._accounts.resolve(cs.account_ref)
+        currency = binding.currency if binding is not None else "USD"
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._readback_seconds
         attempts = 0
@@ -767,7 +795,9 @@ class WriteExecutor:
                 observed = tuple(
                     FieldValue(
                         field=f,
-                        value=_json_ready(state.get(operation.readback_fields[f])),
+                        value=operation.to_currency(
+                            f, _json_ready(state.get(operation.readback_fields[f])), currency
+                        ),
                         unit=operation.units.get(f),
                     )
                     for f in expected

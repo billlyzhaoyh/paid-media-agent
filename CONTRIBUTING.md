@@ -12,8 +12,8 @@ uv run paid-media-agent demo
 ## Coding-agent and runtime skills
 
 Local coding-agent workflows live in [.agents/skills/](.agents/skills/), linked from `.claude/skills`.
-The paid-media agent reads [workspace/skills/](workspace/skills/). Only those runtime skills are
-synced to MDA, through the root `skills/` link. `docs/business-context` links to the runtime wiki.
+The paid-media agent reads [workspace/skills/](workspace/skills/), also reachable through the root
+`skills/` link. `docs/business-context` links to the runtime wiki.
 Keep these as relative symlinks, not copies.
 
 ## Optional named local URL

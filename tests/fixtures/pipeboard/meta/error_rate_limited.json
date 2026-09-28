@@ -1,0 +1,8 @@
+{
+  "_provenance": "Error wrapper returned in-band (isError false) by make_api_request in pipeboard-co/meta-ads-mcp @ 093062c6 meta_ads_mcp/core/api.py for a Graph HTTP error. Code 17 is Graph's user request limit. From published source; unverified live.",
+  "error": {
+    "message": "HTTP Error: 400",
+    "details": {"error": {"message": "User request limit reached", "type": "OAuthException", "code": 17, "error_subcode": 2446079}},
+    "full_response": {"status_code": 400, "reason": "Bad Request", "request_method": "GET"}
+  }
+}

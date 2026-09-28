@@ -42,6 +42,32 @@
   the normal executor checks. A newer run supersedes the older run's pending proposals, and
   `history --view outcomes` shows how each recommendation turned out. Adds
   `PAID_MEDIA_BANDIT_POLICY`, `PAID_MEDIA_BANDIT_PROPOSE`, and `PAID_MEDIA_BANDIT_MIN_CHANGE`.
+- Read contracts for live accounts (`tools/contracts.py`). Sync, reports, and the read path now
+  find each platform's performance and settings tools, arguments, row location, and money unit
+  through a contract instead of fixture tool names:
+  - **Meta** through Pipeboard, built from its published server source. It reads one day per call,
+    sums conversions from `actions` for the account's new `conversion_action`, and converts
+    minor-unit budgets.
+  - **Google Ads** through Pipeboard's GAQL tool. Its response shape is still unverified.
+
+  Unannotated tools a contract needs are admitted as reviewed reads.
+- `doctor --live` checks each live account end to end: catalog, contract, schema, a real read,
+  conversions, budget units against spend, and calls per sync.
+- Money units:
+  - write-policy rows take `provider_units` (`minor` or `micros`), so proposals and receipts stay
+    in account currency while the provider gets its own unit;
+  - a reviewed, unreleased Meta budget row is in the example policy.
+- Pipeboard robustness:
+  - in-band provider errors raise instead of being read as data;
+  - rate-limited reads retry after 2, 4, and 8 seconds;
+  - pages are followed;
+  - catalogs that fail to load are reported in `/health` and by `doctor --live`.
+- Sync limits and scheduling:
+  - `PAID_MEDIA_SYNC_MAX_CALLS` caps provider calls per sync;
+  - each account syncs to its own yesterday;
+  - the sync job prunes old Slack dedupe keys.
+- `backup` and `restore` commands and a `backup` job: a consistent Parquet export of the state file
+  while `serve` runs, restored only into a new file.
 
 Live provider writes remain disabled by default and require the documented release gates.
 

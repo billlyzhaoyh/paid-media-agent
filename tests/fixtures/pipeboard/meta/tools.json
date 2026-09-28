@@ -1,0 +1,59 @@
+{
+  "_provenance": "Tool schemas as FastMCP (mcp 1.28) generates them from pipeboard-co/meta-ads-mcp @ 093062c6 meta_ads_mcp/core/{insights,campaigns,accounts}.py. From published source; unverified live. The published server sets no tool annotations.",
+  "tools": [
+    {
+      "name": "get_insights",
+      "description": "Get performance insights for a campaign, ad set, ad or account.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "object_id": {"type": "string", "default": ""},
+          "access_token": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null},
+          "time_range": {
+            "anyOf": [{"type": "string"}, {"type": "object", "additionalProperties": {"type": "string"}}],
+            "default": "maximum"
+          },
+          "breakdown": {"type": "string", "default": ""},
+          "level": {"type": "string", "default": "ad"},
+          "limit": {"type": "integer", "default": 25},
+          "after": {"type": "string", "default": ""},
+          "action_attribution_windows": {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}], "default": null},
+          "action_breakdowns": {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}], "default": null},
+          "compact": {"type": "boolean", "default": false},
+          "account_id": {"type": "string", "default": ""},
+          "campaign_id": {"type": "string", "default": ""},
+          "adset_id": {"type": "string", "default": ""},
+          "ad_id": {"type": "string", "default": ""}
+        }
+      }
+    },
+    {
+      "name": "get_campaigns",
+      "description": "Get campaigns for a Meta Ads account with optional filtering.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "account_id": {"type": "string"},
+          "access_token": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null},
+          "limit": {"type": "integer", "default": 10},
+          "status_filter": {"type": "string", "default": ""},
+          "objective_filter": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}], "default": ""},
+          "after": {"type": "string", "default": ""}
+        },
+        "required": ["account_id"]
+      }
+    },
+    {
+      "name": "get_campaign_details",
+      "description": "Get detailed information about a specific campaign.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "campaign_id": {"type": "string"},
+          "access_token": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null}
+        },
+        "required": ["campaign_id"]
+      }
+    }
+  ]
+}

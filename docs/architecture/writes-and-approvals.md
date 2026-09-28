@@ -101,6 +101,12 @@ Slack cards are not posted for host proposals.
   mode first; a refusal yields `failed` with `mutation_attempted=false`. The single real attempt
   follows. `provider_acknowledged` on the receipt separates "the provider answered" from
   "readback proved it".
+- Money stays in account currency everywhere a person sees it: proposals, cards, receipts, change
+  events, and the bandit. A policy row's `provider_units` (`minor` or `micros`) converts the
+  approved value into the provider's unit in the canonical arguments, rounded to the currency's
+  smallest unit first, and converts readback values back before comparing. The proposal's
+  "after" value is what the provider will hold, so a proposal of 57.555 USD reads 57.56. See
+  [Live data contracts](live-data-contracts.md#money-units).
 - `WriteGate` order: kill-switch file, then for live providers `writes_enabled`, pinned reviewed
   revision equal to the current one, and the canary tool allowlist. Fakes pass after the kill
   switch. The live `PipeboardWriteProvider` refuses any tool whose `readOnlyHint` is not `false`.

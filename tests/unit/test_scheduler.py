@@ -116,7 +116,7 @@ def test_the_job_setting_is_validated() -> None:
     assert Settings(_env_file=None, paid_media_jobs=" sync , ").scheduled_jobs() == ("sync",)  # type: ignore[call-arg]
     assert Settings(_env_file=None, paid_media_jobs="").scheduled_jobs() == ()  # type: ignore[call-arg]
     with pytest.raises(ValueError, match="unknown PAID_MEDIA_JOBS"):
-        Settings(_env_file=None, paid_media_jobs="sync,backup").scheduled_jobs()  # type: ignore[call-arg]
+        Settings(_env_file=None, paid_media_jobs="sync,vacuum").scheduled_jobs()  # type: ignore[call-arg]
 
 
 async def test_the_api_runs_the_real_sync_job_into_the_state_file(
@@ -151,7 +151,14 @@ async def test_the_api_runs_the_real_sync_job_into_the_state_file(
     run = response.json()
     assert response.status_code == 200 and run["status"] == "ok", run
     assert run["detail"]["end"] == "2026-08-28" and run["detail"]["rows"] > 0
-    assert listing["jobs"] == ["sync", "anomalies", "allocate", "report_weekly", "report_monthly"]
+    assert listing["jobs"] == [
+        "sync",
+        "anomalies",
+        "allocate",
+        "report_weekly",
+        "report_monthly",
+        "backup",
+    ]
     assert listing["recent"][0]["trigger"] == "manual"
     stored = runtime.store.fetch("SELECT count(DISTINCT source), min(source) FROM pulls")
     assert stored == [(1, "sync")]

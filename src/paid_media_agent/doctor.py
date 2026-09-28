@@ -80,7 +80,8 @@ def run_doctor(settings: Settings, *, project_root: Path) -> list[Check]:
             "ok" if direct else "warn",
             ", ".join(p.value for p in direct)
             if direct
-            else "none configured (LinkedIn, X, OpenAI Ads are direct adapters)",
+            else "none configured (X Ads and OpenAI Ads are direct adapters; LinkedIn is read "
+            "through Pipeboard)",
         )
     )
     if settings.pipeboard_api_token is None:
@@ -90,6 +91,19 @@ def run_doctor(settings: Settings, *, project_root: Path) -> list[Check]:
             Check("pipeboard", "ok", "token configured; live catalog will be loaded host-side")
         )
 
+    for label, path in (
+        ("account_config", settings.paid_media_account_config_path),
+        ("write_policy_config", settings.paid_media_write_policy_path),
+    ):
+        if path.name.endswith(".example.toml"):
+            checks.append(
+                Check(
+                    label,
+                    "ok" if settings.paid_media_data_mode == "sample" else "warn",
+                    f"{path} is the example file (fixture ids and fixture tool names); copy it and "
+                    "point the setting at your own for live accounts",
+                )
+            )
     accounts = load_accounts(settings, project_root)
     if accounts.bindings:
         checks.append(

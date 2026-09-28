@@ -50,7 +50,11 @@ revised proposal. Self-approval is disabled unless explicitly enabled. There are
 
 Clone the project on a host with Docker, configure `.env`, and run the same Compose command. Run
 one container: DuckDB lets a single process hold the state file, so the service cannot scale out.
-Back up the `workspace` volume, and protect the local `.env` and configuration files.
+Back up the state file with `paid-media-agent backup` (or add `backup` to `PAID_MEDIA_JOBS` for a
+daily export that keeps the newest 14). It writes a Parquet export to `workspace/state/backups/`
+while `serve` runs. `paid-media-agent restore <folder> --to <new file>` builds a new state file
+from one and never overwrites. Copy the backups off the host, and protect the local `.env` and
+configuration files.
 
 Socket Mode needs only outbound network access. To expose the API remotely, put an HTTPS reverse
 proxy in front of port 8080 and keep bearer authentication enabled.

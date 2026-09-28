@@ -58,9 +58,10 @@ Keep this workflow there. Only `workspace/skills` goes into the runtime skill bu
 2. Render a synthetic report. Inspect desktop, narrow-screen, and every PDF page. Verify that
    the company colors and fonts reach charts and print, signs and units remain visible,
    tables fit or scroll, and the reported values are unchanged.
-3. Run the repository checks in `AGENTS.md`. For runtime skill changes, use a clean `mda build`
-   and inspect `.mda/__contexthub__/skills`. Confirm `.agents` skills are not in that bundle.
+3. Run the repository checks in `AGENTS.md`. For runtime skill changes, run
+   `uv run paid-media-agent demo` and confirm the skill index in the prompt lists
+   `workspace/skills` only, never `.agents` skills.
 4. Rebuild self-hosted images after renderer changes. Runtime skill mounts update separately;
-   a Markdown edit alone does not update the built-in report template or a hosted deployment.
+   a Markdown edit alone does not update the built-in report template or a running image.
 
 Show the result and state what was verified. Commit or deploy only when requested.

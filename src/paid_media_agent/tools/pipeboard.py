@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -24,12 +24,21 @@ from paid_media_agent.tools.catalog import (
     build_authorized_catalog,
     qualified_name,
 )
-from paid_media_agent.tools.providers import ProviderError, ProviderResult, ProviderTimeout
+from paid_media_agent.tools.providers import (
+    ProviderError,
+    ProviderRateLimited,
+    ProviderResult,
+    ProviderTimeout,
+)
 
 logger = logging.getLogger(__name__)
 
 PIPEBOARD_SOURCE = "pipeboard"
 CATALOG_LOAD_TIMEOUT_SECONDS = 20
+READ_RETRY_SECONDS = (2.0, 4.0, 8.0)
+"""Pauses before each retry of a rate-limited read; writes are never retried."""
+_RATE_LIMIT_CODES = frozenset({4, 17, 32, 613, *range(80000, 80015)})
+"""Meta Graph codes for application, user, page, and ad-account rate limits."""
 _OPERATION_REF_KEYS = ("operation_ref", "operation_id", "resource_name", "id", "campaign_id")
 _ANNOTATION_KEYS = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint", "title")
 
@@ -138,6 +147,8 @@ class PipeboardCatalogLoader:
         self.client: McpClient = client or StreamableHttpMcpClient(settings.pipeboard_api_token)
         self._catalog: AuthorizedToolCatalog | None = None
         self._addresses: dict[str, ToolAddress] = {}
+        self.failures: dict[Platform, str] = {}
+        """Platforms whose catalog did not load at the last refresh, with a sanitized reason."""
 
     @property
     def policy(self) -> LocalPolicy:
@@ -152,18 +163,21 @@ class PipeboardCatalogLoader:
     async def refresh(self) -> AuthorizedToolCatalog:
         endpoints = self._settings.pipeboard_endpoints()
 
+        failures: dict[Platform, str] = {}
+
         async def load_endpoint(platform: Platform, url: str) -> list[McpTool]:
             try:
                 return await asyncio.wait_for(
                     self.client.list_tools(platform, url), timeout=CATALOG_LOAD_TIMEOUT_SECONDS
                 )
             except Exception as exc:
-                logger.warning(
-                    "catalog load failed for %s: %s", platform.value, sanitize_exception(exc)
-                )
+                reason = "timed out" if isinstance(exc, TimeoutError) else sanitize_exception(exc)
+                failures[platform] = reason[:200]
+                logger.warning("catalog load failed for %s: %s", platform.value, reason)
                 return []
 
         loaded = await asyncio.gather(*(load_endpoint(p, u) for p, u in endpoints.items()))
+        self.failures = failures
         raw_tools: list[RawTool] = []
         addresses: dict[str, ToolAddress] = {}
         for (platform, url), tools in zip(endpoints.items(), loaded, strict=True):
@@ -193,15 +207,60 @@ class PipeboardCatalogLoader:
         return self._addresses.get(qualified)
 
 
-def _payload(result: McpResult) -> dict[str, JsonValue]:
-    """Structured content when the server sends it; otherwise text, parsed when it is JSON."""
-    if result.structured is not None:
-        return result.structured
+def _parsed(text: str) -> dict[str, JsonValue]:
     try:
-        parsed = json.loads(result.text)
+        parsed = json.loads(text)
     except json.JSONDecodeError:
-        return {"text": result.text}
+        return {"text": text}
     return parsed if isinstance(parsed, dict) else {"items": parsed}
+
+
+def _payload(result: McpResult) -> dict[str, JsonValue]:
+    """Structured content when the server sends it; otherwise text, parsed when it is JSON.
+
+    A tool returning a string (Pipeboard's Meta server returns `json.dumps(graph_response)`)
+    arrives as structured `{"result": "<json>"}`; that string is the payload.
+    """
+    structured = result.structured
+    if structured is not None:
+        inner = structured.get("result") if len(structured) == 1 else None
+        if isinstance(inner, str):
+            return _parsed(inner)
+        if isinstance(inner, dict):
+            return inner
+        return structured
+    return _parsed(result.text)
+
+
+def _error_code(error: JsonValue) -> int | None:
+    """The provider's numeric error code, wherever Pipeboard's error wrapper put it."""
+    if not isinstance(error, dict):
+        return None
+    details = error.get("details")
+    nested = details.get("error") if isinstance(details, dict) else None
+    for source in (nested, error):
+        if isinstance(source, dict):
+            for key in ("code", "error_code"):
+                value = source.get(key)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    return value
+    status = error.get("full_response")
+    if isinstance(status, dict) and status.get("status_code") == 429:
+        return 429
+    return None
+
+
+def raise_for_payload_error(payload: dict[str, JsonValue]) -> None:
+    """Pipeboard reports provider failures in the payload with `isError` false; raise them."""
+    error = payload.get("error")
+    if not error or payload.get("data") is not None:
+        return
+    code = _error_code(error)
+    message = error.get("message") if isinstance(error, dict) else error
+    detail = sanitize_exception(RuntimeError(str(message)[:300]))
+    if code == 429 or code in _RATE_LIMIT_CODES:
+        raise ProviderRateLimited(f"rate limited (code {code}): {detail}")
+    raise ProviderError(f"provider error{f' (code {code})' if code else ''}: {detail}")
 
 
 async def invoke_mcp_tool(
@@ -215,18 +274,31 @@ async def invoke_mcp_tool(
     except TimeoutError as exc:
         raise ProviderTimeout("provider call timed out") from exc
     except Exception as exc:
+        if getattr(getattr(exc, "response", None), "status_code", None) == 429:
+            raise ProviderRateLimited("rate limited (HTTP 429)") from None
         raise ProviderError(sanitize_exception(exc)) from None
     if result.is_error:
         raise ProviderError(sanitize_exception(RuntimeError(result.text[:300])))
-    return _payload(result)
+    payload = _payload(result)
+    raise_for_payload_error(payload)
+    return payload
 
 
 class PipeboardReadProvider:
     """Executes authorized reads through the loaded MCP tools. Never called for mutations."""
 
-    def __init__(self, loader: PipeboardCatalogLoader, *, timeout_seconds: float = 60.0) -> None:
+    def __init__(
+        self,
+        loader: PipeboardCatalogLoader,
+        *,
+        timeout_seconds: float = 60.0,
+        retry_seconds: tuple[float, ...] = READ_RETRY_SECONDS,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
         self._loader = loader
         self._timeout = timeout_seconds
+        self._retry_seconds = retry_seconds
+        self._sleep = sleep
 
     async def call_read(
         self, entry: CatalogEntry, arguments: dict[str, JsonValue]
@@ -234,10 +306,20 @@ class PipeboardReadProvider:
         address = self._loader.address(entry.qualified_name)
         if address is None:
             raise ProviderError("tool is not loaded in the current catalog")
-        payload = await invoke_mcp_tool(
-            self._loader.client, address, arguments, timeout=self._timeout
-        )
-        return ProviderResult(payload=payload)
+        retries = iter(self._retry_seconds)
+        while True:
+            try:
+                payload = await invoke_mcp_tool(
+                    self._loader.client, address, arguments, timeout=self._timeout
+                )
+            except ProviderRateLimited:
+                pause = next(retries, None)
+                if pause is None:
+                    raise
+                logger.info("%s rate limited; retrying in %.0fs", entry.qualified_name, pause)
+                await self._sleep(pause)
+                continue
+            return ProviderResult(payload=payload)
 
 
 class PipeboardWriteProvider:

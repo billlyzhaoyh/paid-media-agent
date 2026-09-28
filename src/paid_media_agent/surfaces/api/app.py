@@ -88,6 +88,13 @@ def create_app(runtime: Any, *, scheduler: Scheduler | None = None) -> Any:
             "catalog_source": runtime.catalog.source,
             "selection": runtime.components.metadata.selection,
             "writes_enabled": settings.paid_media_writes_enabled,
+            # Platforms whose live catalog did not load; their tools are missing until restart.
+            "catalog_failures": {
+                platform.value: reason
+                for platform, reason in getattr(
+                    runtime.profile.catalog_provider, "failures", {}
+                ).items()
+            },
         }
 
     @app.get("/jobs", dependencies=[Depends(caller)])

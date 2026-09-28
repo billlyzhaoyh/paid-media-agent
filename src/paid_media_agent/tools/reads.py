@@ -23,6 +23,7 @@ from paid_media_agent.tools.catalog import (
     CatalogProvider,
     ToolClass,
 )
+from paid_media_agent.tools.contracts import HOST_CONTRACT, contract_for_tool
 from paid_media_agent.tools.normalize import (
     PERFORMANCE_PLATFORMS,
     ROWS_SCHEMA_VERSION,
@@ -100,6 +101,8 @@ class ReadResult(BaseModel):
     missing_fields: tuple[str, ...]
     quality_flags: tuple[DataQualityFlag, ...]
     preview: dict[str, JsonValue]
+    next_page: dict[str, JsonValue] | None = None
+    """Arguments for the next page when the provider paged the result; call the tool again."""
     note: str = "Rows are stored in the artifact. Use compare_periods for numbers; do not compute from previews."
 
 
@@ -242,28 +245,32 @@ class ReadDispatcher:
     ) -> ReadResult:
         binding = self._accounts.resolve(alias)
         assert binding is not None  # noqa: S101 - resolved by scope_arguments
-        requested_window = None
-        if isinstance(scoped.get("start_date"), str) and isinstance(scoped.get("end_date"), str):
-            requested_window = f"{scoped['start_date']}..{scoped['end_date']}"
+        contract = contract_for_tool(catalog, entry.platform, entry.name)
+        reader = contract or HOST_CONTRACT
+        window = reader.requested_window(scoped)
+        requested_window = f"{window[0].isoformat()}..{window[1].isoformat()}" if window else None
         complete_through = (
             date.fromisoformat(result.data_complete_through)
             if result.data_complete_through
             else None
         )
-        rows = result.payload.get("rows")
-        if entry.platform in PERFORMANCE_PLATFORMS and isinstance(rows, list) and rows:
+        next_page = reader.next_page(
+            entry.name, result.payload, {k: v for k, v in scoped.items() if k != entry.account_arg}
+        )
+        extracted = reader.rows(entry.name, result.payload, binding) or (
+            HOST_CONTRACT.rows(entry.name, result.payload, binding) if contract else None
+        )
+        if entry.platform in PERFORMANCE_PLATFORMS and extracted is not None:
+            entity_type = extracted.entity_type or entity_type_for(entry.name)
             try:
                 normalized, missing = normalize_rows(
                     platform=entry.platform,
                     account_ref=alias,
                     currency=result.currency or binding.currency,
                     timezone=result.timezone or binding.timezone,
-                    rows=[r for r in rows if isinstance(r, dict)],
-                    entity_type=entity_type_for(entry.name, result.payload.get("entity_type")),
-                    entity_names={
-                        str(k): str(v)
-                        for k, v in (result.payload.get("entity_names") or {}).items()
-                    },
+                    rows=extracted.rows,
+                    entity_type=entity_type,
+                    entity_names=extracted.entity_names,
                     data_complete_through=complete_through,
                 )
             except NormalizationError as exc:
@@ -285,23 +292,15 @@ class ReadDispatcher:
                 row_count=len(normalized),
                 platform=entry.platform.value,
                 account_ref=alias,
-                entity_type=entity_type_for(entry.name, result.payload.get("entity_type")).value,
+                entity_type=entity_type.value,
                 requested_window=requested_window,
                 actual_window=actual_window,
                 quality_flags=tuple(sorted(flags)),
                 tool_name=entry.qualified_name,
                 catalog_revision=catalog.revision,
             )
-            columns = tuple(sorted({k for r in rows if isinstance(r, dict) for k in r}))
+            columns = tuple(sorted({k for r in extracted.rows for k in r}))
             if self._recorder is not None:
-                window = (
-                    (
-                        date.fromisoformat(str(scoped["start_date"])),
-                        date.fromisoformat(str(scoped["end_date"])),
-                    )
-                    if requested_window
-                    else None
-                )
                 try:
                     self._recorder.record_performance(
                         source=source,
@@ -335,7 +334,9 @@ class ReadDispatcher:
                 preview={
                     "entities": len({r.entity_ref for r in normalized}),
                     "currency": normalized[0].currency,
+                    **extracted.observed,
                 },
+                next_page=next_page,
             )
         metadata = self._artifacts.write_json(
             "provider_result",
@@ -354,7 +355,7 @@ class ReadDispatcher:
                     binding=binding,
                     tool_name=entry.qualified_name,
                     catalog_revision=catalog.revision,
-                    payload=result.payload,
+                    payload=reader.settings(entry.name, result.payload, binding),
                     artifact_id=metadata.artifact_id,
                     currency=result.currency,
                 )
@@ -377,6 +378,7 @@ class ReadDispatcher:
             missing_fields=(),
             quality_flags=(),
             preview=preview,
+            next_page=next_page,
         )
 
 

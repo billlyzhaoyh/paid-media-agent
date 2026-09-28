@@ -26,7 +26,7 @@ from paid_media_agent.domain.common import DataQualityFlag, EntityType, JsonValu
 from paid_media_agent.domain.metrics import PerformanceRow
 from paid_media_agent.store.db import Store, json_rows, utc_now
 
-AnalyticsSource = Literal["agent_read", "report", "sync", "backfill", "simulator"]
+AnalyticsSource = Literal["agent_read", "report", "sync", "backfill", "simulator", "doctor"]
 SETTINGS_FIELDS = ("status", "daily_budget")
 """Fields whose changes are logged as change events when nobody proposed them here."""
 

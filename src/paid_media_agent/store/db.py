@@ -114,8 +114,27 @@ class Store:
 
         return OperationalRepositories(self)
 
+    def backup(self, directory: Path) -> Path:
+        """Export every table as Parquet under the write lock, so the copy is consistent.
+
+        `restore_backup` loads it into a new state file. Works while `serve` holds the file.
+        """
+        if directory.exists():
+            raise FileExistsError(f"{directory} already exists")
+        directory.parent.mkdir(parents=True, exist_ok=True)
+        with self._write_lock:
+            self._cursor().execute(f"EXPORT DATABASE '{sql_path(directory)}' (FORMAT PARQUET)")
+        return directory
+
     def close(self) -> None:
         self._conn.close()
+
+
+def sql_path(path: Path) -> str:
+    text = str(path)
+    if "'" in text:
+        raise ValueError("backup paths may not contain quotes")
+    return text
 
 
 def json_rows(shape: Mapping[str, str]) -> str:

@@ -89,6 +89,10 @@ class LocalPolicy(BaseModel):
     )
     admitted_mutations: tuple[str, ...] = ()
     """Qualified mutation names admitted to the governed write path. Empty by default."""
+    reviewed_reads: tuple[str, ...] = ()
+    """Qualified names admitted as reads although the server sends no readOnlyHint. Each was
+    reviewed against the server's source (see `tools/contracts.py`); a tool that does send a hint
+    is classified by the hint."""
 
     def platform_policy(self, platform: Platform) -> PlatformPolicy | None:
         for policy in self.platforms:
@@ -173,6 +177,18 @@ def classify(
             )
     annotations = raw.annotations or {}
     read_only = _as_bool(annotations.get("readOnlyHint"))
+    if read_only is None and qualified_name(platform, raw.name) in policy.reviewed_reads:
+        if account_arg is None:
+            return (
+                PolicyDecision(tool_class=ToolClass.DENIED, reason="no_account_scope"),
+                platform,
+                None,
+            )
+        return (
+            PolicyDecision(tool_class=ToolClass.READ, reason="reviewed_read"),
+            platform,
+            account_arg,
+        )
     if read_only is None:
         return (
             PolicyDecision(tool_class=ToolClass.DENIED, reason="missing_mutation_metadata"),

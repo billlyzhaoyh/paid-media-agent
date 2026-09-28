@@ -31,5 +31,5 @@ Keep credentials, provider account IDs, and access policy out of context. Config
 `.env`, `config/accounts.toml`, and the host's permission settings. Optional warehouses and dbt
 are described in the guide; do not claim a connection exists until a read-only check succeeds.
 
-Before MDA deployment, review the project files that will upload. Git-ignored raw source files
-can still enter the source archive; keep sensitive originals outside the deploy directory.
+Before building a Docker image, review what the build context includes. Git-ignored raw source
+files can still enter it; keep sensitive originals outside the repository directory.

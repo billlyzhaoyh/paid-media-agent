@@ -29,6 +29,10 @@ class ProviderTimeout(ProviderError):
     """The provider did not answer in time. The outcome is unknown, not failed."""
 
 
+class ProviderRateLimited(ProviderError):
+    """The provider refused the call for rate or quota reasons. Reads may retry after a pause."""
+
+
 class ReadProvider(Protocol):
     async def call_read(
         self, entry: CatalogEntry, arguments: dict[str, JsonValue]

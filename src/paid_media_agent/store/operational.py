@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from uuid import UUID
 
 import duckdb
@@ -164,6 +165,14 @@ class DuckDBDedupeStore:
         except StoreConflict:
             return True
         return not rows
+
+    def prune(self, older_than: datetime) -> int:
+        """Forget keys seen before `older_than`; retried deliveries arrive within minutes."""
+        return len(
+            self._store.write(
+                "DELETE FROM dedupe WHERE seen_at < ? RETURNING dedupe_key", [older_than]
+            )
+        )
 
 
 class DuckDBThreadOwnershipStore:
