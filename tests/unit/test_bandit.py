@@ -12,7 +12,7 @@ import pytest
 from paid_media_agent.bandit.allocate import allocate
 from paid_media_agent.bandit.policy import GUARD_Z, draw_thompson
 from paid_media_agent.bandit.posterior import A0, PowerCurve, fit_posterior
-from paid_media_agent.bandit.prior import MAX_GRID
+from paid_media_agent.bandit.prior import MAX_GRID, pseudo_samples
 from paid_media_agent.bandit.recommend import BanditConfig, recommend
 from paid_media_agent.predict.protocol import Prediction, PredictionRequest, PredictorUnavailable
 from paid_media_agent.sim.scenario import run_scenario
@@ -224,8 +224,9 @@ class _GlobalModel:
         self.requests.append(request)
         if self.fail:
             raise PredictorUnavailable("token cap reached")
-        log_spend = request.x_test[:, request.columns.index("log_spend")]
-        return Prediction((0.5,), (0.6 * log_spend - 1.0)[None, :], "tabpfn", "v3.5-test")
+        units = request.x_test[:, request.columns.index("log_spend_units")]
+        spread = np.asarray(request.quantiles)[:, None] - 0.5
+        return Prediction(request.quantiles, 0.6 * units + spread, "tabpfn", "v3.5-test")
 
 
 async def test_a_configured_global_model_supplies_the_pseudo_samples(account: Store) -> None:
@@ -233,9 +234,15 @@ async def test_a_configured_global_model_supplies_the_pseudo_samples(account: St
     run = await recommend(account, model, as_of=AS_OF, record=False, seed=4)
     (request,) = model.requests
     eligible = [d for d in run.decisions if d.arm.eligible]
-    assert request.n_test == len(eligible) * MAX_GRID * 7 and request.quantiles == (0.5,)
-    assert "fixture" not in request.purpose and request.columns[0] == "entity"
+    assert request.n_test == len(eligible) * MAX_GRID * 7 and len(request.quantiles) == 19
+    assert request.columns == ("log_cost_per_conversion", "weekday", "log_spend_units")
     assert run.prior_source == "tabpfn:v3.5-test"
+    # The quantiles' mean is the pseudo-sample, so the model's elasticity (0.6) carries through.
+    arms = [d.arm for d in eligible]
+    pseudo = await pseudo_samples(arms, as_of=AS_OF, k=512, predictor=_GlobalModel())
+    for i, arm in enumerate(arms):
+        units = np.log(pseudo.spend[i] / arm.unit + 1)
+        assert np.polyfit(units, pseudo.target[i], 1)[0] == pytest.approx(0.6)
 
     down = await recommend(account, _GlobalModel(fail=True), as_of=AS_OF, record=False, seed=4)
     assert down.prior_source.startswith("pooled")
@@ -316,8 +323,9 @@ def test_implausible_pseudo_samples_cannot_inflate_the_noise_estimate() -> None:
 
 class _ConvexModel(_GlobalModel):
     async def predict(self, request: PredictionRequest) -> Prediction:
-        log_spend = request.x_test[:, request.columns.index("log_spend")]
-        return Prediction((0.5,), (3.0 * log_spend - 15.0)[None, :], "tabpfn", "v3.5-test")
+        units = request.x_test[:, request.columns.index("log_spend_units")]
+        values = np.repeat((3.0 * units - 5.0)[None, :], len(request.quantiles), axis=0)
+        return Prediction(request.quantiles, values, "tabpfn", "v3.5-test")
 
 
 async def test_a_global_curve_that_is_not_concave_is_dropped(account: Store) -> None:

@@ -6,10 +6,16 @@ it predicts `k` points at evenly spaced spends around the campaign's own recent 
 over weekdays; these pseudo-samples join the campaign's history in its local model (CBS section
 3.4, "transfer process").
 
-Two global models exist. TabPFN (when `PAID_MEDIA_PREDICTOR=tabpfn`) sees campaign, platform,
-weekday, day index, and log spend, with no assumed shape. Otherwise a pooled regression runs
-locally: a level per campaign, weekday effects, and one spend elasticity shared by all campaigns,
-with recent days weighted more (half-life `half_life_days`; CBS section 6.1).
+Two global models exist. By default a pooled regression runs locally: a level per campaign,
+weekday effects, and one spend elasticity shared by all campaigns, with recent days weighted more
+(half-life `half_life_days`; CBS section 6.1). TabPFN (`PAID_MEDIA_PREDICTOR=tabpfn`) assumes no
+shape. It sees each campaign as context (its log cost per conversion) plus the weekday and the
+spend in cost-per-conversion units, log(spend / cost per conversion + 1), so the spend effect is
+on one scale across campaigns, as in the local model. It returns the predictive mean (the average
+of 19 quantiles): conversions are small counts, so log(y + 1) takes a few discrete values and
+their median is a step function of spend, flat in most places and steep at the steps, which
+destroyed the elasticity the pseudo-samples carry. There is no day-index feature: recency comes
+from the training window, and budgets drift over time, so a time feature competes with spend.
 """
 
 from __future__ import annotations
@@ -29,7 +35,9 @@ MAX_GRID = 64
 """Pseudo-samples beyond this many spends are carried as weights on a 64-point grid."""
 RIDGE = 1e-3
 MIN_ROWS = 10
-_COLUMNS = ("entity", "platform", "weekday", "t", "log_spend")
+_COLUMNS = ("log_cost_per_conversion", "weekday", "log_spend_units")
+MEAN_QUANTILES = tuple(round(0.05 * k, 2) for k in range(1, 20))
+"""Averaging these approximates the predictive mean (the integral of the quantile function)."""
 
 
 @dataclass(frozen=True)
@@ -94,25 +102,21 @@ def _pooled(
     return GlobalPredictions(values, POOLED, "pooled-loglog/1")
 
 
+def _features(arm: Arm, spend: float, weekday: int) -> list[float]:
+    return [math.log(arm.unit), float(weekday), math.log(spend / arm.unit + 1.0)]
+
+
 async def _tabpfn(
-    arms: Sequence[Arm], queries: Sequence[Query], as_of: date, predictor: Predictor
+    arms: Sequence[Arm], queries: Sequence[Query], predictor: Predictor
 ) -> GlobalPredictions:
-    first = min((d for a in arms for d in a.days), default=as_of)
-    platforms = {p: i for i, p in enumerate(sorted({a.platform for a in arms}))}
     train, target = [], []
-    for i, arm in enumerate(arms):
+    for arm in arms:
         for day, spent, converted in zip(arm.days, arm.spend, arm.conversions, strict=True):
-            train.append(
-                [i, platforms[arm.platform], day.weekday(), (day - first).days, math.log(spent + 1)]
-            )
+            train.append(_features(arm, float(spent), day.weekday()))
             target.append(math.log(converted + 1.0))
     if len(train) < MIN_ROWS:
         raise PredictorUnavailable(f"{len(train)} settled campaign-days; needs {MIN_ROWS}")
-    t_now = (as_of - first).days
-    test = [
-        [q.arm, platforms[arms[q.arm].platform], q.weekday, t_now, math.log(q.spend + 1)]
-        for q in queries
-    ]
+    test = [_features(arms[q.arm], q.spend, q.weekday) for q in queries]
     prediction = await predictor.predict(
         PredictionRequest(
             purpose="bandit:global",
@@ -120,11 +124,12 @@ async def _tabpfn(
             x_train=np.asarray(train, dtype=np.float64),
             y_train=np.asarray(target, dtype=np.float64),
             x_test=np.asarray(test, dtype=np.float64),
-            quantiles=(0.5,),
+            quantiles=MEAN_QUANTILES,
             kind="amount",
         )
     )
-    return GlobalPredictions(prediction.at(0.5), prediction.provider, prediction.model_version)
+    mean = np.asarray(prediction.values, dtype=np.float64).mean(axis=0)
+    return GlobalPredictions(mean, prediction.provider, prediction.model_version)
 
 
 async def global_predict(
@@ -138,7 +143,7 @@ async def global_predict(
     """log(conversions + 1) for each query, from TabPFN when configured, else pooled regression."""
     if predictor is not None and predictor.name != "local" and queries:
         try:
-            return await _tabpfn(arms, queries, as_of, predictor)
+            return await _tabpfn(arms, queries, predictor)
         except PredictorUnavailable as exc:
             pooled = _pooled(arms, queries, as_of, half_life_days)
             pooled.notes.insert(0, f"global model: {exc}; the pooled regression ran instead")

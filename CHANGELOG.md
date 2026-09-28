@@ -30,7 +30,7 @@
   across campaigns to maximise conversions (Lyft's Contextual Budgeting System, adapted), within
   step, spend-history, and hold-period bounds, and log every decision in `bandit_runs` and
   `bandit_decisions`. The global model is a local pooled regression, or TabPFN with
-  `--predictor tabpfn`.
+  `--predictor tabpfn` (predictive mean, with spend in cost-per-conversion units).
 
 Live provider writes remain disabled by default and require the documented release gates.
 

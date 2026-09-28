@@ -161,19 +161,47 @@ day to day. The three models forecast about equally well. The combined model's v
 curve's shape away from recent spend, which these forecasts at actual spend barely test. The
 intervals are close to calibrated overall and somewhat narrow for cold starts.
 
-**TabPFN as the global model, 3 seeds** (`--predictor tabpfn`, 790,000 tokens):
+**TabPFN as the global model, 3 seeds** (`--predictor tabpfn`). CBS's global model is a Random
+Forest over about 10,000 campaigns. It is described by context (ad copy, bonus, region,
+audience, weekday) and daily spend, with recency handled by sample weights rather than a time
+feature, and it predicts the mean. Our first TabPFN setup differed in two ways that mattered:
+- **It predicted the median.** Conversions are small counts, so log(y + 1) takes a few discrete
+  values, and their median is a step function of spend: flat in most places and steep at the
+  steps.
+- **Spend was raw.** Log spend was unnormalised, alongside a numeric campaign code and a day
+  index.
 
-| Policy | Mean regret | Per seed |
+A diagnostic on 30 campaign-cutoffs measured each feature set's implied elasticity against the
+true curve over the same spends (true mean 0.69):
+
+| Global model | Mean elasticity | Mean abs. error |
 | --- | --- | --- |
-| CPA rule | 23.3 | 16.3, 17.5, 36.2 |
-| Greedy | 59.0 | 133.0, 15.0, 29.0 |
-| Thompson sampling | 61.0 | 135.1, 6.9, 41.1 |
+| Pooled regression (default) | 0.67 | 0.11 |
+| TabPFN, first setup (median; code, platform, weekday, day index, log spend) | 0.54 | 0.32 |
+| … without the day index | 0.50 | 0.33 |
+| … with the campaign one-hot encoded | 0.50 | 0.31 |
+| … predicting the mean | 0.58 | 0.29 |
+| TabPFN, current (mean; log cost per conversion, weekday, spend in cost-per-conversion units) | 0.72 | 0.18 |
 
-The pooled model's Thompson regret on the same seeds is 10.5, 2.9, 8.9. TabPFN forecasts
-conversions at actual spend as well as the pooled model does (MAE 2.31), but its curve over each
-campaign's narrow spend range is flatter than the truth: implied elasticities of 0.14 to 0.37,
-against 0.55 to 0.9. Its pseudo-samples therefore pull every campaign's elasticity down. It stays
-available for comparison but is not recommended for allocation.
+The day index and the campaign encoding were not the problem. The median and the spend scale
+were. Closed-loop regret with the current setup (270,000 tokens):
+
+| Global model | Thompson regret, seeds 1–3 | Mean |
+| --- | --- | --- |
+| TabPFN, first setup | 135.1, 6.9, 41.1 | 61.0 |
+| TabPFN, current | 19.9, 28.2, 28.4 | 25.5 |
+| Pooled regression | 10.5, 2.9, 8.9 | 7.4 |
+| (CPA rule) | 16.3, 17.5, 36.2 | 23.3 |
+
+The pooled regression still wins here, and the simulator favours it for three reasons:
+- the true curves have exactly the pooled model's shape;
+- the campaigns' elasticities are similar (0.55 to 0.9);
+- each decision has 5 campaigns and about 450 days to learn from, not thousands of campaigns with
+  descriptive context.
+
+With so little data, a shape-free model's slope over a campaign's ±25% spend range stays noisy.
+TabPFN may earn its place on real accounts, whose curves need not be power laws; that needs real
+data to judge. Until then the pooled model is the default.
 
 ## Limitations
 
