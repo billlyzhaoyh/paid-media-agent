@@ -256,3 +256,16 @@ async def test_report_reads_are_labelled_as_report_pulls(
         render=False,
     )
     assert runtime.profile.store.fetch("SELECT DISTINCT source FROM pulls") == [("report",)]
+
+
+def test_a_report_window_the_data_does_not_cover_fails_cleanly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PAID_MEDIA_WORKSPACE_ROOT", str(tmp_path / "workspace"))
+    monkeypatch.setenv("PAID_MEDIA_DATA_MODE", "sample")
+    # The sample data holds 28 days; a monthly report also needs the 28 before them.
+    result = CliRunner().invoke(
+        main, ["report", "--cadence", "monthly", "--end", "2026-08-28", "--no-render"]
+    )
+    assert result.exit_code == 1 and "Traceback" not in result.output
+    assert "FAIL report:" in result.output and "previous window starts" in result.output

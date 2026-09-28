@@ -95,6 +95,11 @@ HTML reports render on the host. PDF rendering requires WeasyPrint and its nativ
 host process. Automatic Slack PDF uploads are not included. Use the artifact API or local output
 files for downloads.
 
+On macOS, install the libraries with `brew install pango` and let Python find them by starting
+commands with `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib` (or export it in your shell).
+`paid-media-agent doctor` reports "WeasyPrint ready" once PDFs can render. Reports use IBM Plex
+when it is installed and fall back to system fonts otherwise; the Docker image includes Plex.
+
 The model reads skills under `/skills` and uses `/workspace` for thread scratch files. Host-created
 analysis artifacts stay on the host and are accessed through analysis tools. The tool policy exposes
 filesystem operations but no arbitrary shell or subagent execution.

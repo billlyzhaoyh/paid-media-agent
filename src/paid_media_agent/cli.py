@@ -412,6 +412,7 @@ def report(
     """Run the deterministic cross-platform report: reads, comparison, and rendering, no model."""
     from paid_media_agent.reports.cadence import run_cadence_report
     from paid_media_agent.runtime.local import build_configured_runtime
+    from paid_media_agent.tools.compute import ComputeError
 
     settings = Settings()
     _configure_logging(settings)
@@ -433,8 +434,9 @@ def report(
 
     try:
         run = asyncio.run(_run())
-    except RuntimeError as exc:
-        click.echo(f"FAIL report: {exc}", err=True)
+    except (RuntimeError, ComputeError) as exc:
+        # A window the data does not cover is refused, not compared; say which and stop.
+        click.echo(f"FAIL report: {sanitize_exception(exc)}", err=True)
         sys.exit(1)
     if as_json:
         click.echo(

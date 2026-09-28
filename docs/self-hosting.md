@@ -101,4 +101,5 @@ uv run paid-media-agent serve --port 8080
 ```
 
 The same process serves Slack when its tokens are configured. Install the native PDF libraries if
-you need PDF reports; HTML reports remain available.
+you need PDF reports; HTML reports remain available. On macOS, see
+[Operations](../OPERATIONS.md#running-the-server) for the Homebrew setup.

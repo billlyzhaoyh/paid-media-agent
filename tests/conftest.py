@@ -17,8 +17,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture(autouse=True)
 def _isolated_environment() -> Iterator[None]:
-    """Console actions export .env values into the process; never let that leak across tests."""
+    """Console actions export .env values into the process; never let that leak across tests.
+
+    Settings from the developer's shell are removed too, so a test sees only what it sets.
+    """
     snapshot = dict(os.environ)
+    for name in Settings.model_fields:
+        os.environ.pop(name.upper(), None)
     # Tests reason about the shipped fixture dates; the demo itself anchors to today.
     os.environ["PAID_MEDIA_FIXTURE_ANCHOR"] = "2026-08-28"
     yield
