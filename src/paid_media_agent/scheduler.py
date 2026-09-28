@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-JOB_NAMES = ("sync", "report_weekly", "report_monthly")
+JOB_NAMES = ("sync", "anomalies", "report_weekly", "report_monthly")
 JobTrigger = Literal["scheduled", "manual"]
 
 
@@ -194,6 +194,19 @@ def build_jobs(runtime: SelfHostedRuntime, *, clock: Callable[[], datetime] = ut
         )
         return run.summary()
 
+    async def anomalies() -> dict[str, Any]:
+        from paid_media_agent.analytics.anomalies import check_anomalies
+        from paid_media_agent.predict.factory import build_predictor
+
+        report = await check_anomalies(
+            runtime.store,
+            build_predictor(settings, runtime.store),
+            as_of=clock().date(),
+            band=settings.paid_media_anomaly_band,
+        )
+        summary = report.as_json()
+        return {**summary, "flags": summary["flags"][:50], "flag_count": len(report.flags)}
+
     def report(cadence: Cadence) -> Callable[[], Awaitable[dict[str, Any]]]:
         async def _report() -> dict[str, Any]:
             run = await run_cadence_report(
@@ -223,6 +236,7 @@ def build_jobs(runtime: SelfHostedRuntime, *, clock: Callable[[], datetime] = ut
     enabled = set(settings.scheduled_jobs())
     return [
         Job("sync", sync, hour_utc=hour, scheduled="sync" in enabled),
+        Job("anomalies", anomalies, hour_utc=hour, scheduled="anomalies" in enabled),
         Job(
             "report_weekly",
             report("weekly"),

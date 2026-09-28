@@ -24,8 +24,6 @@ from paid_media_agent.tools.normalize import NormalizationError, rows_from_paylo
 
 SUMMARIZE_WINDOW_TOOL = "summarize_window"
 SUMMARY_SCHEMA_VERSION = "window-summary/2"
-DAY_CHANGE_FLAG = Decimal("0.5")
-"""A day whose spend or conversions move by at least this share versus the prior day is flagged."""
 _MONEY = Decimal("0.01")
 _RATIO = Decimal("0.0001")
 
@@ -119,10 +117,6 @@ def summarize_rows(
             for metric in ("spend", "conversions"):
                 change = _change(point[metric], previous[metric])
                 entry[f"{metric}_change"] = None if change is None else _ratio_str(change, 1)
-                if change is not None and abs(change) >= DAY_CHANGE_FLAG:
-                    entry.setdefault("flags", []).append(
-                        f"{metric}_moved_{'up' if change > 0 else 'down'}"
-                    )
         daily.append(entry)
         previous = point
     return {
@@ -141,7 +135,6 @@ def summarize_rows(
         },
         "entities": entities,
         "daily": daily,
-        "flagged_days": [d["date"] for d in daily if d.get("flags")],
         "over_budget": [
             e["entity_ref"] for e in entities if e["pacing"] and Decimal(e["pacing"]) > 1
         ],
@@ -215,9 +208,9 @@ def build_summarize_window_tool(artifacts: ArtifactStore) -> ToolSpec:
         description=(
             "Summarize one window from performance_rows artifacts: totals, per-entity spend share, "
             "CPA, ROAS, CTR, average daily spend and pacing against daily budgets (pass the "
-            "list_campaigns artifacts), plus a daily series with day-over-day changes and flagged "
-            "days. Use it for pacing, anomalies, and top-N questions inside a single window; use "
-            "compare_periods for period-over-period change."
+            "list_campaigns artifacts), plus a daily series with day-over-day changes. Use it for "
+            "pacing and top-N questions inside a single window; use compare_periods for "
+            "period-over-period change and check_anomalies for unusual days."
         ),
         parameters=parameters_for(SummarizeWindowArgs),
         handler=_run,

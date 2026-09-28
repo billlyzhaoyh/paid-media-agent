@@ -32,7 +32,7 @@ def _row(day: int, entity: str, spend: str, conversions: str) -> PerformanceRow:
     )
 
 
-def test_summary_computes_pacing_top_spenders_and_flagged_days(tmp_path: Path) -> None:
+def test_summary_computes_pacing_top_spenders_and_day_over_day_moves(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path)
     rows = [_row(d, "g-1", "100", "2") for d in range(1, 8)] + [
         _row(d, "g-2", "20" if d != 5 else "80", "1") for d in range(1, 8)
@@ -72,7 +72,9 @@ def test_summary_computes_pacing_top_spenders_and_flagged_days(tmp_path: Path) -
     assert (top["entity_ref"], top["pacing"], top["daily_budget"]) == ("g-1", "1.1111", "90.00")
     assert second["pacing"] == "0.5714"  # 200 / 7 days = 28.57 against a 50 budget
     assert google["over_budget"] == ["g-1"]
-    assert google["flagged_days"] == ["2026-08-05"]  # +50% day; the -33% return is below the flag
+    assert "flagged_days" not in google, "judging a day is check_anomalies' job"
+    moves = [d.get("spend_change") for d in google["daily"]]
+    assert moves[4] == "0.5000" and moves[5] == "-0.3333"  # the +50% day and its return
     assert store.read(out["artifact_id"]).metadata.tool_name == "summarize_window"
 
 
@@ -141,7 +143,6 @@ def test_summary_keeps_missing_daily_conversions_unavailable(tmp_path: Path) -> 
     summary = result["platforms"]["google_ads"]["demo-google"]
     assert summary["daily"][1]["conversions"] is None
     assert summary["daily"][1]["conversions_change"] is None
-    assert summary["flagged_days"] == []
 
 
 def test_compare_periods_refuses_an_empty_window_instead_of_reporting_zero(tmp_path: Path) -> None:

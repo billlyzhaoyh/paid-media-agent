@@ -43,6 +43,7 @@ Add `--help` for options and `--json` where supported for machine-readable outpu
 | `uv run paid-media-agent backfill --start 2026-01-01` | Pull an older range into history |
 | `uv run paid-media-agent history --view daily` | Show stored history: coverage, daily, settings, changes, lag |
 | `uv run paid-media-agent simulate --days 180` | Simulate campaigns with known response curves into their own file |
+| `uv run paid-media-agent anomalies --days 7` | Flag recent campaign-days outside their expected range |
 | `uv run paid-media-agent writes kill-switch on` | Stop mutations |
 | `uv run paid-media-agent test state` | Open the DuckDB state file and apply migrations |
 | `uv run paid-media-agent serve` | Start the API, and Slack in Socket Mode when configured |
@@ -103,6 +104,27 @@ when it is installed and fall back to system fonts otherwise; the Docker image i
 The model reads skills under `/skills` and uses `/workspace` for thread scratch files. Host-created
 analysis artifacts stay on the host and are accessed through analysis tools. The tool policy exposes
 filesystem operations but no arbitrary shell or subagent execution.
+
+## Anomaly checks
+
+`check_anomalies` (the agent's tool), `paid-media-agent anomalies`, and the optional `anomalies`
+job check recent campaign-days in stored history, so run `sync` first. `PAID_MEDIA_PREDICTOR`
+chooses how:
+
+| Value | What runs | Data leaves the machine |
+| --- | --- | --- |
+| `local` (default) | An expected range learned from the account's own history | No |
+| `tabpfn` | Prior Labs' hosted TabPFN-3.5, with `TABPFN_TOKEN` | Feature rows: codes, dates, metric values |
+| `none` | The ±50% day-over-day rule | No |
+
+TabPFN receives no campaign names, account ids, or credentials. Before each call the host asks
+Prior Labs for the cost (free) and the account's remaining tokens, and refuses the call if it would
+exceed them or the local caps (`PAID_MEDIA_TABPFN_DAILY_TOKENS`, default 1,000,000;
+`PAID_MEDIA_TABPFN_MONTHLY_TOKENS`, default 5,000,000). Each check makes two calls and bills at
+least 20,000 tokens; a repeated identical check is answered from the cache. Any refusal or failure
+falls back to the day-over-day rule and says so. `predictor_calls` in the state file logs every
+call. `PAID_MEDIA_ANOMALY_BAND` (default 0.95, or `--band` on the command) sets how much of normal
+variation the expected range covers: 0.8 catches more at the cost of more false alarms.
 
 ## Direct platforms
 

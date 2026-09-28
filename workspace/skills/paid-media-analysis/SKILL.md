@@ -34,10 +34,12 @@ recommendations.
    Native analytics and platforms without verified spend-unit mappings stay as `provider_result`
    artifacts. Do not pass them to spend comparisons or treat GA4 conversions as ad-attributed conversions.
 5. Validate source coverage with `references/validation-checklist.md`.
-6. For pacing, anomalies, top spenders, or per-entity efficiency inside one window, call
+6. For pacing, top spenders, or per-entity efficiency inside one window, call
    `summarize_window` with the performance artifacts (and the `list_campaigns` artifacts for daily
-   budgets); it returns per-entity totals, pacing, and a daily series with flagged days. For
-   period-over-period change, call `compare_periods` with the artifact ids and both windows. List any failed read in
+   budgets); it returns per-entity totals, pacing, and a daily series of day-over-day changes. For
+   spikes, drops, or "anything unusual", call `check_anomalies`, which judges recent days against
+   their expected range from stored history. For period-over-period change, call
+   `compare_periods` with the artifact ids and both windows. List any failed read in
    `unavailable_sources` so it stays visible and suppresses the cross-platform total.
 7. Read the `analysis_summary`. Quote its values verbatim; never recompute from previews or rows.
    `unavailable` means missing, not zero.

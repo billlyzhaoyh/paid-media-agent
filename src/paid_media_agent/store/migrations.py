@@ -280,12 +280,64 @@ CREATE TABLE job_runs (
 );
 """
 
+PREDICTIONS = """
+CREATE TABLE predictor_calls (
+    call_id UUID PRIMARY KEY,
+    provider VARCHAR NOT NULL,
+    model_version VARCHAR,
+    purpose VARCHAR NOT NULL,
+    request_sha VARCHAR NOT NULL,
+    n_train INTEGER NOT NULL,
+    n_test INTEGER NOT NULL,
+    n_features INTEGER NOT NULL,
+    tokens_estimated BIGINT NOT NULL,
+    latency_ms INTEGER,
+    status VARCHAR NOT NULL,
+    error VARCHAR,
+    result JSON,
+    created_at TIMESTAMP NOT NULL
+);
+CREATE TABLE anomaly_checks (
+    check_id UUID PRIMARY KEY,
+    account_alias VARCHAR,
+    window_start DATE,
+    window_end DATE,
+    as_of DATE NOT NULL,
+    predictor VARCHAR NOT NULL,
+    methods JSON NOT NULL,
+    rows_checked INTEGER NOT NULL,
+    flag_count INTEGER NOT NULL,
+    notes JSON NOT NULL,
+    created_at TIMESTAMP NOT NULL
+);
+CREATE TABLE anomaly_flags (
+    flag_id UUID PRIMARY KEY,
+    check_id UUID NOT NULL,
+    platform VARCHAR NOT NULL,
+    provider_account_id VARCHAR NOT NULL,
+    account_alias VARCHAR NOT NULL,
+    entity_ref VARCHAR NOT NULL,
+    entity_name VARCHAR,
+    day DATE NOT NULL,
+    metric VARCHAR NOT NULL,
+    observed DOUBLE NOT NULL,
+    expected DOUBLE,
+    lo DOUBLE,
+    hi DOUBLE,
+    direction VARCHAR NOT NULL,
+    score DOUBLE NOT NULL,
+    method VARCHAR NOT NULL,
+    created_at TIMESTAMP NOT NULL
+);
+"""
+
 MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("0001_operational", OPERATIONAL),
     ("0002_conversations", CONVERSATIONS),
     ("0003_analytics", ANALYTICS),
     ("0004_simulation", SIMULATION),
     ("0005_jobs", JOBS),
+    ("0006_predictions", PREDICTIONS),
 )
 
 

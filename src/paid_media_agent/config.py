@@ -120,11 +120,23 @@ class Settings(BaseSettings):
     """DuckDB file for conversations, proposals, approvals, receipts, threads, and pulled history.
     Relative to the project root."""
     paid_media_jobs: str = "sync,report_weekly,report_monthly"
-    """Jobs `serve` runs on schedule: sync (daily), report_weekly (Mondays), report_monthly (the
-    1st). Empty disables scheduling; `POST /jobs/{name}` still runs any job on demand."""
+    """Jobs `serve` runs on schedule: sync (daily), anomalies (daily, after sync), report_weekly
+    (Mondays), report_monthly (the 1st). Empty disables scheduling; `POST /jobs/{name}` still runs
+    any job on demand."""
     paid_media_job_hour_utc: int = Field(default=6, ge=0, le=23)
     paid_media_sync_days: int = Field(default=28, ge=1, le=90)
     """Trailing days each sync re-pulls, so late conversions arrive as newer snapshots."""
+    paid_media_predictor: Literal["none", "local", "tabpfn"] = "local"
+    """Anomaly checks: `local` runs on this machine; `tabpfn` sends feature rows (no names or
+    account ids) to Prior Labs; `none` uses the ±50% day-over-day rule."""
+    paid_media_anomaly_band: float = Field(default=0.95, ge=0.5, lt=1.0)
+    """Share of normal days the expected range covers; lower catches more and alarms more."""
+    tabpfn_token: SecretStr | None = None
+    tabpfn_base_url: str = "https://api.priorlabs.ai"
+    paid_media_tabpfn_daily_tokens: int = Field(default=1_000_000, ge=10_000)
+    """Local cap on TabPFN tokens per UTC day, below the account's own limit. Each call bills at
+    least 10,000."""
+    paid_media_tabpfn_monthly_tokens: int = Field(default=5_000_000, ge=10_000)
     paid_media_fixture_anchor: date | None = None
     """Last complete day of the synthetic data. Unset means two days ago, so the demo never ages
     out; tests pin it to the shipped dates. Set it only when reproducing a specific window."""
@@ -196,6 +208,7 @@ class Settings(BaseSettings):
         "slack_app_token",
         "slack_signing_secret",
         "paid_media_api_tokens",
+        "tabpfn_token",
         mode="before",
     )
     @classmethod

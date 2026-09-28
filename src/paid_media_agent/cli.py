@@ -821,6 +821,90 @@ def history(
         click.echo("... more rows; raise --limit or narrow with --alias/--entity/--start/--end.")
 
 
+@main.command()
+@click.option("--alias", default=None, help="Account alias; default every account.")
+@click.option("--days", "window_days", type=click.IntRange(1, 28), default=7, show_default=True)
+@click.option("--as-of", "as_of", default=None, help="Check as of this date. Default: today.")
+@click.option("--scenario", default=None, help="Check a simulated scenario instead of the state.")
+@click.option(
+    "--predictor",
+    type=click.Choice(["none", "local", "tabpfn"]),
+    default=None,
+    help="Override PAID_MEDIA_PREDICTOR for this run.",
+)
+@click.option(
+    "--band",
+    type=click.FloatRange(0.5, 0.99),
+    default=None,
+    help="Expected-range coverage (default PAID_MEDIA_ANOMALY_BAND, 0.95).",
+)
+@click.option("--json", "as_json", is_flag=True)
+def anomalies(
+    alias: str | None,
+    window_days: int,
+    as_of: str | None,
+    scenario: str | None,
+    predictor: str | None,
+    band: float | None,
+    as_json: bool,
+) -> None:
+    """Flag recent campaign-days whose spend or conversions fall outside their expected range."""
+    from paid_media_agent.analytics.anomalies import check_anomalies
+    from paid_media_agent.predict.factory import build_predictor
+    from paid_media_agent.runtime.self_hosted import state_path
+    from paid_media_agent.sim.scenario import scenario_path
+    from paid_media_agent.store import Store, StoreBusy
+
+    settings = Settings()
+    _configure_logging(settings)
+    if predictor is not None:
+        settings = settings.model_copy(update={"paid_media_predictor": predictor})
+    path = state_path(settings, project_root())
+    if scenario is not None:
+        path = scenario_path(path.parent, scenario)
+        if not path.exists():
+            raise click.ClickException(f"no scenario file {path}; run `simulate` first")
+    day = _day(as_of, date.today())
+    assert day is not None  # noqa: S101 - a default is supplied
+    try:
+        store = Store(path)
+    except StoreBusy as exc:
+        raise click.ClickException(
+            f"{exc}. Run it inside `serve`: POST /jobs/anomalies, or ask the agent."
+        ) from None
+    try:
+        report = asyncio.run(
+            check_anomalies(
+                store,
+                build_predictor(settings, store),
+                as_of=day,
+                window_days=window_days,
+                account_alias=alias,
+                band=band or settings.paid_media_anomaly_band,
+            )
+        )
+    finally:
+        store.close()
+    result = report.as_json()
+    if as_json:
+        click.echo(json.dumps(result, indent=2))
+        return
+    click.echo(f"Checked as of {result['as_of']} with {result['predictor']}:")
+    for metric, method in result["methods"].items():
+        click.echo(f"  {metric:<11} {result['windows'][metric]} by {method}")
+    for flag in result["flags"]:
+        expected = "-" if flag["expected"] is None else f"{flag['expected']}"
+        click.echo(
+            f"  {flag['day']}  {flag['account_alias']:<14} {flag['entity_ref']:<10} "
+            f"{flag['metric']:<11} {flag['direction']:<4} observed {flag['observed']} vs "
+            f"expected {expected} [{flag['lo']}, {flag['hi']}]"
+        )
+    if not result["flags"]:
+        click.echo("  No flags.")
+    for note in result["notes"]:
+        click.echo(f"  note: {note}")
+
+
 # ---------------------------------------------------------------- self-hosted runtime
 
 

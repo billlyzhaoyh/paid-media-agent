@@ -4,19 +4,33 @@ Day-over-day swings are common in paid media. Most are not anomalies: weekends, 
 budget resets, learning phases after a change, delayed conversion attribution, and platform data
 still filling in.
 
-## Reading a flagged day
+## Checking for anomalies
 
-`summarize_window` flags a day when spend or conversions move by at least half versus the prior day.
-A flag is a prompt to look, not a finding. Check, in order:
+`check_anomalies` checks recent campaign-days in stored history. For each day it predicts the
+expected spend (given the budget in force, weekday, and recent level) and conversions (given that
+day's spend) and flags values outside the expected range. Each flag carries the observed value,
+the expected value and range, a direction, and the method:
 
-1. Is the window complete? A day near `data_complete_through` is often still filling in, and
-   conversions arrive later than spend.
-2. Did configuration change? Budget, status, or bid changes on or just before the day explain most
-   spend steps. `list_campaigns` shows the current state; change history is not available on
-   every platform, so say when it is unknown.
-3. Small numbers. A move from 2 conversions to 4 is not a trend. Use spend and clicks, which are
-   larger, before conversions.
-4. Weekly pattern. Compare the day with the same weekday a week earlier before calling it unusual.
+- `local_band95`: the expected range learned from the account's own history, on this machine.
+- `tabpfn_band95`: the same check with the TabPFN model, when the operator enabled it.
+- `dod_rule_fallback`: no model was available; the day moved by at least half versus the prior
+  day. Treat these as weaker signals and say which method produced them.
+
+Budget changes already explain spend steps, and spend explains conversion moves, so a flag is a
+change the configuration does not account for. Recent conversions are checked only once most have
+arrived (the notes say which days were not checked yet). A flag is still a prompt to look, not a
+finding. Check, in order:
+
+1. Did configuration change? Budget, status, or bid changes on or just before the day explain most
+   spend steps. `query_history` with `view = changes` lists them, including changes made outside
+   this agent.
+2. Small numbers. A move from 2 conversions to 4 is not a trend. The check does not flag counts
+   that are within a couple of the expectation, and low-volume campaigns can hide real problems.
+3. Is it one campaign or the whole account? A tracking break usually hits every campaign in an
+   account on the same day.
+4. Is the day still filling in? The window and notes say how complete it is.
+
+`summarize_window` reports day-over-day changes but does not judge them.
 
 ## Significance without a statistics engine
 

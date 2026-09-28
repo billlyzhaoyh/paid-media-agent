@@ -13,9 +13,11 @@ from paid_media_agent.harness.loop import Agent, ApprovalGate
 from paid_media_agent.harness.models import ChatModel, resolve_model
 from paid_media_agent.harness.skills import discover_skills, skills_prompt
 from paid_media_agent.harness.tools import ToolDispatcher, ToolSpec
+from paid_media_agent.predict.factory import build_predictor
 from paid_media_agent.runtime.profiles import RuntimeProfile
 from paid_media_agent.store import Store
 from paid_media_agent.store.conversations import ConversationStore
+from paid_media_agent.tools.anomalies import CHECK_ANOMALIES_TOOL, build_check_anomalies_tool
 from paid_media_agent.tools.catalog import AuthorizedToolCatalog
 from paid_media_agent.tools.compare_periods import COMPARE_PERIODS_TOOL, build_compare_periods_tool
 from paid_media_agent.tools.discovery import (
@@ -46,6 +48,7 @@ CORE_TOOLS: tuple[str, ...] = (
     SUMMARIZE_WINDOW_TOOL,
     RENDER_REPORT_TOOL,
     QUERY_HISTORY_TOOL,
+    CHECK_ANOMALIES_TOOL,
 )
 WRITE_TOOLS: tuple[str, ...] = (
     DISCOVER_WRITE_OPERATIONS_TOOL,
@@ -159,6 +162,12 @@ def build_agent_components(
         build_summarize_window_tool(runtime.artifacts),
         build_render_report_tool(runtime.artifacts),
         build_query_history_tool(runtime.store, runtime.accounts),
+        build_check_anomalies_tool(
+            runtime.store,
+            runtime.accounts,
+            build_predictor(settings, runtime.store),
+            band=settings.paid_media_anomaly_band,
+        ),
     ]
     tools = (
         *core,
@@ -227,6 +236,7 @@ def _secret_values(settings: Settings) -> tuple[str, ...]:
         settings.slack_app_token,
         settings.slack_signing_secret,
         settings.paid_media_api_tokens,
+        settings.tabpfn_token,
     ):
         if secret is not None:
             values.append(secret.get_secret_value())

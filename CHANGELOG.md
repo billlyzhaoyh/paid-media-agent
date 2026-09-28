@@ -18,6 +18,12 @@
   `query_history` tool; and scheduled jobs in `serve` (daily sync, weekly and monthly reports)
   with `POST /jobs/{name}`. Adds `PAID_MEDIA_JOBS`, `PAID_MEDIA_JOB_HOUR_UTC`, and
   `PAID_MEDIA_SYNC_DAYS`.
+- Anomaly checks: a `check_anomalies` tool, an `anomalies` command, and an optional daily job flag
+  campaign-days outside the range predicted from history, accounting for budget changes, spend,
+  and conversions still arriving. `PAID_MEDIA_PREDICTOR` chooses a local model (default), Prior
+  Labs' hosted TabPFN-3.5 (opt-in, cached, and capped by `PAID_MEDIA_TABPFN_DAILY_TOKENS` and
+  `PAID_MEDIA_TABPFN_MONTHLY_TOKENS`), or the ±50% day-over-day rule. `summarize_window` no
+  longer flags days. `tests/eval/anomaly_backtest.py` compares them on simulated accounts.
 - `simulate`: seeded synthetic campaigns with known response curves, delayed conversions, and
   labelled shocks, written to their own history file for testing prediction and allocation.
 

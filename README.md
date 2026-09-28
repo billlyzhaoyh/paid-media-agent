@@ -95,7 +95,9 @@ Questions use your configured model. The `report` command runs without one, usin
 campaign-performance adapters.
 
 Every read is also kept as history: daily snapshots, campaign budgets and status, and a log of
-changes. It shows how late conversions arrive, what each budget was, and who changed it. Build it
+changes. It shows how late conversions arrive, what each budget was, and who changed it. Anomaly
+checks judge recent days against the range the history predicts, locally or, if you opt in, with
+[TabPFN](OPERATIONS.md#anomaly-checks). Build it
 with `sync`, look at it with `history`, or try it on simulated campaigns first:
 
 ```bash
