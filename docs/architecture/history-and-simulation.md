@@ -86,6 +86,13 @@ to 4 of the 95% bands'. The bands miss shocks on low-volume campaigns, where a d
 doubling is within normal Poisson variation. The local band is calibrated but less sharp than
 TabPFN.
 
+Known limitation: training includes every past day, anomalies too. A shock a few days before the
+window can widen the range for the same campaign and hide a second one; TabPFN is more affected
+than the local band because it weights recent, similar rows. Two mitigations were tried and
+rejected on this backtest: dropping training days more than 4 to 8 robust deviations from their
+expectation (TabPFN precision 0.35 to 0.28, false alarms 18 to 26) and dropping days earlier
+checks flagged (the band narrows with each check and false alarms grow). Neither improved recall.
+
 ## Scheduling
 
 `scheduler.py` runs inside `serve`, which owns the state file. `PAID_MEDIA_JOBS` selects the

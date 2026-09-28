@@ -29,6 +29,9 @@ finding. Check, in order:
 3. Is it one campaign or the whole account? A tracking break usually hits every campaign in an
    account on the same day.
 4. Is the day still filling in? The window and notes say how complete it is.
+5. Was there another spike on the same campaign days earlier? A recent spike widens the expected
+   range, so a second one can pass unflagged. When a campaign was just flagged, read its daily
+   history (`query_history`) rather than relying on the check alone.
 
 `summarize_window` reports day-over-day changes but does not judge them.
 
