@@ -94,6 +94,16 @@ uv run paid-media-agent report --cadence weekly
 Questions use your configured model. The `report` command runs without one, using supported
 campaign-performance adapters.
 
+Every read is also kept as history: daily snapshots, campaign budgets and status, and a log of
+changes. It shows how late conversions arrive, what each budget was, and who changed it. Build it
+with `sync`, look at it with `history`, or try it on simulated campaigns first:
+
+```bash
+uv run paid-media-agent simulate --days 180
+uv run paid-media-agent history --scenario baseline --view daily
+uv run paid-media-agent sync
+```
+
 ## Accounts and business context
 
 Connect the platforms you use:
@@ -121,14 +131,15 @@ Settings live in `.env`, account mappings in `config/accounts.toml`, and company
 
 ## Running it
 
-Everything runs on your machine or your own server. State (proposals, approvals, receipts, and
-conversation ownership) lives in one DuckDB file at `workspace/state/pma.duckdb`.
+Everything runs on your machine or your own server. State lives in one DuckDB file at
+`workspace/state/pma.duckdb`: conversations, proposals, approvals, receipts, and the history of
+every read.
 
 | | Local | Docker |
 | --- | --- | --- |
 | Start | `uv run paid-media-agent serve` | `docker compose up -d --build` |
 | Slack | Socket Mode in the same process | Socket Mode in the same container |
-| Scheduled reports | Run `report` from your scheduler | Run `report` from your scheduler |
+| Scheduled jobs | `serve` syncs history daily and renders weekly and monthly reports | The same, in the container |
 | Guide | [Operations](OPERATIONS.md) | [Self-hosting](docs/self-hosting.md) |
 
 Generate API credentials first, then start the server:

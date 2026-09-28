@@ -27,7 +27,8 @@ selects providers from configured credentials and otherwise uses fixtures. Two c
 
 - `runtime/self_hosted.py::build_self_hosted_runtime` runs the components behind the FastAPI
   boundary and the Slack adapter. Conversations, paused calls, proposals, claims, receipts, dedupe
-  keys, and thread ownership live in the DuckDB file at `PAID_MEDIA_STATE_PATH`.
+  keys, thread ownership, and [history](history-and-simulation.md) live in the DuckDB file at
+  `PAID_MEDIA_STATE_PATH`. `sync` and `backfill` open the same file when `serve` is not running.
 - `runtime/local.py::build_configured_runtime` runs them with an in-memory database for
   `paid-media-agent ask` and `report`.
 
@@ -44,7 +45,8 @@ Migrations are numbered in `store/migrations.py` and never edited after they shi
 
 DuckDB lets one process hold a database file for writing, and no other process can open it while
 it does. `serve` therefore runs the API and the Slack adapter together, and another process gets
-`StoreBusy`. Tests, the demo, `ask`, and `report` use in-memory databases.
+`StoreBusy`. Tests, the demo, `ask`, and `report` use in-memory databases. `store.transaction()`
+groups several statements; bulk inserts bind a whole batch as one JSON parameter (`json_rows`).
 
 ## What the model can read
 

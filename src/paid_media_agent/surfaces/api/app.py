@@ -1,4 +1,4 @@
-"""Small authenticated API: threads, proposals, receipts, artifacts, health."""
+"""Small authenticated API: threads, proposals, receipts, artifacts, jobs, health."""
 
 import hmac
 from typing import Any
@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from paid_media_agent.domain.common import JsonValue
 from paid_media_agent.reports.bridge import ArtifactBridge, BridgeError
+from paid_media_agent.scheduler import JobBusy, Scheduler, UnknownJob
 from paid_media_agent.surfaces.api.views import outcome_view
 from paid_media_agent.surfaces.runner import AgentRunner, RunOutcome, ThreadAccessDenied
 from paid_media_agent.tools.writes import WriteDenied
@@ -36,7 +37,7 @@ def resolve_caller(token_map: dict[str, str], authorization: str | None) -> str 
     return None
 
 
-def create_app(runtime: Any) -> Any:
+def create_app(runtime: Any, *, scheduler: Scheduler | None = None) -> Any:
     from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 
     settings = runtime.settings
@@ -87,6 +88,27 @@ def create_app(runtime: Any) -> Any:
             "selection": runtime.components.metadata.selection,
             "writes_enabled": settings.paid_media_writes_enabled,
         }
+
+    @app.get("/jobs", dependencies=[Depends(caller)])
+    def jobs() -> dict[str, Any]:
+        if scheduler is None:
+            raise HTTPException(status_code=404, detail="jobs run only under `serve`")
+        return {
+            "jobs": list(scheduler.names),
+            "recent": [run.as_json() for run in scheduler.history()],
+        }
+
+    @app.post("/jobs/{name}", dependencies=[Depends(caller)])
+    async def run_job(name: str) -> dict[str, Any]:
+        if scheduler is None:
+            raise HTTPException(status_code=404, detail="jobs run only under `serve`")
+        try:
+            run = await scheduler.run_now(name)
+        except UnknownJob:
+            raise HTTPException(status_code=404, detail=f"unknown job {name}") from None
+        except JobBusy:
+            raise HTTPException(status_code=409, detail=f"{name} is already running") from None
+        return run.as_json()
 
     @app.post("/threads/{thread_id}/messages")
     async def post_message(

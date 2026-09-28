@@ -14,8 +14,9 @@ curl http://localhost:8080/health
 ```
 
 `config generate` prints the API token once. Send the part before `:operator` as a bearer token.
-The API listens on localhost. The DuckDB state file (`workspace/state/pma.duckdb`) holds proposals,
-approvals, receipts, and thread ownership; it lives on the `workspace` volume with report files.
+The API listens on localhost. The DuckDB state file (`workspace/state/pma.duckdb`) holds
+conversations, proposals, approvals, receipts, and the history of every read; it lives on the
+`workspace` volume with report files.
 Your local `config/` and `workspace/skills/` folders are mounted read-only, so account mappings,
 write policy, and business context are available in the container.
 
@@ -78,8 +79,15 @@ Download a generated report with `GET /threads/{thread_id}/artifacts/{name}` usi
 owner's bearer token. Only files returned by `render_report` in that thread are accessible.
 Slack replies can describe the report, but the adapter does not automatically upload files.
 
-Use your existing scheduler for recurring reports. The `report` command does not open the state
-file, so it runs alongside the server:
+`serve` schedules a daily history sync and weekly and monthly reports (`PAID_MEDIA_JOBS`,
+`PAID_MEDIA_JOB_HOUR_UTC`). Run a job now, or list recent runs, with the operator token:
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/jobs/sync
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/jobs
+```
+
+The `report` command does not open the state file, so it also runs alongside the server:
 
 ```bash
 docker compose exec -T agent paid-media-agent report --cadence weekly

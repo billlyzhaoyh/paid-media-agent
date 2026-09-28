@@ -39,6 +39,10 @@ Add `--help` for options and `--json` where supported for machine-readable outpu
 | `uv run paid-media-agent demo --with-proposal` | Offline analysis and simulated approved change |
 | `uv run paid-media-agent ask "Compare campaign performance last week"` | Run a question with your configured model |
 | `uv run paid-media-agent report --cadence weekly` | Render a report without a model |
+| `uv run paid-media-agent sync` | Pull the last 28 days and campaign settings into history |
+| `uv run paid-media-agent backfill --start 2026-01-01` | Pull an older range into history |
+| `uv run paid-media-agent history --view daily` | Show stored history: coverage, daily, settings, changes, lag |
+| `uv run paid-media-agent simulate --days 180` | Simulate campaigns with known response curves into their own file |
 | `uv run paid-media-agent writes kill-switch on` | Stop mutations |
 | `uv run paid-media-agent test state` | Open the DuckDB state file and apply migrations |
 | `uv run paid-media-agent serve` | Start the API, and Slack in Socket Mode when configured |
@@ -53,7 +57,7 @@ and `SLACK_TRANSPORT=socket_mode`, the same process connects Slack in Socket Mod
 
 State lives in one DuckDB file, `PAID_MEDIA_STATE_PATH` (default `workspace/state/pma.duckdb`):
 conversations, changes paused for approval, proposals, approval claims, receipts, Slack dedupe
-keys, and thread ownership. DuckDB lets a single
+keys, thread ownership, and the history of every read. DuckDB lets a single
 process hold the file for writing, and while it does no other process can open it, even read-only.
 That is why the API and Slack run in one process and Docker runs one container. A second process
 that needs the file reports that `serve` is running; stop it or use its API.
@@ -65,9 +69,25 @@ conversation moves on before a decision, the paused call is abandoned; approving
 
 Follow [Self-hosting](docs/self-hosting.md) for API credentials, Slack tokens, Docker, and hosting.
 Install the `self-host`, `slack`, and `reports` extras, or use the Docker image, which includes
-PDF libraries and IBM Plex fonts. Run the `report` command from your own scheduler for recurring
-reports. Slack uses native status and streaming with generic tool progress. Keep any customization
+PDF libraries and IBM Plex fonts. Slack uses native status and streaming with generic tool progress. Keep any customization
 in the shared tools and skills, not tool-specific message renderers.
+
+## Scheduled jobs and history
+
+`serve` runs the jobs in `PAID_MEDIA_JOBS` (default `sync,report_weekly,report_monthly`) at
+`PAID_MEDIA_JOB_HOUR_UTC` (default 6): a daily sync of the trailing `PAID_MEDIA_SYNC_DAYS` (28), a
+weekly report on Mondays, and a monthly report on the 1st. A server started after the hour still
+runs that day's jobs; a failed job waits for its next slot. `POST /jobs/{name}` runs one now, and
+`GET /jobs` lists recent runs. With `serve` running, `paid-media-agent sync` asks it to run the
+job over the API (it needs `PAID_MEDIA_API_TOKENS`); `backfill` and `history` need `serve` stopped.
+The agent itself reads history through its `query_history` tool.
+
+History is append-only. A day pulled again adds a snapshot, so conversions reported late are
+visible, and `history --view lag` shows how many arrive after each number of days. A day counts
+as matured once pulled at least 7 days later (14 for LinkedIn). Campaign settings can only be
+observed from the first sync onward, so days before it show no budget. A budget or status change
+that did not come through this agent's approvals is logged as `external_detected`. See
+[History and simulation](docs/architecture/history-and-simulation.md).
 
 The local `report` command uses known campaign-performance adapters. Other provider schemas can
 be explored through `ask`; they need a normalization mapping before inclusion in typed reports.
@@ -119,7 +139,8 @@ covers reviewed tool policies, approver identities, catalog pinning, and the kil
 The conversation's approval pause does not replace the host's policy or digest checks.
 
 `serve` keeps proposals, claims, and receipts in the DuckDB state file. `ask`, `demo`, and tests
-use an in-memory database, so their proposals end with the process; the code fails closed.
+use an in-memory database, so their proposals and history end with the process; the code fails
+closed. Every decision and execution outcome is also recorded in the history's change log.
 
 ## Verification
 

@@ -8,8 +8,9 @@ code; surfaces only translate inputs and presentation.
 1. [Runtime profiles](runtime-profiles.md)
 2. [Tools and context](tools-and-context.md)
 3. [Writes and approvals](writes-and-approvals.md)
-4. [Surfaces and presentation](surfaces-and-presentation.md)
-5. [Capability map](capability-map.md)
+4. [History and simulation](history-and-simulation.md)
+5. [Surfaces and presentation](surfaces-and-presentation.md)
+6. [Capability map](capability-map.md)
 
 ## Binding invariants
 

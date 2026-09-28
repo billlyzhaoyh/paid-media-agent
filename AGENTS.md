@@ -26,7 +26,9 @@ repository.
   agent loop: model adapter, tool dispatch, approvals, file tools, and skills.
 - `src/paid_media_agent/tools/`: account-scoped provider calls, deterministic analysis, reports,
   and approved mutations. `runtime/` supplies profiles and provider implementations; `store/` owns
-  DuckDB state. One process holds the state file, so `serve` runs the API and Slack together.
+  DuckDB state. One process holds the state file, so `serve` runs the API, Slack, and the
+  `scheduler.py` jobs together. `analytics/` keeps read history and the change log; `sim/`
+  generates seeded synthetic accounts in their own file.
 - `src/paid_media_agent/surfaces/`: API and Slack transport. Slack uses native agent
   streaming and generic approval controls. Do not add tool-specific cards.
 - `src/paid_media_agent/admin/`: optional local connection and run console over CLI actions.

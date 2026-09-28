@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Sequence
 from datetime import date
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import jsonschema
 from pydantic import BaseModel, ConfigDict
@@ -35,6 +36,11 @@ from paid_media_agent.tools.providers import (
     ProviderTimeout,
     ReadProvider,
 )
+
+if TYPE_CHECKING:
+    from paid_media_agent.analytics.ingest import AnalyticsRecorder, AnalyticsSource
+
+log = logging.getLogger(__name__)
 
 ACCOUNT_ALIAS_ARG = "account_alias"
 PROVIDER_RESULT_SCHEMA_VERSION = "provider-result/1"
@@ -128,12 +134,14 @@ class ReadDispatcher:
         provider: ReadProvider,
         artifacts: ArtifactStore,
         timeout_seconds: float = DEFAULT_READ_TIMEOUT_SECONDS,
+        recorder: AnalyticsRecorder | None = None,
     ) -> None:
         self._catalog_provider = catalog_provider
         self._accounts = accounts
         self._provider = provider
         self._artifacts = artifacts
         self._timeout = timeout_seconds
+        self._recorder = recorder
         self.audit: list[dict[str, JsonValue]] = []
 
     @property
@@ -196,7 +204,9 @@ class ReadDispatcher:
         arguments: dict[str, JsonValue],
         *,
         selection_schema_hash: str | None = None,
+        source: AnalyticsSource = "agent_read",
     ) -> ReadResult:
+        """Run one read. Its rows also land in the analytics history, labelled with `source`."""
         catalog, entry = self.resolve(qualified_name, selection_schema_hash=selection_schema_hash)
         alias, scoped = self.scope_arguments(entry, arguments)
         try:
@@ -206,7 +216,9 @@ class ReadDispatcher:
         except TimeoutError as exc:
             raise ProviderTimeout("provider read timed out") from exc
         # Normalization plus the artifact write stay off the loop.
-        summary = await asyncio.to_thread(self._store, entry, catalog, alias, scoped, result)
+        summary = await asyncio.to_thread(
+            self._store, entry, catalog, alias, scoped, result, source
+        )
         del self.audit[:-AUDIT_LIMIT]
         self.audit.append(
             {
@@ -226,6 +238,7 @@ class ReadDispatcher:
         alias: str,
         scoped: dict[str, JsonValue],
         result: ProviderResult,
+        source: AnalyticsSource = "agent_read",
     ) -> ReadResult:
         binding = self._accounts.resolve(alias)
         assert binding is not None  # noqa: S101 - resolved by scope_arguments
@@ -280,6 +293,30 @@ class ReadDispatcher:
                 catalog_revision=catalog.revision,
             )
             columns = tuple(sorted({k for r in rows if isinstance(r, dict) for k in r}))
+            if self._recorder is not None:
+                window = (
+                    (
+                        date.fromisoformat(str(scoped["start_date"])),
+                        date.fromisoformat(str(scoped["end_date"])),
+                    )
+                    if requested_window
+                    else None
+                )
+                try:
+                    self._recorder.record_performance(
+                        source=source,
+                        binding=binding,
+                        tool_name=entry.qualified_name,
+                        catalog_revision=catalog.revision,
+                        rows=normalized,
+                        requested=window,
+                        data_complete_through=complete_through,
+                        artifact_id=metadata.artifact_id,
+                        quality_flags=[flag.value for flag in flags],
+                    )
+                except Exception:
+                    # History is best effort; the read and its artifact already succeeded.
+                    log.warning("history write failed for %s", entry.qualified_name, exc_info=True)
             return ReadResult(
                 tool=entry.qualified_name,
                 platform=entry.platform.value,
@@ -310,6 +347,19 @@ class ReadDispatcher:
             tool_name=entry.qualified_name,
             catalog_revision=catalog.revision,
         )
+        if self._recorder is not None:
+            try:
+                self._recorder.record_settings(
+                    source=source,
+                    binding=binding,
+                    tool_name=entry.qualified_name,
+                    catalog_revision=catalog.revision,
+                    payload=result.payload,
+                    artifact_id=metadata.artifact_id,
+                    currency=result.currency,
+                )
+            except Exception:
+                log.warning("settings history failed for %s", entry.qualified_name, exc_info=True)
         preview = _bounded_preview(result.payload)
         return ReadResult(
             tool=entry.qualified_name,

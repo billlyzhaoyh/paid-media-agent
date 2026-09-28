@@ -70,9 +70,222 @@ CREATE TABLE thread_tools (
 );
 """
 
+ENTITY_KEY = "platform, provider_account_id, entity_type, entity_ref"
+
+ANALYTICS = f"""
+CREATE TABLE pulls (
+    pull_id UUID PRIMARY KEY,
+    source VARCHAR NOT NULL,
+    tool_name VARCHAR NOT NULL,
+    catalog_revision VARCHAR,
+    platform VARCHAR NOT NULL,
+    provider_account_id VARCHAR NOT NULL,
+    account_alias VARCHAR NOT NULL,
+    entity_type VARCHAR NOT NULL,
+    requested_start DATE,
+    requested_end DATE,
+    actual_start DATE,
+    actual_end DATE,
+    data_complete_through DATE,
+    artifact_id VARCHAR,
+    row_count INTEGER NOT NULL,
+    quality_flags VARCHAR[] NOT NULL,
+    pulled_at TIMESTAMP NOT NULL,
+    pulled_on DATE NOT NULL
+);
+CREATE TABLE entity_daily_snapshots (
+    platform VARCHAR NOT NULL,
+    provider_account_id VARCHAR NOT NULL,
+    entity_type VARCHAR NOT NULL,
+    entity_ref VARCHAR NOT NULL,
+    day DATE NOT NULL,
+    pull_id UUID NOT NULL,
+    pulled_at TIMESTAMP NOT NULL,
+    pulled_on DATE NOT NULL,
+    account_alias VARCHAR NOT NULL,
+    entity_name VARCHAR NOT NULL,
+    currency VARCHAR NOT NULL,
+    spend DECIMAL(18, 4) NOT NULL,
+    impressions BIGINT,
+    clicks BIGINT,
+    conversions DECIMAL(18, 4),
+    conversion_value DECIMAL(18, 4),
+    is_complete BOOLEAN NOT NULL,
+    quality_flags VARCHAR[] NOT NULL,
+    PRIMARY KEY (platform, provider_account_id, entity_type, entity_ref, day, pull_id)
+);
+CREATE TABLE maturity_days (
+    platform VARCHAR PRIMARY KEY,
+    days INTEGER NOT NULL
+);
+INSERT INTO maturity_days VALUES
+    ('google_ads', 7), ('meta_ads', 7), ('reddit_ads', 7), ('linkedin_ads', 14),
+    ('x_ads', 7), ('openai_ads', 7);
+CREATE TABLE entity_settings_snapshots (
+    platform VARCHAR NOT NULL,
+    provider_account_id VARCHAR NOT NULL,
+    entity_type VARCHAR NOT NULL,
+    entity_ref VARCHAR NOT NULL,
+    observed_at TIMESTAMP NOT NULL,
+    pull_id UUID NOT NULL,
+    account_alias VARCHAR NOT NULL,
+    entity_name VARCHAR,
+    status VARCHAR,
+    daily_budget DECIMAL(18, 4),
+    budget_type VARCHAR,
+    bid_strategy VARCHAR,
+    target_cpa DECIMAL(18, 4),
+    target_roas DECIMAL(18, 6),
+    currency VARCHAR,
+    raw JSON NOT NULL,
+    PRIMARY KEY (platform, provider_account_id, entity_type, entity_ref, observed_at)
+);
+CREATE TABLE change_events (
+    event_id UUID PRIMARY KEY,
+    source VARCHAR NOT NULL,
+    proposal_id UUID,
+    revision INTEGER,
+    platform VARCHAR NOT NULL,
+    provider_account_id VARCHAR NOT NULL,
+    account_alias VARCHAR NOT NULL,
+    entity_type VARCHAR NOT NULL,
+    entity_ref VARCHAR NOT NULL,
+    tool_name VARCHAR,
+    field VARCHAR NOT NULL,
+    before_value JSON,
+    after_value JSON,
+    status VARCHAR NOT NULL,
+    risk_flags VARCHAR[] NOT NULL,
+    occurred_at TIMESTAMP NOT NULL
+);
+
+-- The newest snapshot of every entity-day, whatever its age.
+CREATE VIEW entity_daily_latest AS
+SELECT * FROM entity_daily_snapshots
+QUALIFY row_number() OVER (
+    PARTITION BY {ENTITY_KEY}, day ORDER BY pulled_at DESC, pull_id DESC
+) = 1;
+
+-- The newest snapshot pulled at least the platform's maturity window after the day, so late
+-- conversions have arrived. Days that have not matured yet are absent.
+CREATE VIEW entity_daily_matured AS
+SELECT s.*, s.pulled_on - s.day AS age_days
+FROM entity_daily_snapshots s
+LEFT JOIN maturity_days m ON m.platform = s.platform
+WHERE s.is_complete AND s.pulled_on - s.day >= coalesce(m.days, 7)
+QUALIFY row_number() OVER (
+    PARTITION BY s.platform, s.provider_account_id, s.entity_type, s.entity_ref, s.day
+    ORDER BY s.pulled_at DESC, s.pull_id DESC
+) = 1;
+
+-- Share of matured conversions already reported N days after the day: the empirical lag curve.
+CREATE VIEW conversion_lag AS
+WITH by_age AS (
+    SELECT {ENTITY_KEY}, account_alias, day, pulled_on - day AS age_days, conversions
+    FROM entity_daily_snapshots
+    WHERE conversions IS NOT NULL
+    QUALIFY row_number() OVER (
+        PARTITION BY {ENTITY_KEY}, day, pulled_on - day ORDER BY pulled_at DESC, pull_id DESC
+    ) = 1
+)
+SELECT
+    b.platform, b.provider_account_id, any_value(b.account_alias) AS account_alias,
+    b.entity_type, b.age_days,
+    count(*) AS entity_days,
+    sum(b.conversions) AS conversions_at_age,
+    sum(m.conversions) AS conversions_matured,
+    sum(b.conversions) / nullif(sum(m.conversions), 0) AS completeness
+FROM by_age b
+JOIN entity_daily_matured m USING ({ENTITY_KEY}, day)
+WHERE b.age_days <= m.age_days
+GROUP BY b.platform, b.provider_account_id, b.entity_type, b.age_days;
+
+-- One row per settings version: consecutive identical observations collapse into one.
+CREATE VIEW entity_settings_history AS
+WITH marked AS (
+    SELECT *,
+        lag(struct_pack(status, daily_budget, budget_type, bid_strategy, target_cpa, target_roas))
+            OVER (PARTITION BY {ENTITY_KEY} ORDER BY observed_at) AS previous
+    FROM entity_settings_snapshots
+), versions AS (
+    SELECT * FROM marked
+    WHERE previous IS NULL OR previous IS DISTINCT FROM
+        struct_pack(status, daily_budget, budget_type, bid_strategy, target_cpa, target_roas)
+)
+SELECT
+    {ENTITY_KEY}, account_alias, entity_name,
+    observed_at AS valid_from,
+    lead(observed_at) OVER (PARTITION BY {ENTITY_KEY} ORDER BY observed_at) AS valid_to,
+    status, daily_budget, budget_type, bid_strategy, target_cpa, target_roas, currency
+FROM versions;
+
+-- Latest daily rows with the settings in force by the end of each day, pacing, and the matured
+-- conversions when the day has matured.
+CREATE VIEW entity_daily_panel AS
+SELECT
+    l.platform, l.provider_account_id, l.account_alias, l.entity_type, l.entity_ref,
+    l.entity_name, l.day, l.currency, l.spend, l.impressions, l.clicks, l.conversions,
+    l.conversion_value, l.is_complete, l.pulled_on - l.day AS age_days,
+    m.conversions AS conversions_matured,
+    m.conversion_value AS conversion_value_matured,
+    m.day IS NOT NULL AS is_matured,
+    h.status, h.daily_budget, h.bid_strategy, h.target_cpa, h.target_roas,
+    l.spend / nullif(h.daily_budget, 0) AS pacing_ratio
+FROM entity_daily_latest l
+LEFT JOIN entity_daily_matured m USING ({ENTITY_KEY}, day)
+ASOF LEFT JOIN entity_settings_history h
+    ON h.platform = l.platform
+    AND h.provider_account_id = l.provider_account_id
+    AND h.entity_type = l.entity_type
+    AND h.entity_ref = l.entity_ref
+    AND CAST(l.day + 1 AS TIMESTAMP) > h.valid_from;
+"""  # noqa: S608 - schema text built from constants
+
+SIMULATION = """
+CREATE TABLE sim_scenarios (
+    scenario_id VARCHAR PRIMARY KEY,
+    seed BIGINT NOT NULL,
+    n_campaigns INTEGER NOT NULL,
+    days INTEGER NOT NULL,
+    start_day DATE NOT NULL,
+    params JSON NOT NULL,
+    created_at TIMESTAMP NOT NULL
+);
+CREATE TABLE sim_truth (
+    scenario_id VARCHAR NOT NULL,
+    platform VARCHAR NOT NULL,
+    entity_ref VARCHAR NOT NULL,
+    day DATE NOT NULL,
+    budget DOUBLE NOT NULL,
+    spend DOUBLE NOT NULL,
+    expected_conversions DOUBLE NOT NULL,
+    conversions INTEGER NOT NULL,
+    kappa1 DOUBLE NOT NULL,
+    kappa2 DOUBLE NOT NULL,
+    weekday_factor DOUBLE NOT NULL,
+    injected_anomaly VARCHAR,
+    PRIMARY KEY (scenario_id, entity_ref, day)
+);
+"""
+
+JOBS = """
+CREATE TABLE job_runs (
+    run_id UUID PRIMARY KEY,
+    job VARCHAR NOT NULL,
+    trigger VARCHAR NOT NULL,
+    status VARCHAR NOT NULL,
+    started_at TIMESTAMP NOT NULL,
+    finished_at TIMESTAMP,
+    detail JSON
+);
+"""
+
 MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("0001_operational", OPERATIONAL),
     ("0002_conversations", CONVERSATIONS),
+    ("0003_analytics", ANALYTICS),
+    ("0004_simulation", SIMULATION),
+    ("0005_jobs", JOBS),
 )
 
 

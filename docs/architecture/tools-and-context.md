@@ -43,6 +43,10 @@ Every offloaded artifact records:
 The model receives no credential-shaped values, raw headers, tokens, internal stack traces, or
 unbounded provider payloads.
 
+The dispatcher also appends each performance read and campaign listing to the history tables in
+the state file ([History and simulation](history-and-simulation.md)). The model reads that history
+only through `query_history`'s fixed queries.
+
 ## Filesystem
 
 The runtime may read wiki and skill files, write analysis artifacts, and render reports. It cannot

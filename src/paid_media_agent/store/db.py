@@ -1,4 +1,4 @@
-"""One DuckDB database per process: proposals, approvals, receipts, dedupe keys, and threads.
+"""One DuckDB database per process: operational state, conversations, and analytics history.
 
 DuckDB lets a single process hold a database file for writing, and while it does, no other
 process can open the file at all, even read-only. `serve` owns the file for its lifetime; other
@@ -10,8 +10,10 @@ compare-and-swap updates are decided by their `WHERE` clause and never interleav
 
 from __future__ import annotations
 
+import json
 import threading
-from collections.abc import Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from functools import cached_property
 from pathlib import Path
@@ -77,11 +79,32 @@ class Store:
     def fetch(self, sql: str, params: Sequence[Any] = ()) -> list[tuple[Any, ...]]:
         return self._cursor().execute(sql, list(params)).fetchall()
 
+    def fetch_dicts(self, sql: str, params: Sequence[Any] = ()) -> list[dict[str, Any]]:
+        result = self._cursor().execute(sql, list(params))
+        names = [column[0] for column in result.description or ()]
+        return [dict(zip(names, row, strict=True)) for row in result.fetchall()]
+
     def write(self, sql: str, params: Sequence[Any] = ()) -> list[tuple[Any, ...]]:
         """Run one write statement under the process write lock and return its rows."""
         with self._write_lock:
             try:
                 return self._cursor().execute(sql, list(params)).fetchall()
+            except duckdb.TransactionException as exc:
+                raise StoreConflict(str(exc)) from None
+
+    @contextmanager
+    def transaction(self) -> Iterator[duckdb.DuckDBPyConnection]:
+        """Several statements under the write lock that commit together or not at all."""
+        with self._write_lock:
+            cursor = self._cursor()
+            cursor.execute("BEGIN TRANSACTION")
+            try:
+                yield cursor
+            except BaseException:
+                cursor.execute("ROLLBACK")
+                raise
+            try:
+                cursor.execute("COMMIT")
             except duckdb.TransactionException as exc:
                 raise StoreConflict(str(exc)) from None
 
@@ -93,3 +116,12 @@ class Store:
 
     def close(self) -> None:
         self._conn.close()
+
+
+def json_rows(shape: Mapping[str, str]) -> str:
+    """A `SELECT` over one JSON parameter holding a list of row objects typed by `shape`.
+
+    Binding the rows as a single string is far faster than per-row parameters: DuckDB parses and
+    casts the whole batch in one statement. Decimals travel as strings so no precision is lost.
+    """
+    return f"SELECT unnest(from_json(?::JSON, '{json.dumps([dict(shape)])}'), recursive := true)"

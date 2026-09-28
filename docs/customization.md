@@ -108,12 +108,12 @@ Markdown guidance.
 ### Memory and scheduling
 
 This template has no learned long-term memory. Keep stable business definitions, targets, and
-procedures in the workspace, where they are reviewed and versioned. Conversation state lives with
-the server process; proposals, approvals, and receipts persist in the DuckDB state file.
+procedures in the workspace, where they are reviewed and versioned. Conversations, proposals,
+approvals, receipts, and the history of every read persist in the DuckDB state file.
 
-Schedule recurring reports by running `uv run paid-media-agent report --cadence weekly` (or
-`monthly`) from your own scheduler. Scheduled analysis uses the same skills, accounts, and tools as
-an interactive run.
+`serve` schedules a daily history sync and weekly and monthly reports; choose them with
+`PAID_MEDIA_JOBS`. Scheduled work uses the same accounts and tools as an interactive run. You can
+also run `uv run paid-media-agent report --cadence weekly` (or `monthly`) from your own scheduler.
 
 ## Optional warehouses and dbt
 

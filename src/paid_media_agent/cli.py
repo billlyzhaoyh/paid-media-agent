@@ -1,4 +1,4 @@
-"""Command-line entry: setup console, fixture demo, doctor, tests, accounts, reports, and serve.
+"""Command-line entry: setup console, demo, doctor, tests, accounts, reports, history, and serve.
 
 Every console action has a subcommand with `--json`, so coding agents and humans share one path.
 """
@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import sys
+from datetime import date, timedelta
 from typing import Any
 
 import click
@@ -95,7 +96,7 @@ def setup(port: int | None, no_open: bool, no_token: bool) -> None:
     "--json", "as_json", is_flag=True, help="Print the final message and tool audit as JSON."
 )
 def demo(with_proposal: bool, as_json: bool) -> None:
-    """Run the fixture-backed demo through the real graph with no network or secrets."""
+    """Run the fixture-backed demo through the real agent loop with no network or secrets."""
     settings = Settings(paid_media_model="scripted:demo", paid_media_allow_self_approval=True)
     _configure_logging(settings)
     try:
@@ -116,6 +117,14 @@ def demo(with_proposal: bool, as_json: bool) -> None:
     click.echo(
         f"Tool audit: {len(result['audit'])} host-side reads; catalog revision {result['catalog_revision']}."
     )
+    coverage = result["history"]["coverage"]
+    click.echo(
+        f"History: {sum(c['snapshot_rows'] for c in coverage)} entity-day snapshots from "
+        f"{sum(c['pulls'] for c in coverage)} pulls across {len({c['account_alias'] for c in coverage})} "
+        "accounts (in memory for the demo; `serve` and `sync` keep them in the state file)."
+    )
+    if result["history"]["changes"]:
+        click.echo("Change log: " + "; ".join(result["history"]["changes"]) + ".")
 
 
 @main.command()
@@ -401,8 +410,6 @@ def report(
     cadence: str, end_date: str | None, aliases: tuple[str, ...], no_render: bool, as_json: bool
 ) -> None:
     """Run the deterministic cross-platform report: reads, comparison, and rendering, no model."""
-    from datetime import date, timedelta
-
     from paid_media_agent.reports.cadence import run_cadence_report
     from paid_media_agent.runtime.local import build_configured_runtime
 
@@ -470,6 +477,348 @@ def report(
         sys.exit(1)
 
 
+# ---------------------------------------------------------------- history
+
+
+def _day(value: str | None, default: date | None = None) -> date | None:
+    if value is None:
+        return default
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise click.BadParameter(f"{value} is not a YYYY-MM-DD date") from None
+
+
+def _server_job(settings: Settings, name: str) -> dict[str, Any]:
+    """Run a job inside the `serve` process that holds the state file, over its API."""
+    import httpx
+
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    tokens = settings.api_token_map()
+    if not tokens:
+        raise click.ClickException(
+            "`serve` holds the state file and PAID_MEDIA_API_TOKENS is not set, so this command "
+            "cannot ask it to run the job. Stop `serve`, or configure an API token."
+        )
+    host = settings.paid_media_api_host
+    if host in ("0.0.0.0", "::", ""):  # noqa: S104 - a bind-all address, not a destination
+        host = "127.0.0.1"
+    try:
+        response = httpx.post(
+            f"http://{host}:{settings.paid_media_api_port}/jobs/{name}",
+            headers={"Authorization": f"Bearer {next(iter(tokens))}"},
+            timeout=900,
+        )
+    except httpx.HTTPError as exc:
+        raise click.ClickException(f"could not reach `serve`: {type(exc).__name__}") from None
+    if response.status_code != 200:
+        raise click.ClickException(f"`serve` refused the job: HTTP {response.status_code}")
+    result: dict[str, Any] = response.json()
+    return result
+
+
+def _state_runtime(settings: Settings) -> Any:
+    from paid_media_agent.runtime.self_hosted import build_self_hosted_runtime
+
+    return build_self_hosted_runtime(settings, project_root=project_root())
+
+
+def _echo_sync(summary: dict[str, Any], as_json: bool) -> None:
+    if as_json:
+        click.echo(json.dumps(summary, indent=2, default=str))
+        return
+    click.echo(
+        f"{summary['source']} {summary['start']} to {summary['end']}: {summary['rows']} "
+        f"entity-days, {summary['settings']} campaign settings, {len(summary['reads'])} reads."
+    )
+    if summary["unavailable"]:
+        click.echo("  unavailable: " + "; ".join(summary["unavailable"]))
+
+
+@main.command()
+@click.option(
+    "--days", type=int, default=None, help="Trailing days (default PAID_MEDIA_SYNC_DAYS)."
+)
+@click.option("--end", "end_date", default=None, help="Last day (YYYY-MM-DD). Default: yesterday.")
+@click.option("--alias", "aliases", multiple=True, help="Account alias. Repeatable; default all.")
+@click.option("--json", "as_json", is_flag=True)
+def sync(days: int | None, end_date: str | None, aliases: tuple[str, ...], as_json: bool) -> None:
+    """Pull recent performance and campaign settings into the history store.
+
+    When `serve` holds the state file, this asks it to run its sync job instead.
+    """
+    from paid_media_agent.analytics.sync import run_sync
+    from paid_media_agent.store import StoreBusy
+
+    settings = Settings()
+    _configure_logging(settings)
+    end = _day(end_date, date.today() - timedelta(days=1))
+    assert end is not None  # noqa: S101 - a default is supplied
+    try:
+        runtime = _state_runtime(settings)
+    except StoreBusy:
+        runtime = None
+    if runtime is None:
+        if days or end_date or aliases:
+            raise click.ClickException(
+                "`serve` holds the state file; run `sync` without options to use its job"
+            )
+        run = _server_job(settings, "sync")
+        if run["status"] != "ok":
+            raise click.ClickException(f"sync failed in `serve`: {run['detail']}")
+        _echo_sync(run["detail"], as_json)
+        return
+    try:
+        result = asyncio.run(
+            run_sync(
+                accounts=runtime.profile.accounts,
+                catalog=runtime.catalog,
+                dispatcher=runtime.components.read_dispatcher,
+                end=end,
+                days=days or settings.paid_media_sync_days,
+                aliases=aliases or None,
+            )
+        )
+    finally:
+        runtime.store.close()
+    _echo_sync(result.summary(), as_json)
+    if not result.reads:
+        sys.exit(1)
+
+
+@main.command()
+@click.option("--start", "start_date", required=True, help="First day (YYYY-MM-DD).")
+@click.option("--end", "end_date", default=None, help="Last day (YYYY-MM-DD). Default: yesterday.")
+@click.option("--alias", "aliases", multiple=True, help="Account alias. Repeatable; default all.")
+@click.option("--json", "as_json", is_flag=True)
+def backfill(
+    start_date: str, end_date: str | None, aliases: tuple[str, ...], as_json: bool
+) -> None:
+    """Pull an older date range into the history store, 28 days per read."""
+    from paid_media_agent.analytics.sync import run_backfill
+    from paid_media_agent.store import StoreBusy
+
+    settings = Settings()
+    _configure_logging(settings)
+    start = _day(start_date)
+    end = _day(end_date, date.today() - timedelta(days=1))
+    assert start is not None and end is not None  # noqa: S101 - required or defaulted
+    try:
+        runtime = _state_runtime(settings)
+    except StoreBusy as exc:
+        raise click.ClickException(f"{exc}. Stop `serve` to backfill.") from None
+    try:
+        result = asyncio.run(
+            run_backfill(
+                accounts=runtime.profile.accounts,
+                catalog=runtime.catalog,
+                dispatcher=runtime.components.read_dispatcher,
+                start=start,
+                end=end,
+                aliases=aliases or None,
+            )
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    finally:
+        runtime.store.close()
+    _echo_sync(result.summary(), as_json)
+    if not result.reads:
+        sys.exit(1)
+
+
+@main.command()
+@click.option("--scenario", default="baseline", show_default=True, help="Scenario name.")
+@click.option("--days", type=click.IntRange(30, 1000), default=180, show_default=True)
+@click.option("--campaigns", type=click.IntRange(1, 50), default=5, show_default=True)
+@click.option("--seed", type=int, default=7, show_default=True)
+@click.option("--start", "start_date", default=None, help="First day. Default: --days ago.")
+@click.option("--force", is_flag=True, help="Replace an existing scenario file.")
+@click.option("--json", "as_json", is_flag=True)
+def simulate(
+    scenario: str,
+    days: int,
+    campaigns: int,
+    seed: int,
+    start_date: str | None,
+    force: bool,
+    as_json: bool,
+) -> None:
+    """Simulate campaigns with known response curves into their own history file."""
+    from paid_media_agent.runtime.self_hosted import state_path
+    from paid_media_agent.sim.scenario import run_scenario, scenario_path
+    from paid_media_agent.sim.simulator import ScenarioParams
+    from paid_media_agent.store import Store
+
+    settings = Settings()
+    start = _day(start_date, date.today() - timedelta(days=days))
+    assert start is not None  # noqa: S101 - a default is supplied
+    try:
+        path = scenario_path(state_path(settings, project_root()).parent, scenario)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--scenario") from None
+    if path.exists():
+        if not force:
+            raise click.ClickException(f"{path} exists; pass --force to replace it")
+        for stale in (path, path.with_name(path.name + ".wal")):
+            stale.unlink(missing_ok=True)
+    params = ScenarioParams(
+        scenario_id=scenario, seed=seed, n_campaigns=campaigns, days=days, start=start
+    )
+    store = Store(path)
+    try:
+        run = run_scenario(store, params)
+    finally:
+        store.close()
+    truth = [
+        {
+            "entity_ref": c.entity_ref,
+            "kappa1": round(c.kappa1, 4),
+            "kappa2": round(c.kappa2, 4),
+            "base_budget": c.base_budget,
+            "starts_on": (start + timedelta(days=c.start_index)).isoformat(),
+        }
+        for c in run.campaigns
+    ]
+    if as_json:
+        click.echo(
+            json.dumps(
+                {
+                    "path": str(path),
+                    "params": params.as_json(),
+                    "campaigns": truth,
+                    "pulls": run.pulls,
+                    "snapshot_rows": run.snapshot_rows,
+                    "truth_rows": run.truth_rows,
+                    "shocks": run.shocks,
+                    "external_changes": run.external_changes,
+                },
+                indent=2,
+            )
+        )
+        return
+    click.echo(f"Scenario {scenario}: {days} days from {start}, seed {seed} -> {path}")
+    for c in truth:
+        click.echo(
+            f"  {c['entity_ref']}  kappa1 {c['kappa1']:>8}  kappa2 {c['kappa2']:<7} "
+            f"base budget {c['base_budget']:>8}  from {c['starts_on']}"
+        )
+    click.echo(
+        f"  {run.pulls} pulls, {run.snapshot_rows} snapshot rows, {run.truth_rows} true "
+        f"campaign-days, {run.shocks} labelled shocks, {run.external_changes} budget changes."
+    )
+    click.echo(f"Inspect it with: paid-media-agent history --scenario {scenario} --view daily")
+
+
+_HISTORY_COLUMNS: dict[str, tuple[str, ...]] = {
+    "daily": (
+        "day",
+        "account_alias",
+        "entity_ref",
+        "spend",
+        "conversions",
+        "conversions_matured",
+        "daily_budget",
+        "pacing_ratio",
+        "age_days",
+    ),
+    "settings": ("valid_from", "account_alias", "entity_ref", "status", "daily_budget"),
+    "changes": (
+        "occurred_at",
+        "source",
+        "status",
+        "account_alias",
+        "entity_ref",
+        "field",
+        "before_value",
+        "after_value",
+    ),
+    "lag": ("account_alias", "platform", "age_days", "entity_days", "completeness"),
+}
+
+
+def _cell(value: Any) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, float):
+        return f"{value:.3f}" if abs(value) < 10 else f"{value:.2f}"
+    return str(value)[:26]
+
+
+@main.command()
+@click.option(
+    "--view",
+    type=click.Choice(["coverage", "daily", "settings", "changes", "lag"]),
+    default="coverage",
+    show_default=True,
+)
+@click.option("--scenario", default=None, help="Read a simulated scenario instead of the state.")
+@click.option("--alias", default=None, help="Account alias.")
+@click.option("--entity", default=None, help="Campaign or entity id.")
+@click.option("--start", "start_date", default=None, help="First day (YYYY-MM-DD).")
+@click.option("--end", "end_date", default=None, help="Last day (YYYY-MM-DD).")
+@click.option("--limit", type=click.IntRange(1, 500), default=30, show_default=True)
+@click.option("--json", "as_json", is_flag=True)
+def history(
+    view: str,
+    scenario: str | None,
+    alias: str | None,
+    entity: str | None,
+    start_date: str | None,
+    end_date: str | None,
+    limit: int,
+    as_json: bool,
+) -> None:
+    """Show stored history: coverage, daily panel, settings versions, changes, or lag."""
+    from paid_media_agent.analytics.history import query_history
+    from paid_media_agent.runtime.self_hosted import state_path
+    from paid_media_agent.sim.scenario import scenario_path
+    from paid_media_agent.store import Store, StoreBusy
+
+    settings = Settings()
+    path = state_path(settings, project_root())
+    if scenario is not None:
+        path = scenario_path(path.parent, scenario)
+        if not path.exists():
+            raise click.ClickException(f"no scenario file {path}; run `simulate` first")
+    try:
+        store = Store(path)
+    except StoreBusy as exc:
+        raise click.ClickException(
+            f"{exc}. Ask the agent instead; its query_history tool reads the same views."
+        ) from None
+    try:
+        rows, truncated = query_history(
+            store,
+            view,  # type: ignore[arg-type]
+            account_alias=alias,
+            entity_ref=entity,
+            start=_day(start_date),
+            end=_day(end_date),
+            limit=limit,
+        )
+    finally:
+        store.close()
+    if as_json:
+        click.echo(json.dumps({"rows": rows, "truncated": truncated}, indent=2))
+        return
+    if not rows:
+        click.echo(
+            "No history yet. Run `paid-media-agent sync`, or `simulate` for sample data."
+            if view == "coverage"
+            else f"No {view} rows match."
+        )
+        return
+    columns = _HISTORY_COLUMNS.get(view) or tuple(rows[0])
+    table = [[_cell(row.get(c)) for c in columns] for row in rows]
+    widths = [max(len(c), *(len(r[i]) for r in table)) for i, c in enumerate(columns)]
+    click.echo("  ".join(c.ljust(w) for c, w in zip(columns, widths, strict=True)))
+    for line in table:
+        click.echo("  ".join(v.ljust(w) for v, w in zip(line, widths, strict=True)))
+    if truncated:
+        click.echo("... more rows; raise --limit or narrow with --alias/--entity/--start/--end.")
+
+
 # ---------------------------------------------------------------- self-hosted runtime
 
 
@@ -490,6 +839,7 @@ def serve(host: str | None, port: int | None) -> None:
     import uvicorn
 
     from paid_media_agent.runtime.self_hosted import build_self_hosted_runtime
+    from paid_media_agent.scheduler import Scheduler, build_jobs
     from paid_media_agent.store import StoreBusy
     from paid_media_agent.surfaces.api.app import create_app
     from paid_media_agent.surfaces.slack.socket_mode import connect_socket_mode, socket_mode_ready
@@ -500,18 +850,23 @@ def serve(host: str | None, port: int | None) -> None:
         click.echo(f"FAIL {exc}", err=True)
         sys.exit(1)
 
+    scheduler = Scheduler(runtime.store, build_jobs(runtime))
+
     async def _serve() -> None:
         socket = (
             await connect_socket_mode(settings, runtime) if socket_mode_ready(settings) else None
         )
+        jobs = asyncio.create_task(scheduler.run_forever()) if settings.scheduled_jobs() else None
         try:
             config = uvicorn.Config(
-                create_app(runtime),
+                create_app(runtime, scheduler=scheduler),
                 host=settings.paid_media_api_host,
                 port=settings.paid_media_api_port,
             )
             await uvicorn.Server(config).serve()
         finally:
+            if jobs is not None:
+                jobs.cancel()
             if socket is not None:
                 await socket.close_async()
 

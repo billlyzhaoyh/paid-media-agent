@@ -117,7 +117,14 @@ class Settings(BaseSettings):
     paid_media_log_level: str = "INFO"
     paid_media_workspace_root: Path = Path("workspace")
     paid_media_state_path: Path = Path("workspace/state/pma.duckdb")
-    """DuckDB file for proposals, approvals, receipts, and threads. Relative to the project root."""
+    """DuckDB file for conversations, proposals, approvals, receipts, threads, and pulled history.
+    Relative to the project root."""
+    paid_media_jobs: str = "sync,report_weekly,report_monthly"
+    """Jobs `serve` runs on schedule: sync (daily), report_weekly (Mondays), report_monthly (the
+    1st). Empty disables scheduling; `POST /jobs/{name}` still runs any job on demand."""
+    paid_media_job_hour_utc: int = Field(default=6, ge=0, le=23)
+    paid_media_sync_days: int = Field(default=28, ge=1, le=90)
+    """Trailing days each sync re-pulls, so late conversions arrive as newer snapshots."""
     paid_media_fixture_anchor: date | None = None
     """Last complete day of the synthetic data. Unset means two days ago, so the demo never ages
     out; tests pin it to the shipped dates. Set it only when reproducing a specific window."""
@@ -196,6 +203,15 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    def scheduled_jobs(self) -> tuple[str, ...]:
+        from paid_media_agent.scheduler import JOB_NAMES
+
+        names = tuple(part.strip() for part in self.paid_media_jobs.split(",") if part.strip())
+        unknown = [name for name in names if name not in JOB_NAMES]
+        if unknown:
+            raise ValueError(f"unknown PAID_MEDIA_JOBS entries: {', '.join(unknown)}")
+        return names
 
     def model_settings(self) -> ModelConfig:
         return ModelConfig.parse(self.paid_media_model, base_url=self.paid_media_model_base_url)

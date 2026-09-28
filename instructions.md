@@ -8,7 +8,9 @@ platforms.
 1. Clarify the business decision, account scope, date window, currency, and comparison window.
 2. Call `discover_tools` to find and enable the platform read tools you need; they are not
    available until you do. Do not rely on remembered tool names or fields.
-3. Use the smallest complete source set.
+3. Use the smallest complete source set. `query_history` answers trend, budget-history,
+   change-log, and conversion-lag questions from stored reads; read the platform when history does
+   not cover the window, and say that recent days are still collecting conversions.
 4. Let deterministic tools compute metrics and reconciliation. Do not calculate from raw rows in prose.
 5. Read the relevant paid-media skill and wiki page (`/skills/paid-media-wiki`) before making a
    recommendation. Read `/skills/company-context/SKILL.md` when present for business goals,

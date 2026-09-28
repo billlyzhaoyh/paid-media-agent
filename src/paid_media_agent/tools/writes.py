@@ -39,6 +39,7 @@ from paid_media_agent.domain.proposals import (
 )
 from paid_media_agent.persistence.interfaces import (
     ApprovalRepository,
+    ChangeLog,
     ProposalRepository,
     ReceiptRepository,
 )
@@ -282,9 +283,11 @@ class ProposalService:
         approvals: ApprovalRepository,
         read_provider: ReadProvider,
         clock: Clock = utc_now,
+        change_log: ChangeLog | None = None,
     ) -> None:
         self._catalog_provider = catalog_provider
         self._accounts = accounts
+        self._change_log = change_log
         self._write_policy = write_policy
         self._approval_policy = approval_policy
         self._signer = signer
@@ -445,6 +448,7 @@ class ProposalService:
             routing_id=secrets.token_urlsafe(18),
         )
         self._save(record)
+        self.log_change(record, "proposed")
         return record
 
     def get(self, proposal_id: UUID) -> ProposalRecord | None:
@@ -493,6 +497,7 @@ class ProposalService:
             routing_id=secrets.token_urlsafe(18),
         )
         self._save(updated, expected=record)
+        self.log_change(updated, "revised")
         return updated
 
     def reject(self, proposal_id: UUID, *, actor_ref: str, message: str = "") -> ProposalRecord:
@@ -508,6 +513,7 @@ class ProposalService:
             }
         )
         self._save(updated, expected=record)
+        self.log_change(updated, "rejected")
         return updated
 
     def approve(self, proposal_id: UUID, *, approver_ref: str) -> ApprovalClaim:
@@ -548,7 +554,16 @@ class ProposalService:
             expected=record,
         )
         self._approvals.save(claim)
+        self.log_change(record, "approved")
         return claim
+
+    def log_change(self, record: ProposalRecord, status: str) -> None:
+        if self._change_log is not None:
+            self._change_log.proposal_event(record, status)
+
+    def log_receipt(self, record: ProposalRecord, receipt: WriteReceipt) -> None:
+        if self._change_log is not None:
+            self._change_log.receipt_event(record, receipt)
 
     def _save(self, record: ProposalRecord, *, expected: ProposalRecord | None = None) -> None:
         if not self._proposals.save(record, expected=expected):
@@ -702,6 +717,7 @@ class WriteExecutor:
             readback_attempts=readback_attempts,
         )
         self._receipts.save(receipt)
+        self._service.log_receipt(record, receipt)
         return receipt
 
     async def _readback(

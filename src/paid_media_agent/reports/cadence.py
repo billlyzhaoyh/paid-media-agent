@@ -102,6 +102,7 @@ async def run_cadence_report(
                     "start_date": windows.previous.start.isoformat(),
                     "end_date": windows.current.end.isoformat(),
                 },
+                source="report",
             )
         except ReadDenied as exc:
             unavailable.append(f"{alias}: {exc.reason}")

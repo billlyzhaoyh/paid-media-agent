@@ -12,6 +12,14 @@
 - A local-first server: one `serve` process runs the API and Slack, with proposals, approvals,
   receipts, and thread ownership in a DuckDB state file.
 - Runtime skills and editable business context shared by the CLI, API, and Slack.
+- Read history in the state file: every read's daily snapshots, campaign settings, and a change
+  log of proposals, outcomes, and changes made outside the agent, with views for the latest,
+  matured, and lag-corrected numbers. `sync`, `backfill`, and `history` commands; a
+  `query_history` tool; and scheduled jobs in `serve` (daily sync, weekly and monthly reports)
+  with `POST /jobs/{name}`. Adds `PAID_MEDIA_JOBS`, `PAID_MEDIA_JOB_HOUR_UTC`, and
+  `PAID_MEDIA_SYNC_DAYS`.
+- `simulate`: seeded synthetic campaigns with known response curves, delayed conversions, and
+  labelled shocks, written to their own history file for testing prediction and allocation.
 
 Live provider writes remain disabled by default and require the documented release gates.
 

@@ -1,4 +1,4 @@
-"""Scripted demo: a deterministic investigation through the real graph without a model API."""
+"""Scripted demo: a deterministic investigation through the real agent loop without a model API."""
 
 from __future__ import annotations
 
@@ -8,9 +8,11 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from paid_media_agent.analytics.history import query_history
 from paid_media_agent.config import Settings, project_root
 from paid_media_agent.domain.presentation import ProposalView
 from paid_media_agent.harness.messages import AssistantMessage, Message, ToolCall
+from paid_media_agent.store import Store
 from paid_media_agent.testing.scripted_model import (
     ScriptedChatModel,
     Step,
@@ -236,6 +238,7 @@ async def run_demo(
         "analysis": analysis,
     }
     if not with_proposal:
+        result["history"] = _history(runtime.profile.store)
         return result
     conversation = await runtime.agent.send(
         thread, caller, "Reduce the Performance Max daily budget to 240 and execute it."
@@ -255,4 +258,15 @@ async def run_demo(
     if receipt is None or receipt.status != "verified":
         raise ValueError(str(result["receipt_message"]))
     result["receipt"] = receipt.model_dump(mode="json") if receipt else None
+    result["history"] = _history(runtime.profile.store)
     return result
+
+
+def _history(store: Store) -> dict[str, Any]:
+    """What the run left in the history store: every read, and the change log."""
+    coverage, _ = query_history(store, "coverage")
+    changes, _ = query_history(store, "changes")
+    return {
+        "coverage": coverage,
+        "changes": [f"{c['status']} {c['field']} {c['entity_ref']}" for c in reversed(changes)],
+    }

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from paid_media_agent.analytics.changes import ChangeRecorder
+from paid_media_agent.analytics.ingest import AnalyticsRecorder
 from paid_media_agent.config import Settings
 from paid_media_agent.harness.files import build_file_tools
 from paid_media_agent.harness.loop import Agent, ApprovalGate
@@ -22,6 +24,7 @@ from paid_media_agent.tools.discovery import (
     build_discover_tools_tool,
     build_list_accounts_tool,
 )
+from paid_media_agent.tools.history import QUERY_HISTORY_TOOL, build_query_history_tool
 from paid_media_agent.tools.reads import ReadDispatcher, build_platform_read_tools
 from paid_media_agent.tools.reports import RENDER_REPORT_TOOL, build_render_report_tool
 from paid_media_agent.tools.summary import SUMMARIZE_WINDOW_TOOL, build_summarize_window_tool
@@ -42,6 +45,7 @@ CORE_TOOLS: tuple[str, ...] = (
     COMPARE_PERIODS_TOOL,
     SUMMARIZE_WINDOW_TOOL,
     RENDER_REPORT_TOOL,
+    QUERY_HISTORY_TOOL,
 )
 WRITE_TOOLS: tuple[str, ...] = (
     DISCOVER_WRITE_OPERATIONS_TOOL,
@@ -91,6 +95,7 @@ def _services(
         accounts=runtime.accounts,
         provider=runtime.read_provider,
         artifacts=runtime.artifacts,
+        recorder=AnalyticsRecorder(runtime.store),
     )
     service = ProposalService(
         catalog_provider=runtime.catalog_provider,
@@ -101,6 +106,7 @@ def _services(
         proposals=runtime.proposals,
         approvals=runtime.approvals,
         read_provider=runtime.read_provider,
+        change_log=ChangeRecorder(runtime.store, runtime.accounts),
     )
     executor = WriteExecutor(
         service=service,
@@ -152,6 +158,7 @@ def build_agent_components(
         build_compare_periods_tool(runtime.artifacts),
         build_summarize_window_tool(runtime.artifacts),
         build_render_report_tool(runtime.artifacts),
+        build_query_history_tool(runtime.store, runtime.accounts),
     ]
     tools = (
         *core,
