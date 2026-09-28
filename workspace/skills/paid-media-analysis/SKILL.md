@@ -38,7 +38,8 @@ recommendations.
    `summarize_window` with the performance artifacts (and the `list_campaigns` artifacts for daily
    budgets); it returns per-entity totals, pacing, and a daily series of day-over-day changes. For
    spikes, drops, or "anything unusual", call `check_anomalies`, which judges recent days against
-   their expected range from stored history. For period-over-period change, call
+   their expected range from stored history. For how to split or shift budget between campaigns,
+   call `recommend_budgets` (see the wiki's bidding-and-budget page). For period-over-period change, call
    `compare_periods` with the artifact ids and both windows. List any failed read in
    `unavailable_sources` so it stays visible and suppresses the cross-platform total.
 7. Read the `analysis_summary`. Quote its values verbatim; never recompute from previews or rows.

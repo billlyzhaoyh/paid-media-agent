@@ -19,6 +19,10 @@ class ProposalRepository(Protocol):
 
     def list_for_thread(self, thread_id: str) -> list[ProposalRecord]: ...
 
+    def list_awaiting(self, limit: int = 50) -> list[ProposalRecord]:
+        """Proposals still awaiting a decision, oldest first."""
+        ...
+
 
 class ApprovalRepository(Protocol):
     def save(self, claim: ApprovalClaim) -> None: ...

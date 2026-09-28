@@ -7,6 +7,7 @@ from pathlib import Path
 
 from paid_media_agent.analytics.changes import ChangeRecorder
 from paid_media_agent.analytics.ingest import AnalyticsRecorder
+from paid_media_agent.bandit.live import live_config
 from paid_media_agent.config import Settings
 from paid_media_agent.harness.files import build_file_tools
 from paid_media_agent.harness.loop import Agent, ApprovalGate
@@ -18,6 +19,7 @@ from paid_media_agent.runtime.profiles import RuntimeProfile
 from paid_media_agent.store import Store
 from paid_media_agent.store.conversations import ConversationStore
 from paid_media_agent.tools.anomalies import CHECK_ANOMALIES_TOOL, build_check_anomalies_tool
+from paid_media_agent.tools.bandit import RECOMMEND_BUDGETS_TOOL, build_recommend_budgets_tool
 from paid_media_agent.tools.catalog import AuthorizedToolCatalog
 from paid_media_agent.tools.compare_periods import COMPARE_PERIODS_TOOL, build_compare_periods_tool
 from paid_media_agent.tools.discovery import (
@@ -49,6 +51,7 @@ CORE_TOOLS: tuple[str, ...] = (
     RENDER_REPORT_TOOL,
     QUERY_HISTORY_TOOL,
     CHECK_ANOMALIES_TOOL,
+    RECOMMEND_BUDGETS_TOOL,
 )
 WRITE_TOOLS: tuple[str, ...] = (
     DISCOVER_WRITE_OPERATIONS_TOOL,
@@ -167,6 +170,12 @@ def build_agent_components(
             runtime.accounts,
             build_predictor(settings, runtime.store),
             band=settings.paid_media_anomaly_band,
+        ),
+        build_recommend_budgets_tool(
+            runtime.store,
+            runtime.accounts,
+            build_predictor(settings, runtime.store),
+            config=live_config(settings.paid_media_bandit_policy),
         ),
     ]
     tools = (

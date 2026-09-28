@@ -12,8 +12,15 @@ from uuid import UUID
 
 from paid_media_agent.store.db import Store
 
-HistoryView = Literal["coverage", "daily", "settings", "changes", "lag"]
-HISTORY_VIEWS: tuple[HistoryView, ...] = ("coverage", "daily", "settings", "changes", "lag")
+HistoryView = Literal["coverage", "daily", "settings", "changes", "lag", "outcomes"]
+HISTORY_VIEWS: tuple[HistoryView, ...] = (
+    "coverage",
+    "daily",
+    "settings",
+    "changes",
+    "lag",
+    "outcomes",
+)
 MAX_ROWS = 500
 
 _QUERIES: dict[HistoryView, tuple[str, str, str]] = {
@@ -53,6 +60,14 @@ _QUERIES: dict[HistoryView, tuple[str, str, str]] = {
         "conversions_at_age, conversions_matured, completeness FROM conversion_lag",
         "",
         "ORDER BY account_alias, entity_type, age_days",
+    ),
+    "outcomes": (
+        "SELECT decision_day, account_alias, platform, entity_ref, entity_name, policy, outcome, "
+        "current_budget, final_budget AS recommended_budget, budget_in_force, proposal_status, "
+        "proposal_id, days_matured, hold_days, spend, conversions_matured, "
+        "expected_conversions_window, run_id FROM bandit_outcomes",
+        "decision_day",
+        "ORDER BY decision_day DESC, account_alias, entity_ref",
     ),
 }
 

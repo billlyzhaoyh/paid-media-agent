@@ -1,4 +1,4 @@
-"""Recurring jobs inside `serve`: the daily history sync and the deterministic reports.
+"""Recurring jobs inside `serve`: history sync, anomaly checks, budget recommendations, reports.
 
 `serve` owns the state file, so scheduled work runs in that process. A job is due once its hour
 has come on one of its days and no scheduled run has started that day, so a server started late
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-JOB_NAMES = ("sync", "anomalies", "report_weekly", "report_monthly")
+JOB_NAMES = ("sync", "anomalies", "allocate", "report_weekly", "report_monthly")
 JobTrigger = Literal["scheduled", "manual"]
 
 
@@ -207,6 +207,22 @@ def build_jobs(runtime: SelfHostedRuntime, *, clock: Callable[[], datetime] = ut
         summary = report.as_json()
         return {**summary, "flags": summary["flags"][:50], "flag_count": len(report.flags)}
 
+    async def allocate() -> dict[str, Any]:
+        from paid_media_agent.bandit.live import allocate_accounts, live_config
+        from paid_media_agent.predict.factory import build_predictor
+
+        runs = await allocate_accounts(
+            runtime.store,
+            build_predictor(settings, runtime.store),
+            aliases=profile.accounts.aliases(),
+            as_of=clock().date(),
+            config=live_config(settings.paid_media_bandit_policy),
+            service=runtime.components.proposal_service,
+            propose=settings.paid_media_bandit_propose,
+            min_change=settings.paid_media_bandit_min_change,
+        )
+        return {"proposing": settings.paid_media_bandit_propose, "accounts": runs}
+
     def report(cadence: Cadence) -> Callable[[], Awaitable[dict[str, Any]]]:
         async def _report() -> dict[str, Any]:
             run = await run_cadence_report(
@@ -237,6 +253,13 @@ def build_jobs(runtime: SelfHostedRuntime, *, clock: Callable[[], datetime] = ut
     return [
         Job("sync", sync, hour_utc=hour, scheduled="sync" in enabled),
         Job("anomalies", anomalies, hour_utc=hour, scheduled="anomalies" in enabled),
+        Job(
+            "allocate",
+            allocate,
+            on_day=lambda d: d.weekday() == 0,
+            hour_utc=hour,
+            scheduled="allocate" in enabled,
+        ),
         Job(
             "report_weekly",
             report("weekly"),

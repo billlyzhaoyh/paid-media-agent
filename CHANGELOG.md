@@ -26,11 +26,22 @@
   longer flags days. `tests/eval/anomaly_backtest.py` compares them on simulated accounts.
 - `simulate`: seeded synthetic campaigns with known response curves, delayed conversions, and
   labelled shocks, written to their own history file for testing prediction and allocation.
-- A budget bandit, simulation only: `bandit simulate` and `bandit evaluate` split a daily budget
+- A budget bandit, evaluated in simulation: `bandit simulate` and `bandit evaluate` split a daily budget
   across campaigns to maximise conversions (Lyft's Contextual Budgeting System, adapted), within
   step, spend-history, and hold-period bounds, and log every decision in `bandit_runs` and
   `bandit_decisions`. The global model is a local pooled regression, or TabPFN with
   `--predictor tabpfn` (predictive mean, with spend in cost-per-conversion units).
+- Budget recommendations for configured accounts:
+  - an `allocate` command;
+  - a `recommend_budgets` agent tool;
+  - an opt-in weekly `allocate` job.
+
+  `allocate --propose` (or the job with `PAID_MEDIA_BANDIT_PROPOSE=true`) creates proposals that an
+  approver reviews with `proposals list` and approves with `proposals approve`, or through
+  `GET /proposals` and `POST /proposals/{id}/approve`. Approval applies the change once through
+  the normal executor checks. A newer run supersedes the older run's pending proposals, and
+  `history --view outcomes` shows how each recommendation turned out. Adds
+  `PAID_MEDIA_BANDIT_POLICY`, `PAID_MEDIA_BANDIT_PROPOSE`, and `PAID_MEDIA_BANDIT_MIN_CHANGE`.
 
 Live provider writes remain disabled by default and require the documented release gates.
 

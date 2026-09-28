@@ -189,5 +189,6 @@ def build_slack_service(runtime: Any) -> SlackApplicationService:
         service=runtime.components.proposal_service,
         receipts=runtime.profile.receipts,
         threads=runtime.threads,
+        executor=runtime.components.write_executor,
     )
     return SlackApplicationService(runner=runner, dedupe=runtime.dedupe)

@@ -44,6 +44,9 @@ Add `--help` for options and `--json` where supported for machine-readable outpu
 | `uv run paid-media-agent history --view daily` | Show stored history: coverage, daily, settings, changes, lag |
 | `uv run paid-media-agent simulate --days 180` | Simulate campaigns with known response curves into their own file |
 | `uv run paid-media-agent anomalies --days 7` | Flag recent campaign-days outside their expected range |
+| `uv run paid-media-agent allocate --alias demo-google` | Recommend how to split an account's daily budget; `--propose` creates proposals |
+| `uv run paid-media-agent proposals list` | Proposals awaiting approval, including the budget bandit's |
+| `uv run paid-media-agent proposals approve ID` | Approve one through the running API; it is applied once and read back |
 | `uv run paid-media-agent bandit simulate` | Let the budget bandit run a simulated account and compare it with the truth |
 | `uv run paid-media-agent bandit evaluate --seeds 3` | Regret and forecast error of the bandit and its baselines on simulated accounts |
 | `uv run paid-media-agent writes kill-switch on` | Stop mutations |
@@ -128,11 +131,31 @@ falls back to the day-over-day rule and says so. `predictor_calls` in the state 
 call. `PAID_MEDIA_ANOMALY_BAND` (default 0.95, or `--band` on the command) sets how much of normal
 variation the expected range covers: 0.8 catches more at the cost of more false alarms.
 
-## Budget allocation (simulation only)
+## Budget allocation
 
-`paid-media-agent bandit` runs the budget bandit on simulated accounts: it splits a total daily
-budget across campaigns to maximise conversions, CBS-style (a global model, one curve per
-campaign, and Thompson sampling). Nothing here reads or changes a live account yet.
+The budget bandit splits each account's total daily budget across its campaigns to maximise
+conversions, CBS-style (a global model, one curve per campaign, and Thompson sampling). It reads
+stored history, so `sync` first. Moves are at most 25% per decision, and a campaign whose budget
+changed in the last 7 days is held.
+
+- **`paid-media-agent allocate`** prints the recommendation for every account (or `--alias`).
+  `--propose` turns each move of at least `PAID_MEDIA_BANDIT_MIN_CHANGE` (5%) into a proposal
+  from requester `bandit`. Nothing is applied until an approver approves it.
+- **The agent's `recommend_budgets` tool** answers "how should I split the budget" the same way.
+  It changes nothing; applying a recommendation is a normal proposal in the conversation.
+- **The `allocate` job** (add it to `PAID_MEDIA_JOBS`) runs on Mondays for every account. It
+  proposes only when `PAID_MEDIA_BANDIT_PROPOSE=true`.
+- **Reviewing.** `paid-media-agent proposals list` shows proposals awaiting a decision. Approve or
+  reject one through the running API with `proposals approve ID` or `proposals reject ID`
+  (`POST /proposals/{id}/approve`); approval applies the change once and reads it back. The
+  caller is the first `PAID_MEDIA_API_TOKENS` entry and must be an approver. Bandit proposals do
+  not appear as Slack cards.
+- **Outcomes.** `history --view outcomes` shows whether each recommendation was followed and how
+  many conversions its week brought against what was expected, from matured days only.
+- **Policy.** `PAID_MEDIA_BANDIT_POLICY` is `thompson` (explores within guardrails, the default) or
+  `greedy`.
+
+For evaluation on simulated accounts:
 
 - `bandit simulate` warms a scenario up on an operator's budget schedule, then lets the bandit set
   budgets weekly. It prints each decision next to the true elasticity and writes every run to
@@ -140,7 +163,8 @@ campaign, and Thompson sampling). Nothing here reads or changes a live account y
 - `bandit evaluate` compares the bandit with static budgets, a CPA rule, and an oracle over several
   seeds, and reports each model's forecast error and interval coverage.
 
-Both use a local pooled regression as the global model. `--predictor tabpfn` uses TabPFN instead:
+All of these use a local pooled regression as the global model. `PAID_MEDIA_PREDICTOR=tabpfn`
+(or `--predictor tabpfn`) uses TabPFN instead:
 one call per decision (at least 10,000 tokens each), under the same caps and cache as anomaly
 checks. See [Budget bandit](docs/architecture/budget-bandit.md).
 

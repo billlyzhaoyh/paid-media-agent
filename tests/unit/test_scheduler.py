@@ -151,7 +151,7 @@ async def test_the_api_runs_the_real_sync_job_into_the_state_file(
     run = response.json()
     assert response.status_code == 200 and run["status"] == "ok", run
     assert run["detail"]["end"] == "2026-08-28" and run["detail"]["rows"] > 0
-    assert listing["jobs"] == ["sync", "anomalies", "report_weekly", "report_monthly"]
+    assert listing["jobs"] == ["sync", "anomalies", "allocate", "report_weekly", "report_monthly"]
     assert listing["recent"][0]["trigger"] == "manual"
     stored = runtime.store.fetch("SELECT count(DISTINCT source), min(source) FROM pulls")
     assert stored == [(1, "sync")]

@@ -36,5 +36,10 @@ If execution returns `proposal_changed`, reload it with `get_proposal`. Do not r
 that is executing or verifying. If its worker stopped, check the provider through read-only tools
 before proposing another change.
 
+To apply a `recommend_budgets` recommendation, propose that campaign's `daily_budget` with the
+recommended value and put the recommendation's run id in the reason; everything else is as above.
+Proposals from the budget bandit itself (requester `bandit`) are reviewed by an approver outside
+the conversation; do not re-propose them.
+
 Never call a provider mutation directly, reveal raw ids or credentials, or suggest that a prompt can
 bypass the approval policy.

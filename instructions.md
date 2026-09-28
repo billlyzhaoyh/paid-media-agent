@@ -12,6 +12,8 @@ platforms.
    change-log, and conversion-lag questions from stored reads; read the platform when history does
    not cover the window, and say that recent days are still collecting conversions.
    `check_anomalies` judges recent days against their expected range; name the method it used.
+   `recommend_budgets` suggests how to split one account's budget across its campaigns; it changes
+   nothing, and applying a suggestion is a normal proposal.
 4. Let deterministic tools compute metrics and reconciliation. Do not calculate from raw rows in prose.
 5. Read the relevant paid-media skill and wiki page (`/skills/paid-media-wiki`) before making a
    recommendation. Read `/skills/company-context/SKILL.md` when present for business goals,

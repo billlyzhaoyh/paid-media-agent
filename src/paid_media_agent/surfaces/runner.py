@@ -15,7 +15,12 @@ from paid_media_agent.harness.messages import AssistantMessage, Conversation, Me
 from paid_media_agent.persistence.interfaces import ReceiptRepository, ThreadOwnershipStore
 from paid_media_agent.tools.artifacts import ArtifactError, ArtifactStore
 from paid_media_agent.tools.reports import RENDER_REPORT_TOOL
-from paid_media_agent.tools.writes import ProposalService, WriteDenied
+from paid_media_agent.tools.writes import (
+    ProposalService,
+    WriteDenied,
+    WriteExecutor,
+    is_host_thread,
+)
 
 __all__ = ["AgentRunner", "EventHandler", "RunEvent", "RunOutcome", "ThreadAccessDenied"]
 
@@ -55,13 +60,17 @@ class AgentRunner:
         service: ProposalService,
         receipts: ReceiptRepository,
         threads: ThreadOwnershipStore,
+        executor: WriteExecutor | None = None,
     ) -> None:
         self._agent = agent
         self._service = service
         self._receipts = receipts
         self._threads = threads
+        self._executor = executor
 
     def _claim(self, thread_id: str, caller_ref: str) -> None:
+        if is_host_thread(thread_id):
+            raise ThreadAccessDenied("thread ids starting with 'host:' are reserved")
         if not self._threads.claim(thread_id, caller_ref):
             raise ThreadAccessDenied("thread belongs to another caller")
 
@@ -145,6 +154,31 @@ class AgentRunner:
         )
         return self._outcome(thread_id, conversation)
 
+    async def _approve_host(self, proposal_id: UUID, approver_ref: str) -> RunOutcome:
+        if self._executor is None:
+            raise WriteDenied("host_approval_unavailable", "this surface cannot execute changes")
+        record = self._service.get(proposal_id)
+        if record is not None and record.state is ProposalState.AWAITING_APPROVAL:
+            self._service.approve(proposal_id, approver_ref=approver_ref)
+        # A replay of an executed proposal returns its stored receipt.
+        receipt = await self._executor.execute(proposal_id)
+        return self._host_outcome(proposal_id, f"Approved; the change is {receipt.status}.")
+
+    def _host_outcome(self, proposal_id: UUID, text: str) -> RunOutcome:
+        record = self._service.get(proposal_id)
+        stored = self._receipts.get(proposal_id)
+        return RunOutcome(
+            thread_id=record.changeset.thread_id if record else "",
+            text=text,
+            interrupted=False,
+            proposal=ProposalView.from_record(record) if record else None,
+            receipt=ReceiptView.from_receipt(stored) if stored else None,
+        )
+
+    def pending_proposals(self, limit: int = 50) -> list[ProposalView]:
+        """Every proposal awaiting a decision; host proposals are only reviewable from here."""
+        return [ProposalView.from_record(r) for r in self._service.proposals.list_awaiting(limit)]
+
     def proposal_by_routing_id(self, routing_id: str) -> ProposalView | None:
         record = self._service.proposals.get_by_routing_id(routing_id)
         return ProposalView.from_record(record) if record else None
@@ -156,10 +190,16 @@ class AgentRunner:
     async def approve(
         self, *, proposal_id: UUID, approver_ref: str, on_event: EventHandler | None = None
     ) -> RunOutcome:
-        """Host creates the claim, then the paused call resumes and the executor verifies it."""
+        """Host creates the claim, then the paused call resumes and the executor verifies it.
+
+        A host proposal (the budget bandit's) has no conversation: the claim is created and the
+        executor runs it directly, with the same claim, digest, catalog, gate, and readback checks.
+        """
         record = self._service.get(proposal_id)
         if record is None:
             raise WriteDenied("unknown_proposal")
+        if is_host_thread(record.changeset.thread_id):
+            return await self._approve_host(proposal_id, approver_ref)
         if not self._agent.conversation(record.changeset.thread_id).pending:
             # The conversation moved on without a decision, so no paused call would use a claim.
             raise WriteDenied(
@@ -185,6 +225,8 @@ class AgentRunner:
         if record is None:
             raise WriteDenied("unknown_proposal")
         self._service.reject(proposal_id, actor_ref=actor_ref, message=message)
+        if is_host_thread(record.changeset.thread_id):
+            return self._host_outcome(proposal_id, "Rejected; nothing was changed.")
         return await self.resume(
             thread_id=record.changeset.thread_id,
             caller_ref=record.changeset.requester_ref,

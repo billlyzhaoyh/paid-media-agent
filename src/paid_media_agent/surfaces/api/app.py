@@ -47,6 +47,7 @@ def create_app(runtime: Any, *, scheduler: Scheduler | None = None) -> Any:
         service=runtime.components.proposal_service,
         receipts=runtime.profile.receipts,
         threads=runtime.threads,
+        executor=runtime.components.write_executor,
     )
     bridge = ArtifactBridge(runtime.profile.workspace_root / "out")
     app = FastAPI(title="Paid Media Agent", version="0.1.0")
@@ -122,6 +123,18 @@ def create_app(runtime: Any, *, scheduler: Scheduler | None = None) -> Any:
             ) from None
         return _outcome(outcome)
 
+    @app.get("/proposals")
+    def list_proposals(
+        state: str = "awaiting_approval", limit: int = 50, who: str = Depends(caller)
+    ) -> dict[str, Any]:
+        """Proposals awaiting a decision, including the budget bandit's; approvers only."""
+        if who not in runtime.profile.approval_policy.approver_refs:
+            raise HTTPException(status_code=403, detail="only approvers can list proposals")
+        if state != "awaiting_approval":
+            raise HTTPException(status_code=422, detail="state must be awaiting_approval")
+        views = runner.pending_proposals(max(1, min(limit, 200)))
+        return {"proposals": [v.model_dump(mode="json") for v in views]}
+
     @app.get("/proposals/{proposal_id}")
     def get_proposal(proposal_id: UUID, who: str = Depends(caller)) -> dict[str, Any]:
         view = runner.proposal(proposal_id)
@@ -140,8 +153,9 @@ def create_app(runtime: Any, *, scheduler: Scheduler | None = None) -> Any:
         try:
             outcome = await runner.approve(proposal_id=proposal_id, approver_ref=who)
         except WriteDenied as exc:
-            # An expired conversation is a state conflict; every other denial is about the caller.
-            status = 409 if exc.reason == "conversation_expired" else 403
+            # State conflicts are 409; every other denial is about the caller.
+            conflicts = {"conversation_expired", "not_awaiting_approval", "unknown_proposal"}
+            status = 409 if exc.reason in conflicts else 403
             raise HTTPException(
                 status_code=status, detail=f"{exc.reason}: {exc.detail}".rstrip(": ")
             ) from None

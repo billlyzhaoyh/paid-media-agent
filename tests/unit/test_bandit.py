@@ -330,5 +330,5 @@ class _ConvexModel(_GlobalModel):
 
 async def test_a_global_curve_that_is_not_concave_is_dropped(account: Store) -> None:
     run = await recommend(account, _ConvexModel(), as_of=AS_OF, record=False, seed=5)
-    assert any("outside 0 to 1; its pseudo-samples were dropped" in n for n in run.notes)
+    assert any("outside 0 to 1, for" in n and "their own history only" in n for n in run.notes)
     assert all(d.posterior.n_pseudo == 0 for d in run.decisions if d.posterior is not None)

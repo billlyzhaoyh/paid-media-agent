@@ -62,6 +62,25 @@ attempts to bypass the dispatcher.
   `PAID_MEDIA_WRITES_ENABLED` is false or the live-write release gates are not met (see
   `docs/operations/live-write-runbook.md`).
 
+## Host proposals
+
+The budget bandit (`bandit/proposals.py`) proposes budget changes itself, outside any
+conversation. They use the normal `ProposalService.propose`, with the same admitted operations,
+schema checks, live before-value, digest, and risk flags. They live in threads named
+`host:bandit:<run_id>` with requester `bandit`. Callers cannot use the `host:` prefix:
+`AgentRunner` refuses it, so no conversation can claim or pause in that namespace.
+
+With no paused call to resume, approving a host proposal (`POST /proposals/{id}/approve`, or
+`paid-media-agent proposals approve`) creates the claim and runs `WriteExecutor.execute`
+directly. The checks are the same as after a resume: claim signature, digest, scope, requester,
+expiry, catalog and schema, the write gate, one mutation, and readback. Approving again returns
+the stored receipt. Rejecting needs no conversation either.
+
+`GET /proposals` (approvers only) and `paid-media-agent proposals list` show everything awaiting
+a decision, because nothing else surfaces host proposals. A newer bandit run rejects the older
+run's proposals that still await a decision for the same campaigns, with the note "superseded".
+Slack cards are not posted for host proposals.
+
 ## Live-write notes
 
 - The reviewed mutation set is data: `WritePolicyFile` rows in `config/write-policy.example.toml`.

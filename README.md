@@ -106,9 +106,11 @@ uv run paid-media-agent history --scenario baseline --view daily
 uv run paid-media-agent sync
 ```
 
-A budget bandit splits a daily budget across campaigns to maximise conversions. For now it runs
-only on simulated accounts, where its choices can be scored against the truth:
-`uv run paid-media-agent bandit evaluate`. See [Budget bandit](docs/architecture/budget-bandit.md).
+A budget bandit recommends how to split each account's daily budget across its campaigns to
+maximise conversions: `uv run paid-media-agent allocate`, or ask the agent. It changes nothing on
+its own; `allocate --propose` turns its moves into proposals for an approver. On simulated
+accounts its choices can be scored against the truth: `uv run paid-media-agent bandit evaluate`.
+See [Budget bandit](docs/architecture/budget-bandit.md).
 
 ## Accounts and business context
 

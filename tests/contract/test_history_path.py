@@ -220,14 +220,17 @@ def test_sync_asks_serve_to_run_its_job_when_serve_holds_the_state_file(
 
     posted: list[tuple[str, dict[str, str]]] = []
 
-    def post(url: str, *, headers: dict[str, str], timeout: float) -> httpx.Response:
+    def request(
+        method: str, url: str, *, headers: dict[str, str], json: object, timeout: float
+    ) -> httpx.Response:
+        assert method == "POST" and json is None
         posted.append((url, headers))
         summary = {"source": "sync", "start": "a", "end": "b", "rows": 7, "settings": 2}
         detail = {**summary, "reads": ["art_1"], "unavailable": []}
         return httpx.Response(200, json={"status": "ok", "detail": detail})
 
     monkeypatch.setattr(cli, "_state_runtime", busy)
-    monkeypatch.setattr(httpx, "post", post)
+    monkeypatch.setattr(httpx, "request", request)
     runner = CliRunner()
 
     monkeypatch.setenv("PAID_MEDIA_API_TOKENS", "")

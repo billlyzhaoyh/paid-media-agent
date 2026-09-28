@@ -492,32 +492,50 @@ def _day(value: str | None, default: date | None = None) -> date | None:
         raise click.BadParameter(f"{value} is not a YYYY-MM-DD date") from None
 
 
-def _server_job(settings: Settings, name: str) -> dict[str, Any]:
-    """Run a job inside the `serve` process that holds the state file, over its API."""
+def _server_request(
+    settings: Settings, method: str, path: str, body: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Call the `serve` process that holds the state file, as the first API token's caller."""
     import httpx
 
     logging.getLogger("httpx").setLevel(logging.WARNING)
     tokens = settings.api_token_map()
     if not tokens:
         raise click.ClickException(
-            "`serve` holds the state file and PAID_MEDIA_API_TOKENS is not set, so this command "
-            "cannot ask it to run the job. Stop `serve`, or configure an API token."
+            "this needs the running `serve` API and PAID_MEDIA_API_TOKENS is not set. "
+            "Configure an API token (or stop `serve` where the command can run on its own)."
         )
     host = settings.paid_media_api_host
     if host in ("0.0.0.0", "::", ""):  # noqa: S104 - a bind-all address, not a destination
         host = "127.0.0.1"
     try:
-        response = httpx.post(
-            f"http://{host}:{settings.paid_media_api_port}/jobs/{name}",
+        response = httpx.request(
+            method,
+            f"http://{host}:{settings.paid_media_api_port}{path}",
             headers={"Authorization": f"Bearer {next(iter(tokens))}"},
+            json=body,
             timeout=900,
         )
     except httpx.HTTPError as exc:
-        raise click.ClickException(f"could not reach `serve`: {type(exc).__name__}") from None
+        raise click.ClickException(
+            f"could not reach `serve` ({type(exc).__name__}); is it running?"
+        ) from None
     if response.status_code != 200:
-        raise click.ClickException(f"`serve` refused the job: HTTP {response.status_code}")
+        detail = ""
+        try:
+            detail = str(response.json().get("detail", ""))[:300]
+        except ValueError:
+            pass
+        raise click.ClickException(
+            f"`serve` refused: HTTP {response.status_code}" + (f" ({detail})" if detail else "")
+        )
     result: dict[str, Any] = response.json()
     return result
+
+
+def _server_job(settings: Settings, name: str) -> dict[str, Any]:
+    """Run a job inside the `serve` process that holds the state file, over its API."""
+    return _server_request(settings, "POST", f"/jobs/{name}")
 
 
 def _state_runtime(settings: Settings) -> Any:
@@ -737,6 +755,18 @@ _HISTORY_COLUMNS: dict[str, tuple[str, ...]] = {
         "after_value",
     ),
     "lag": ("account_alias", "platform", "age_days", "entity_days", "completeness"),
+    "outcomes": (
+        "decision_day",
+        "account_alias",
+        "entity_ref",
+        "outcome",
+        "current_budget",
+        "recommended_budget",
+        "budget_in_force",
+        "days_matured",
+        "conversions_matured",
+        "expected_conversions_window",
+    ),
 }
 
 
@@ -751,7 +781,7 @@ def _cell(value: Any) -> str:
 @main.command()
 @click.option(
     "--view",
-    type=click.Choice(["coverage", "daily", "settings", "changes", "lag"]),
+    type=click.Choice(["coverage", "daily", "settings", "changes", "lag", "outcomes"]),
     default="coverage",
     show_default=True,
 )
@@ -772,7 +802,7 @@ def history(
     limit: int,
     as_json: bool,
 ) -> None:
-    """Show stored history: coverage, daily panel, settings versions, changes, or lag."""
+    """Show stored history: coverage, daily panel, settings, changes, lag, or bandit outcomes."""
     from paid_media_agent.analytics.history import query_history
     from paid_media_agent.runtime.self_hosted import state_path
     from paid_media_agent.sim.scenario import scenario_path
@@ -911,7 +941,7 @@ def anomalies(
 
 @main.group()
 def bandit() -> None:
-    """Budget allocation across campaigns (CBS-style bandit), on simulated accounts for now."""
+    """Evaluate the budget bandit on simulated accounts (`allocate` runs it on real ones)."""
 
 
 _PREDICTOR = click.option(
@@ -1217,6 +1247,179 @@ def bandit_evaluate(
             )
     if tokens:
         click.echo(f"TabPFN tokens used: {tokens}")
+
+
+# ---------------------------------------------------------------- budget recommendations
+
+
+@main.command()
+@click.option("--alias", default=None, help="Account alias; default every configured account.")
+@click.option(
+    "--total",
+    type=click.FloatRange(min=0, min_open=True),
+    default=None,
+    help="Total daily budget to split (default: the campaigns' current total).",
+)
+@click.option(
+    "--policy",
+    type=click.Choice(["thompson", "greedy"]),
+    default=None,
+    help="Override PAID_MEDIA_BANDIT_POLICY.",
+)
+@_PREDICTOR
+@click.option(
+    "--propose",
+    is_flag=True,
+    help="Turn the moves into proposals awaiting approval (nothing is applied).",
+)
+@click.option("--json", "as_json", is_flag=True)
+def allocate(
+    alias: str | None,
+    total: float | None,
+    policy: str | None,
+    predictor: str | None,
+    propose: bool,
+    as_json: bool,
+) -> None:
+    """Recommend how to split each account's daily budget across its campaigns."""
+    from paid_media_agent.bandit.live import allocate_accounts, live_config
+    from paid_media_agent.predict.factory import build_predictor
+    from paid_media_agent.store import StoreBusy
+    from paid_media_agent.tools.bandit import budget_reading
+
+    settings = Settings()
+    _configure_logging(settings)
+    if predictor is not None:
+        settings = settings.model_copy(update={"paid_media_predictor": predictor})
+    try:
+        runtime = _state_runtime(settings)
+    except StoreBusy:
+        raise click.ClickException(
+            "`serve` holds the state file. Ask the agent (recommend_budgets), or run the job for "
+            "every account with POST /jobs/allocate (it proposes only when "
+            "PAID_MEDIA_BANDIT_PROPOSE=true)."
+        ) from None
+    try:
+        aliases = runtime.profile.accounts.aliases()
+        if alias is not None:
+            if runtime.profile.accounts.resolve(alias) is None:
+                raise click.BadParameter(f"unknown account alias {alias}", param_hint="--alias")
+            aliases = (alias,)
+        runs = asyncio.run(
+            allocate_accounts(
+                runtime.store,
+                build_predictor(settings, runtime.store),
+                aliases=aliases,
+                as_of=date.today(),
+                config=live_config(policy or settings.paid_media_bandit_policy),  # type: ignore[arg-type]
+                total_budget=total,
+                service=runtime.components.proposal_service,
+                propose=propose,
+                min_change=settings.paid_media_bandit_min_change,
+            )
+        )
+    finally:
+        runtime.store.close()
+    if as_json:
+        click.echo(json.dumps(runs, indent=2, default=str))
+        return
+    for run in runs:
+        if "error" in run:
+            click.echo(f"{run['account_alias']}: {run['error']}")
+            continue
+        currency = run["currency"]
+        click.echo(
+            f"{run['account_alias']} on {run['decision_day']}: total {run['total_budget']:.2f}"
+            + (f" {currency}" if currency else "")
+            + f" a day, {run['policy']}, global model {run['prior_source']}"
+            + (", LAST GOOD CURVES (data checks failed)" if run["fallback_used"] else "")
+        )
+        for row in run["decisions"]:
+            click.echo(f"  {budget_reading(row, currency)}")
+        for note in run["notes"]:
+            click.echo(f"  note: {note}")
+        proposed = run.get("proposals")
+        if proposed:
+            for ref, pid in proposed["proposals"].items():
+                click.echo(f"  proposed {ref}: {pid} (awaiting approval)")
+            for ref, why in proposed["skipped"].items():
+                click.echo(f"  not proposed {ref}: {why}")
+            if proposed["superseded"]:
+                click.echo(f"  superseded {len(proposed['superseded'])} older proposal(s)")
+    if propose:
+        click.echo("Review with `paid-media-agent proposals list`; approve through the API.")
+
+
+@main.group()
+def proposals() -> None:
+    """Proposals awaiting approval, including the budget bandit's."""
+
+
+def _proposal_line(p: dict[str, Any]) -> str:
+    before = ", ".join(f"{f['field']}={f['value']}" for f in p["before"]) or "-"
+    after = ", ".join(f"{f['field']}={f['value']}" for f in p["after"])
+    flags = f" [{', '.join(p['risk_flags'])}]" if p.get("risk_flags") else ""
+    return (
+        f"{p['proposal_id']}  {p['account_ref']} {p['target_ref']}: {before} -> {after}"
+        f"{flags}\n    by {p['requester_ref']}: {p['reason'][:160]}"
+    )
+
+
+@proposals.command("list")
+@click.option("--limit", type=click.IntRange(1, 200), default=50, show_default=True)
+@click.option("--json", "as_json", is_flag=True)
+def proposals_list(limit: int, as_json: bool) -> None:
+    """Proposals awaiting a decision, oldest first."""
+    from paid_media_agent.domain.presentation import ProposalView
+    from paid_media_agent.runtime.self_hosted import state_path
+    from paid_media_agent.store import Store, StoreBusy
+
+    settings = Settings()
+    try:
+        store = Store(state_path(settings, project_root()))
+    except StoreBusy:
+        listed = _server_request(settings, "GET", f"/proposals?limit={limit}")["proposals"]
+    else:
+        try:
+            records = store.repositories.proposals.list_awaiting(limit)
+            listed = [ProposalView.from_record(r).model_dump(mode="json") for r in records]
+        finally:
+            store.close()
+    if as_json:
+        click.echo(json.dumps({"proposals": listed}, indent=2))
+        return
+    if not listed:
+        click.echo("No proposals awaiting approval.")
+    for p in listed:
+        click.echo(_proposal_line(p))
+
+
+@proposals.command("approve")
+@click.argument("proposal_id")
+@click.option("--json", "as_json", is_flag=True)
+def proposals_approve(proposal_id: str, as_json: bool) -> None:
+    """Approve a proposal through the running API; the change is applied once and read back."""
+    settings = Settings()
+    outcome = _server_request(settings, "POST", f"/proposals/{proposal_id}/approve")
+    if as_json:
+        click.echo(json.dumps(outcome, indent=2))
+        return
+    receipt = outcome.get("receipt") or {}
+    click.echo(outcome.get("text") or "Approved.")
+    if receipt:
+        click.echo(f"  receipt: {receipt.get('status')} ({receipt.get('reason', '')})")
+
+
+@proposals.command("reject")
+@click.argument("proposal_id")
+@click.option("--message", default="", help="Why, for the change log.")
+def proposals_reject(proposal_id: str, message: str) -> None:
+    """Reject a proposal through the running API."""
+    settings = Settings()
+    outcome = _server_request(
+        settings, "POST", f"/proposals/{proposal_id}/reject", {"message": message}
+    )
+    click.echo(outcome.get("text") or "Rejected.")
 
 
 # ---------------------------------------------------------------- self-hosted runtime

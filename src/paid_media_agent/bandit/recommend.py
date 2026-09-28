@@ -91,6 +91,9 @@ class ArmDecision:
     final_budget: float | None = None
     constrained_by: list[str] = field(default_factory=list)
     expected_conversions: float | None = None
+    """At the final budget, from the posterior-mean curve (conversions a day)."""
+    expected_conversions_now: float | None = None
+    """At the current budget, from the same curve, so the gain is computed rather than guessed."""
     propensity: float | None = None
 
     def as_json(self) -> dict[str, Any]:
@@ -115,6 +118,7 @@ class ArmDecision:
             "kappa2": None if post is None else round(float(post.kappa_mean[1]), 3),
             "kappa2_sd": None if post is None else round(post.kappa2_sd, 3),
             "expected_conversions": _round(self.expected_conversions),
+            "expected_conversions_now": _round(self.expected_conversions_now),
             "propensity": _round(self.propensity),
         }
 
@@ -363,9 +367,12 @@ async def recommend(
         post = decision.posterior
         centre = greedy(post) if post is not None else None
         if post is not None and centre is not None and decision.final_budget is not None:
-            decision.expected_conversions = post.curve(centre).value(
-                decision.arm.pacing * decision.final_budget
-            )
+            curve = post.curve(centre)
+            decision.expected_conversions = curve.value(decision.arm.pacing * decision.final_budget)
+            if decision.arm.current_budget:
+                decision.expected_conversions_now = curve.value(
+                    decision.arm.pacing * decision.arm.current_budget
+                )
     if free < sum(float(d.lower or 0.0) for d in movable) - 1e-6:
         run.notes.append("the total is below the campaigns' minimum budgets; all are at minimum")
     return _finish(store, run, config, mode, scenario_id, account_alias, record, clock)

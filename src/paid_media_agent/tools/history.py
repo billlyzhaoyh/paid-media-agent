@@ -29,7 +29,9 @@ class QueryHistoryArgs(BaseModel):
             "coverage: what is stored per account. daily: entity-day rows with budget, pacing, "
             "and matured conversions. settings: budget and status versions. changes: proposal "
             "decisions, executions, and changes detected outside this agent. lag: share of "
-            "final conversions reported N days after the day."
+            "final conversions reported N days after the day. outcomes: each budget "
+            "recommendation, whether it was followed, and matured conversions over the week "
+            "after it against what was expected."
         )
     )
     account_alias: str | None = Field(default=None, description="Alias from list_accounts.")

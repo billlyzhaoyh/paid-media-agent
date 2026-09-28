@@ -161,6 +161,15 @@ class ApprovalSigner:
         return hmac.compare_digest(self.sign(material), signature)
 
 
+HOST_THREAD_PREFIX = "host:"
+"""Proposals the host makes itself (the budget bandit) live in threads with this prefix. They have
+no conversation to resume, so an approval executes them directly; callers cannot use the prefix."""
+
+
+def is_host_thread(thread_id: str) -> bool:
+    return thread_id.startswith(HOST_THREAD_PREFIX)
+
+
 class WriteDenied(Exception):
     def __init__(self, reason: str, detail: str = "") -> None:
         super().__init__(reason if not detail else f"{reason}: {detail}")

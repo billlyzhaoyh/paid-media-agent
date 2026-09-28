@@ -80,7 +80,8 @@ owner's bearer token. Only files returned by `render_report` in that thread are 
 Slack replies can describe the report, but the adapter does not automatically upload files.
 
 `serve` schedules a daily history sync and weekly and monthly reports (`PAID_MEDIA_JOBS`,
-`PAID_MEDIA_JOB_HOUR_UTC`). Run a job now, or list recent runs, with the operator token:
+`PAID_MEDIA_JOB_HOUR_UTC`); `anomalies` and `allocate` (weekly budget recommendations) can be
+added. Run a job now, or list recent runs, with the operator token:
 
 ```bash
 curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8080/jobs/sync

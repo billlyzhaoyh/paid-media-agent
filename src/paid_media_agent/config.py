@@ -120,9 +120,9 @@ class Settings(BaseSettings):
     """DuckDB file for conversations, proposals, approvals, receipts, threads, and pulled history.
     Relative to the project root."""
     paid_media_jobs: str = "sync,report_weekly,report_monthly"
-    """Jobs `serve` runs on schedule: sync (daily), anomalies (daily, after sync), report_weekly
-    (Mondays), report_monthly (the 1st). Empty disables scheduling; `POST /jobs/{name}` still runs
-    any job on demand."""
+    """Jobs `serve` runs on schedule: sync (daily), anomalies (daily, after sync), allocate
+    (Mondays: budget recommendations), report_weekly (Mondays), report_monthly (the 1st). Empty
+    disables scheduling; `POST /jobs/{name}` still runs any job on demand."""
     paid_media_job_hour_utc: int = Field(default=6, ge=0, le=23)
     paid_media_sync_days: int = Field(default=28, ge=1, le=90)
     """Trailing days each sync re-pulls, so late conversions arrive as newer snapshots."""
@@ -131,6 +131,12 @@ class Settings(BaseSettings):
     account ids) to Prior Labs; `none` uses the ±50% day-over-day rule."""
     paid_media_anomaly_band: float = Field(default=0.95, ge=0.5, lt=1.0)
     """Share of normal days the expected range covers; lower catches more and alarms more."""
+    paid_media_bandit_policy: Literal["thompson", "greedy"] = "thompson"
+    """Budget recommendations: `thompson` explores within guardrails; `greedy` never explores."""
+    paid_media_bandit_propose: bool = False
+    """Whether the `allocate` job turns its recommendations into proposals awaiting approval."""
+    paid_media_bandit_min_change: float = Field(default=0.05, ge=0.0, lt=1.0)
+    """Recommended moves smaller than this share of the current budget are not proposed."""
     tabpfn_token: SecretStr | None = None
     tabpfn_base_url: str = "https://api.priorlabs.ai"
     paid_media_tabpfn_daily_tokens: int = Field(default=1_000_000, ge=10_000)

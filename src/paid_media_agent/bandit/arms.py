@@ -7,6 +7,7 @@ arrived (the surrogate reward; CBS section 3.2), and days still mostly unreporte
 
 from __future__ import annotations
 
+import json
 import math
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -30,8 +31,9 @@ COLD_START_DAYS = 7
 PACING_DAYS = 14
 DEFAULT_PACING = 0.9
 RECENT_SPEND_DAYS = 3
-STALE_DAYS = 7
-"""Settled history older than this means the sync stopped."""
+MIN_COVERAGE = 0.5
+STALE_DAYS = 4
+"""No complete day reported for this long means the sync stopped (settling takes longer)."""
 ACTIVE_STATUSES = {"ENABLED", "ACTIVE"}
 
 
@@ -53,6 +55,8 @@ class Arm:
     unit: float = math.nan
     """Trailing cost per conversion: spend is modelled in units of it."""
     days_since_change: int | None = None
+    last_reported: date | None = None
+    """Newest complete day any pull reported, settled or not (freshness is judged on it)."""
     eligible: bool = True
     reason: str | None = None
 
@@ -115,13 +119,37 @@ def _settings(
             arg_max(currency, observed_at) AS currency,
             max(observed_at) FILTER (
                 WHERE previous IS NOT NULL AND previous IS DISTINCT FROM daily_budget
-            ) AS changed_at
+            ) AS changed_at,
+            max(observed_at) AS observed_at
         FROM s
         GROUP BY platform, provider_account_id, entity_ref
         """,  # noqa: S608 - the only interpolation is a constant clause
         params,
     )
-    return {(r["platform"], r["provider_account_id"], r["entity_ref"]): r for r in rows}
+    found = {(r["platform"], r["provider_account_id"], r["entity_ref"]): r for r in rows}
+    # A budget this agent changed (and read back) after the last settings observation is the
+    # budget in force now, and the change starts the hold period, before the next sync sees it.
+    applied = store.fetch(
+        f"""
+        SELECT platform, provider_account_id, entity_ref,
+            arg_max(after_value, occurred_at)::VARCHAR, max(occurred_at)
+        FROM change_events
+        WHERE source = 'agent' AND status = 'verified' AND field = 'daily_budget'
+            AND entity_type = 'campaign' AND occurred_at < ? {alias_clause}
+        GROUP BY platform, provider_account_id, entity_ref
+        """,  # noqa: S608 - the only interpolation is a constant clause
+        params,
+    )
+    for platform, account, entity_ref, after, occurred_at in applied:
+        setting = found.get((platform, account, entity_ref))
+        if setting is None or occurred_at <= setting["observed_at"]:
+            continue
+        try:
+            setting["daily_budget"] = float(json.loads(after))
+        except (TypeError, ValueError):
+            continue
+        setting["changed_at"] = max(filter(None, (setting["changed_at"], occurred_at)))
+    return found
 
 
 def load_arms(
@@ -155,6 +183,7 @@ def load_arms(
             current_budget=setting.get("daily_budget"),
             status=setting.get("status"),
         )
+        arm.last_reported = rows[-1].day if rows else None
         days, spend, conversions, pacing = [], [], [], []
         for row in rows:
             if row.conversions is None:
@@ -212,14 +241,33 @@ def check_data(arms: list[Arm], as_of: date) -> DataChecks:
     """Checks that fail when a pipeline broke; the bandit then reuses its last good models."""
     results: dict[str, dict[str, Any]] = {}
     live = [a for a in arms if a.eligible]
-    newest = max((a.days[-1] for a in live), default=None)
+    reported = max((a.last_reported for a in live if a.last_reported), default=None)
     results["fresh"] = {
-        "ok": newest is not None and (as_of - newest).days <= STALE_DAYS,
-        "newest_settled_day": newest.isoformat() if newest else None,
+        "ok": reported is not None and (as_of - reported).days <= STALE_DAYS,
+        "newest_reported_day": reported.isoformat() if reported else None,
     }
-    covered = [a for a in live if newest is not None and a.days[-1] == newest]
-    share = len(covered) / len(live) if live else 0.0
-    results["coverage"] = {"ok": share >= 0.8, "share_reporting_newest_day": round(share, 2)}
+    # Campaigns that are on, have a budget, and reported in the week before the last three days:
+    # a pipeline that drops campaigns shows up as most of them going quiet together. One campaign
+    # without delivery (platforms omit rows with no impressions) is not a pipeline failure.
+    active = [
+        a
+        for a in arms
+        if a.current_budget
+        and (a.status is None or a.status.upper() in ACTIVE_STATUSES)
+        and a.last_reported is not None
+        and reported is not None
+        and (reported - a.last_reported).days <= RECENT_SPEND_DAYS + 7
+    ]
+    covered = [
+        a
+        for a in active
+        if reported is not None
+        and a.last_reported is not None
+        and (reported - a.last_reported).days < RECENT_SPEND_DAYS
+    ]
+    share = len(covered) / len(active) if active else 0.0
+    results["coverage"] = {"ok": share >= MIN_COVERAGE, "share_reporting_recently": round(share, 2)}
+    newest = max((a.days[-1] for a in live if a.days), default=None)
     totals: dict[date, float] = defaultdict(float)
     for arm in live:
         for day, spent in zip(arm.days, arm.spend, strict=True):

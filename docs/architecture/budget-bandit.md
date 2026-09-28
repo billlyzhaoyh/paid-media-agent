@@ -3,9 +3,10 @@
 `bandit/` splits a total daily budget across one account's campaigns to maximise conversions. It
 follows Lyft's Contextual Budgeting System (CBS): Han & Gabor, *Contextual Bandits for
 Advertising Budget Allocation* (AdKDD 2020), and Han & Arndt, *Budget Allocation as a Multi-Agent
-System of Contextual & Continuous Bandits* (KDD 2021). For now it runs on simulated accounts only
-(`paid-media-agent bandit`). A later slice turns its recommendations into proposals that go through
-the normal approval flow; it never changes a budget on its own.
+System of Contextual & Continuous Bandits* (KDD 2021). It recommends budgets for configured
+accounts (`allocate`, the `allocate` job, and the agent's `recommend_budgets` tool) and runs on
+simulated accounts for evaluation (`paid-media-agent bandit`). It never changes a budget on its
+own: a recommendation becomes a change only as a proposal that an approver approves.
 
 ## One decision
 
@@ -14,7 +15,9 @@ Algorithm 1.
 
 1. **History** (`arms.py`). It loads each campaign's days as they stood on the decision day
    (`analytics/panel.py`, the same reader the anomaly checks use), along with the budget, status,
-   pacing ratio (median spend ÷ budget over 14 days), and the date of the last budget change.
+   pacing ratio (median spend ÷ budget over 14 days), and the date of the last budget change. A
+   change this agent applied and read back after the last settings observation counts at once,
+   from the change log, so a new decision holds it before the next sync sees it.
    Conversions are counted as follows:
    - matured days as reported;
    - recent days divided by the share the account's lag curve says has arrived (the paper's
@@ -24,9 +27,11 @@ Algorithm 1.
    A campaign is allocated only if it is enabled, has a daily budget, spent in the account's
    last three complete days, and has three settled days.
 2. **Data checks.** The run stops trusting today's data when any of these fails:
-   - the newest settled day is more than seven days old;
-   - under 80% of campaigns report it;
-   - total spend that day is outside 0.2 to 5 times its recent median.
+   - no complete day was reported in the last four days (the sync stopped);
+   - under half of the campaigns that were on and reporting the week before reported in the
+     account's last three complete days (a pipeline dropping campaigns; one campaign without
+     delivery is normal, as platforms omit rows with no impressions);
+   - total spend on the newest settled day is outside 0.2 to 5 times its recent median.
 
    It then reuses each campaign's last good curve from `bandit_decisions` and records
    `fallback_used` (CBS §6).
@@ -37,8 +42,12 @@ Algorithm 1.
    TabPFN requests small.
    - **By default** the model is a pooled regression: a level per campaign, weekday effects, and
      one elasticity shared by all campaigns, with a 28-day half-life on older days (CBS §6.1).
-   - **With `--predictor tabpfn`**, TabPFN predicts from campaign, platform, weekday, day index,
-     and log spend.
+   - **With `PAID_MEDIA_PREDICTOR=tabpfn`** (or `--predictor tabpfn`), TabPFN predicts the mean
+     from the campaign's log cost per conversion, the weekday, and spend in cost-per-conversion
+     units (see the results below for why).
+
+   A campaign whose global-model curve is not a valid one (elasticity outside 0 to 1) gets no
+   pseudo-samples and relies on its own history; the run notes it.
 4. **Local model** (`posterior.py`). Each campaign's curve is fitted by normal-inverse-gamma
    Bayesian linear regression, with centred weekday terms, on its history plus the
    pseudo-samples:
@@ -73,6 +82,41 @@ holds:
 - the expected conversions;
 - a propensity: the share of 200 redrawn allocations within 5% of the chosen budget, for
   off-policy evaluation later.
+
+## On real accounts
+
+`bandit/live.py` runs one decision per account alias. Every run is recorded (`mode = recommend`).
+
+| Entry | What it does |
+| --- | --- |
+| `paid-media-agent allocate [--alias A] [--total N] [--propose]` | Prints current → recommended budgets with a reading per campaign; `--propose` creates proposals |
+| The `allocate` job | Mondays when listed in `PAID_MEDIA_JOBS`, every account; proposes only with `PAID_MEDIA_BANDIT_PROPOSE=true` |
+| `recommend_budgets` (agent tool) | Read-only recommendation for one account; the agent applies one only when asked, through `propose_change` |
+
+**Proposals** (`bandit/proposals.py`). A campaign whose recommended budget moves at least
+`PAID_MEDIA_BANDIT_MIN_CHANGE` (5%, and at least one currency unit) becomes a proposal:
+- it uses the platform's admitted daily-budget operation, with the budget rounded to cents;
+- the reason names the run, the expected conversions before and after, the elasticity, and any
+  bound that applied;
+- it is proposed in the host thread `host:bandit:<run_id>` by requester `bandit`;
+- the decision row records its proposal id.
+
+A newer run rejects the older run's proposals that still await a decision for the same
+campaigns. Approvers find host proposals with `paid-media-agent proposals list` (or
+`GET /proposals`) and approve them with `proposals approve <id>` or
+`POST /proposals/{id}/approve`. Approval executes the change directly, with every executor check
+([Writes and approvals](writes-and-approvals.md#host-proposals)).
+
+**Outcomes.** The `bandit_outcomes` view (`history --view outcomes`, or `query_history` with
+`view: outcomes`) joins each decision to its hold window. It gives the budget in force at the end
+of the window, spend, conversions from matured days only, the expected conversions, and the
+proposal's latest status. Each decision is labelled:
+- `followed`: the recommended budget was in force;
+- `overridden`: the proposal was rejected, or a different budget was in force;
+- `superseded`: a newer decision came within the window;
+- `pending`: the window has not matured.
+
+Off-policy evaluation later uses followed decisions only.
 
 ## The spend unit
 
@@ -205,9 +249,9 @@ data to judge. Until then the pooled model is the default.
 
 ## Limitations
 
-- **Simulation only.** The simulated curves have exactly the shape the local model assumes, and
-  real campaigns will fit it less well. Recommendations on real accounts, as proposals through
-  the approval flow, are the next slice.
+- **Evaluated in simulation only.** The simulated curves have exactly the shape the local model
+  assumes, and real campaigns will fit it less well. `bandit_outcomes` measures how real
+  recommendations turn out, but only as they are followed and mature.
 - **Overconfident posterior.** With 512 pseudo-samples, the posterior is narrower than the real
   error when the global model is wrong about a campaign (CBS notes the same skew). Campaigns cut
   to a fraction of their budget show it most. In `bandit simulate --seed 3`, two campaigns cut by

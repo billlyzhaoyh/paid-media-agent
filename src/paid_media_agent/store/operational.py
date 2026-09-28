@@ -8,7 +8,12 @@ from uuid import UUID
 
 import duckdb
 
-from paid_media_agent.domain.proposals import ApprovalClaim, ProposalRecord, WriteReceipt
+from paid_media_agent.domain.proposals import (
+    ApprovalClaim,
+    ProposalRecord,
+    ProposalState,
+    WriteReceipt,
+)
 from paid_media_agent.store.db import Store, StoreConflict, naive_utc, utc_now
 
 
@@ -78,6 +83,13 @@ class DuckDBProposalRepository:
         rows = self._store.fetch(
             "SELECT record FROM proposals WHERE thread_id = ? ORDER BY created_at, proposal_id",
             [thread_id],
+        )
+        return [ProposalRecord.model_validate_json(row[0]) for row in rows]
+
+    def list_awaiting(self, limit: int = 50) -> list[ProposalRecord]:
+        rows = self._store.fetch(
+            "SELECT record FROM proposals WHERE state = ? ORDER BY created_at, proposal_id LIMIT ?",
+            [ProposalState.AWAITING_APPROVAL.value, limit],
         )
         return [ProposalRecord.model_validate_json(row[0]) for row in rows]
 

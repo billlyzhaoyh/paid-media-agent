@@ -184,6 +184,7 @@ async def pseudo_samples(
     )
     spends: dict[int, np.ndarray] = {}
     targets: dict[int, np.ndarray] = {}
+    dropped: dict[str, float] = {}
     offset = 0
     for i, grid in grids.items():
         block = predicted.values[offset : offset + 7 * len(grid)].reshape(len(grid), 7)
@@ -194,11 +195,15 @@ async def pseudo_samples(
         if keep.sum() >= 2:
             slope = float(np.polyfit(np.log(spends[i] / arms[i].unit + 1.0), targets[i], 1)[0])
             if not 0 <= slope <= 1:
-                predicted.notes.append(
-                    f"{arms[i].entity_ref}: the global model's curve has elasticity "
-                    f"{slope:.2f}, outside 0 to 1; its pseudo-samples were dropped"
-                )
+                dropped[arms[i].entity_ref] = slope
                 spends[i], targets[i] = np.zeros(0), np.zeros(0)
+    if dropped:
+        slopes = sorted(set(round(v, 2) for v in dropped.values()))
+        shown = f"{slopes[0]:.2f}" if len(slopes) == 1 else f"{slopes[0]:.2f} to {slopes[-1]:.2f}"
+        predicted.notes.append(
+            f"the global model's curve has elasticity {shown}, outside 0 to 1, for "
+            f"{', '.join(sorted(dropped))}; those campaigns use their own history only"
+        )
     return PseudoSamples(
         spends,
         targets,

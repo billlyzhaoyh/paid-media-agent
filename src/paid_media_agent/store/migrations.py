@@ -385,6 +385,62 @@ CREATE TABLE bandit_decisions (
 );
 """
 
+BANDIT_OUTCOMES = """
+-- What happened after each budget decision, over its hold window [decision_day, +hold_days):
+-- the budget actually in force at the end of the window, spend, and matured conversions only.
+-- outcome: overridden (proposal rejected, or a different budget in force), superseded (a newer
+-- decision for the campaign within the window), pending (not every day has matured), followed.
+CREATE VIEW bandit_outcomes AS
+WITH decided AS (
+    SELECT r.run_id, r.mode, r.decision_day, r.policy,
+        CAST(json_extract(r.config, '$.hold_days') AS INTEGER) AS hold_days,
+        d.arm_key, d.platform, d.provider_account_id, d.account_alias, d.entity_ref,
+        d.entity_name, d.current_budget, d.final_budget, d.expected_conversions,
+        d.propensity, d.proposal_id,
+        lead(r.decision_day) OVER (PARTITION BY d.arm_key ORDER BY r.decision_day, r.created_at)
+            AS next_decision_day
+    FROM bandit_decisions d JOIN bandit_runs r USING (run_id)
+    WHERE d.eligible AND d.final_budget IS NOT NULL
+), windowed AS (
+    SELECT x.run_id, x.arm_key,
+        count(p.day) AS days_reported,
+        count(p.day) FILTER (WHERE p.is_matured) AS days_matured,
+        arg_max(p.daily_budget::DOUBLE, p.day) AS budget_in_force,
+        sum(p.spend)::DOUBLE AS spend,
+        sum(p.conversions_matured) FILTER (WHERE p.is_matured)::DOUBLE AS conversions_matured
+    FROM decided x
+    LEFT JOIN entity_daily_panel p
+        ON p.platform = x.platform
+        AND p.provider_account_id = x.provider_account_id
+        AND p.entity_type = 'campaign'
+        AND p.entity_ref = x.entity_ref
+        AND p.day >= x.decision_day
+        AND p.day < x.decision_day + x.hold_days
+    GROUP BY x.run_id, x.arm_key
+), proposal AS (
+    SELECT proposal_id, arg_max(status, occurred_at) AS proposal_status
+    FROM change_events
+    WHERE source = 'agent' AND proposal_id IS NOT NULL
+    GROUP BY proposal_id
+)
+SELECT x.run_id, x.mode, x.decision_day, x.policy, x.hold_days, x.arm_key, x.platform,
+    x.provider_account_id, x.account_alias, x.entity_ref, x.entity_name, x.current_budget,
+    x.final_budget, x.expected_conversions * x.hold_days AS expected_conversions_window,
+    x.propensity, x.proposal_id, pr.proposal_status,
+    w.budget_in_force, w.days_reported, w.days_matured, w.spend, w.conversions_matured,
+    CASE
+        WHEN pr.proposal_status = 'rejected' THEN 'overridden'
+        WHEN x.next_decision_day < x.decision_day + x.hold_days THEN 'superseded'
+        WHEN w.days_matured < x.hold_days THEN 'pending'
+        WHEN w.budget_in_force IS NULL
+            OR abs(w.budget_in_force / x.final_budget - 1) > 0.02 THEN 'overridden'
+        ELSE 'followed'
+    END AS outcome
+FROM decided x
+JOIN windowed w USING (run_id, arm_key)
+LEFT JOIN proposal pr ON pr.proposal_id = x.proposal_id;
+"""
+
 MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("0001_operational", OPERATIONAL),
     ("0002_conversations", CONVERSATIONS),
@@ -393,6 +449,7 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("0005_jobs", JOBS),
     ("0006_predictions", PREDICTIONS),
     ("0007_bandit", BANDIT),
+    ("0008_bandit_outcomes", BANDIT_OUTCOMES),
 )
 
 
