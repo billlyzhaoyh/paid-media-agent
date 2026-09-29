@@ -112,6 +112,12 @@ class Settings(BaseSettings):
     """Per-request model timeout. A stalled provider call otherwise blocks a run indefinitely."""
     paid_media_model_zero_data_retention: bool = False
     """Ask OpenRouter to route only to endpoints with a zero-data-retention policy."""
+    paid_media_prompt_cache: Literal["auto", "off"] = "auto"
+    """auto: OpenRouter prompt caching for Anthropic models (cache_control); off disables it."""
+    paid_media_context_budget_tokens: int = Field(default=60_000, ge=0)
+    """Estimated tokens per model call before old tool results are stubbed in the view; 0 is off."""
+    paid_media_eval_judge_model: str = "openrouter:anthropic/claude-sonnet-5.5"
+    """The model that judges eval answers (`paid-media-agent eval run`)."""
     paid_media_max_model_calls: int = Field(default=40, ge=5)
     """Model calls per run before the agent stops and reports; bounds runaway tool loops."""
     paid_media_runtime: RuntimeName = "local"

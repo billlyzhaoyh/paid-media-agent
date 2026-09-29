@@ -97,6 +97,14 @@ def test_moving_spend_between_campaigns_with_fixed_rates_is_all_mix() -> None:
     assert effects.keys() == {"spend_mix"}
     assert effects["spend_mix"] == pytest.approx(report.decomposition.change * 100)
     assert report.decomposition.change > 0
+    # Each campaign's part reads the way a marketer reads it: share lost by the cheap campaign
+    # and share gained by the dear one both raise CPA.
+    mix = {
+        c.entity_ref: c.points
+        for c in report.decomposition.contributions
+        if c.factor == "spend_mix"
+    }
+    assert mix["cheap"] > 0 and mix["dear"] > 0
 
 
 def test_effects_add_up_to_the_headline_exactly_for_every_metric() -> None:

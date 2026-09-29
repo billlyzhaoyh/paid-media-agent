@@ -1,5 +1,5 @@
 # Shortcuts for the commands everyone runs. Each line is what CI runs, nothing more.
-.PHONY: setup demo check test lint format doctor
+.PHONY: setup demo check test lint format doctor eval
 
 setup:        ## install everything
 	uv sync --all-extras --dev
@@ -18,3 +18,6 @@ test:
 
 doctor:
 	uv run paid-media-agent doctor
+
+eval:         ## opt-in: the 30-question eval on sample data (bills the model; not in CI)
+	uv run paid-media-agent eval run $(if $(MODEL),--model $(MODEL)) $(if $(IDS),--ids $(IDS))

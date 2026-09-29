@@ -4,6 +4,15 @@
 
 ### Added
 
+- Quality and cost you can see. Every model call attempt is recorded in `llm_calls` with tokens,
+  cache reads and writes, the provider's reported cost, status, and latency (`usage` command,
+  `history --view usage`, a `doctor` line). Anthropic models on OpenRouter use prompt caching
+  (`PAID_MEDIA_PROMPT_CACHE`). Threads past `PAID_MEDIA_CONTEXT_BUDGET_TOKENS` send older tool
+  results as stubs that keep their artifact ids; stored history is unchanged. `eval run`,
+  `eval report`, and `eval baseline` replace the hand-run question scripts: 30 questions on
+  synced sample accounts with goals, graded by deterministic checks (tools, figures, grounded
+  numbers, writes, errors) and a judge model (`PAID_MEDIA_EVAL_JUDGE_MODEL`), stored with a
+  baseline. Zero-data-retention routing is now sent to OpenRouter only.
 - Why a KPI changed, and what if: an `explain_change` tool, `explain` command, and `GET /explain`
   split a change in CPA, conversions, or ROAS exactly (LMDI) into spend moving between campaigns
   and each campaign's CPM, click-through rate, conversion rate, and value per conversion. They

@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
+from paid_media_agent.harness.context import ContextView, fit_to_budget
 from paid_media_agent.harness.messages import (
     AssistantMessage,
     Conversation,
@@ -25,12 +28,14 @@ from paid_media_agent.harness.messages import (
 )
 from paid_media_agent.harness.models import ChatModel, ModelError, ToolSchema
 from paid_media_agent.harness.tools import ToolContext, ToolDispatcher
+from paid_media_agent.harness.usage import CallLog, CallRecord
 from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.store.conversations import ConversationStore
 
 Decision = Literal["approve", "reject"]
 BACKOFF_SECONDS = (1.0, 2.0)
 INTERRUPTED = "No result was recorded: the run stopped before this tool finished."
+logger = logging.getLogger(__name__)
 ABANDONED = "Not executed: the conversation continued without an approval decision."
 
 
@@ -77,6 +82,8 @@ class Agent:
         model_timeout_seconds: float = 120,
         max_active_reads: int = 6,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        call_log: CallLog | None = None,
+        context_budget_tokens: int = 0,
     ) -> None:
         self.model = model
         self.system_prompt = system_prompt
@@ -88,6 +95,8 @@ class Agent:
         self._model_timeout = model_timeout_seconds
         self._max_active_reads = max_active_reads
         self._clock = clock
+        self._call_log = call_log
+        self._context_budget = context_budget_tokens
 
     # ------------------------------------------------------------------ public
 
@@ -173,23 +182,92 @@ class Agent:
         today = self._clock().date().isoformat()
         return f"{self.system_prompt}\n\nThe current date is {today} (UTC).".strip()
 
-    async def _complete(self, thread_id: str) -> AssistantMessage:
-        messages = self.conversations.messages(thread_id)
+    def _record(
+        self,
+        thread_id: str,
+        caller_ref: str,
+        view: ContextView,
+        *,
+        attempt: int,
+        started: float,
+        status: str,
+        reply: AssistantMessage | None = None,
+        error: BaseException | None = None,
+    ) -> None:
+        if self._call_log is None:
+            return
+        try:
+            self._log_call(thread_id, caller_ref, view, attempt, started, status, reply, error)
+        except Exception:
+            logger.warning("could not record a model call", exc_info=True)
+
+    def _log_call(
+        self,
+        thread_id: str,
+        caller_ref: str,
+        view: ContextView,
+        attempt: int,
+        started: float,
+        status: str,
+        reply: AssistantMessage | None,
+        error: BaseException | None,
+    ) -> None:
+        assert self._call_log is not None  # noqa: S101 - checked by the caller
+        self._call_log.record(
+            CallRecord(
+                thread_id=thread_id,
+                caller_ref=caller_ref,
+                purpose="agent",
+                provider=getattr(self.model, "provider", None),
+                model=self.model.name,
+                attempt=attempt + 1,
+                status=status,
+                latency_ms=int((time.monotonic() - started) * 1000),
+                usage=reply.usage if reply is not None else None,
+                error=sanitize_exception(error) if error is not None else None,
+                messages_sent=len(view.messages),
+                est_prompt_tokens=view.est_tokens,
+                stubbed_results=view.stubbed,
+                cache_requested=bool(getattr(self.model, "cache_requested", False)),
+            )
+        )
+
+    async def _complete(self, thread_id: str, caller_ref: str = "") -> AssistantMessage:
+        system = self._system()
         tools = self.bound_tools(thread_id)
+        view = fit_to_budget(
+            system, self.conversations.messages(thread_id), tools, self._context_budget
+        )
         last: BaseException | None = None
         for attempt in range(self._model_attempts):
+            started = time.monotonic()
             try:
-                return await asyncio.wait_for(
-                    self.model.complete(system=self._system(), messages=messages, tools=tools),
+                reply = await asyncio.wait_for(
+                    self.model.complete(system=system, messages=view.messages, tools=tools),
                     timeout=self._model_timeout,
                 )
             except (TimeoutError, ModelError) as exc:
                 last = exc
+                status = "timeout" if isinstance(exc, TimeoutError) else "error"
+                self._record(
+                    thread_id, caller_ref, view, attempt=attempt, started=started,
+                    status=status, error=exc,
+                )  # fmt: skip
                 if isinstance(exc, ModelError) and not exc.transient:
                     break
             except Exception as exc:
                 last = exc
+                self._record(
+                    thread_id, caller_ref, view, attempt=attempt, started=started,
+                    status="error", error=exc,
+                )  # fmt: skip
                 break
+            else:
+                self._record(
+                    thread_id, caller_ref, view, attempt=attempt, started=started,
+                    status="ok", reply=reply,
+                )  # fmt: skip
+                return reply
             if attempt + 1 < self._model_attempts:
                 await asyncio.sleep(BACKOFF_SECONDS[min(attempt, len(BACKOFF_SECONDS) - 1)])
         attempts = attempt + 1
@@ -212,7 +290,7 @@ class Agent:
     ) -> Conversation:
         context = self._context(thread_id, caller_ref)
         for _ in range(self._max_model_calls):
-            reply = await self._complete(thread_id)
+            reply = await self._complete(thread_id, caller_ref)
             self.conversations.append(thread_id, reply)
             if reply.content:
                 await _emit(on_event, RunEvent("text", text=reply.content))

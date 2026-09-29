@@ -1,22 +1,23 @@
 # Question eval
 
-Fifteen business questions with expectations, run through the agent loop in-process on the
-synthetic fixtures with your configured model, and graded against ground truth computed from the
-same fixtures. Not part of `pytest`; it needs a model key.
+Thirty business questions run through the agent on the sample accounts, each on a fresh runtime
+whose last 28 days are synced first and whose goals are set (demo-google: target CPA 30, monthly
+budget 25,000; demo-meta: target ROAS 3). Every answer gets deterministic checks (tools, figures,
+grounded numbers, writes, errors) and a judge model's rubric. Runs are stored in
+`workspace/state/evals.duckdb` and compared with a baseline. Not part of `pytest`; it needs model
+keys and bills them.
 
 ```bash
-PAID_MEDIA_MODEL=openrouter:anthropic/claude-haiku-4.5 \
-  uv run python tests/eval/run_questions.py results.jsonl      # optional: question ids to run
-uv run python tests/eval/grade.py results.jsonl                # numeric checks + a review table
+uv run paid-media-agent eval run --model openrouter:anthropic/claude-haiku-4.5   # all 30
+uv run paid-media-agent eval run --ids q16,q17 --no-judge                         # a few, checks only
+uv run paid-media-agent eval baseline latest                                      # mark the baseline
+uv run paid-media-agent eval report                                               # latest vs baseline
+make eval MODEL=openrouter:openai/gpt-5.4-mini
 ```
 
-`grade.py` verifies the figures that have a deterministic answer (spend, CPA per window) and
-prints every answer's tools, timing, and the expectation to judge by hand. Add a question by
-appending to `questions.json` with an `expect` line; add a numeric check in `grade.py` when the
-answer has one.
-
-The grader shifts its windows by the same fixture anchor the server uses (`PAID_MEDIA_FIXTURE_ANCHOR`,
-default two days ago), so figures line up on any day.
+The questions and their checks live in `src/paid_media_agent/evals/questions.json`; see
+[docs/architecture/evals.md](../../docs/architecture/evals.md) for the schema, the checks, the
+rubric, and how to read a report.
 
 # Anomaly backtest
 

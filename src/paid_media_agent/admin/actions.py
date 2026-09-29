@@ -317,6 +317,7 @@ def model_test(root: Path, *, invoke: Callable[[str], str] | None = None) -> Act
             {"spec": model.spec, "missing": key_name},
         )
     started = time.monotonic()
+    usage: dict[str, Any] | None = None
     try:
         if invoke is None:
             from paid_media_agent.harness.messages import UserMessage
@@ -329,7 +330,14 @@ def model_test(root: Path, *, invoke: Callable[[str], str] | None = None) -> Act
                 zero_data_retention=settings.paid_media_model_zero_data_retention,
             )
             ping = UserMessage("Reply with the single word OK.")
-            reply = asyncio.run(chat.complete(system="", messages=[ping], tools=[])).content
+            answer = asyncio.run(chat.complete(system="", messages=[ping], tools=[]))
+            reply = answer.content
+            if answer.usage is not None:
+                usage = {
+                    "input_tokens": answer.usage.input_tokens,
+                    "output_tokens": answer.usage.output_tokens,
+                    "cost_usd": answer.usage.cost_usd,
+                }
         else:
             reply = invoke(model.spec)
     except Exception as exc:
@@ -349,6 +357,7 @@ def model_test(root: Path, *, invoke: Callable[[str], str] | None = None) -> Act
             "latency_ms": latency_ms,
             "selection": TOOL_SELECTION,
             "reply_preview": reply[:40],
+            "usage": usage,
         },
         command="paid-media-agent test model --json",
     )

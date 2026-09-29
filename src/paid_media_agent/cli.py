@@ -142,7 +142,7 @@ def demo(with_proposal: bool, as_json: bool) -> None:
 @click.option("--alias", "aliases", multiple=True, help="With --live: account alias. Repeatable.")
 def doctor(as_json: bool, live: bool, aliases: tuple[str, ...]) -> None:
     """Diagnose configuration without printing secret values."""
-    from paid_media_agent.doctor import format_checks, run_doctor
+    from paid_media_agent.doctor import format_checks, run_doctor, usage_check
 
     root = project_root()
     if as_json and not live:
@@ -150,6 +150,7 @@ def doctor(as_json: bool, live: bool, aliases: tuple[str, ...]) -> None:
         return
     settings = actions.load_settings(root)
     checks = run_doctor(settings, project_root=root)
+    checks.append(usage_check(settings, project_root=root))
     if live:
         checks += _live_checks(settings, aliases)
     if as_json:
@@ -2013,6 +2014,244 @@ def whatif(
         )
     for note in result["notes"]:
         click.echo(f"  note: {note}")
+
+
+@main.command()
+@click.option("--days", type=click.IntRange(1, 365), default=7, show_default=True)
+@click.option(
+    "--by",
+    type=click.Choice(["model", "day", "thread", "purpose"]),
+    default="model",
+    show_default=True,
+)
+@click.option("--json", "as_json", is_flag=True)
+def usage(days: int, by: str, as_json: bool) -> None:
+    """Model calls: tokens, cache hits, reported cost, failures, and latency."""
+    from datetime import UTC, datetime
+
+    from paid_media_agent.harness.usage import usage_summary
+    from paid_media_agent.runtime.self_hosted import state_path
+    from paid_media_agent.store import Store, StoreBusy
+
+    settings = Settings()
+    since = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days)
+    try:
+        store = Store(state_path(settings, project_root()))
+    except StoreBusy:
+        raise click.ClickException(
+            "`serve` holds the state file; stop it or read usage there later"
+        ) from None
+    try:
+        summary = usage_summary(store, since=since, by=by)  # type: ignore[arg-type]
+    finally:
+        store.close()
+    if as_json:
+        click.echo(json.dumps(summary, indent=2, default=str))
+        return
+    click.echo(f"Model calls in the last {days} days, by {by}:")
+    for row in [*summary["rows"], summary["totals"]]:
+        cost = "not reported" if row["cost_usd"] is None else f"${row['cost_usd']:.4f}"
+        if row["cost_usd"] is not None and row["costed_calls"] < row["calls"]:
+            cost += f" ({row['costed_calls']} of {row['calls']} calls reported cost)"
+        hit = "n/a" if row["cache_hit_rate"] is None else f"{row['cache_hit_rate']:.0%}"
+        click.echo(
+            f"  {row['key']}: {row['calls']} calls ({row['failed']} failed), "
+            f"{row['input_tokens']:,} in ({hit} cached), {row['output_tokens']:,} out, {cost}, "
+            f"latency p50 {row['p50_latency_ms']} ms / p95 {row['p95_latency_ms']} ms"
+        )
+
+
+@main.group("eval")
+def eval_group() -> None:
+    """The question eval on sample accounts: checks and a judge model, stored with a baseline."""
+
+
+def _eval_store(path: str | None) -> Any:
+    from paid_media_agent.evals.store import DEFAULT_PATH, EvalStore
+
+    target = Path(path) if path else project_root() / DEFAULT_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return EvalStore(target)
+
+
+def _eval_model(spec: str, settings: Settings, *, rpm: int) -> Any:
+    from paid_media_agent.config import ModelConfig
+    from paid_media_agent.evals.runner import Throttled
+    from paid_media_agent.harness.models import resolve_model
+
+    same = spec == settings.paid_media_model
+    model = resolve_model(
+        ModelConfig.parse(spec, base_url=settings.paid_media_model_base_url if same else None),
+        api_key_env=settings.paid_media_model_api_key_env if same else None,
+        timeout_seconds=settings.paid_media_model_timeout_seconds,
+        zero_data_retention=settings.paid_media_model_zero_data_retention,
+        prompt_cache=settings.paid_media_prompt_cache,
+    )
+    return Throttled(model, rpm)
+
+
+def _echo_eval(run: dict[str, Any], results: list[dict[str, Any]], against: Any) -> None:
+    from paid_media_agent.evals.report import compare, totals, why
+
+    t = totals(results)
+    click.echo(
+        f"run {str(run['run_id'])[:8]} · {run['model']} · judge {run['judge_model'] or 'none'} · "
+        f"anchor {run['anchor']} · git {run['git_sha'] or '?'}"
+    )
+    for r in results:
+        mark = "PASS" if r["passed"] else "FAIL"
+        cost = f"${r['cost_usd']:.4f}" if r.get("cost_usd") is not None else "cost n/a"
+        line = f"  {mark} {r['question_id']:22} {r.get('seconds') or 0:6.1f}s {cost}"
+        if not r["passed"]:
+            line += f"  {why(r)}"
+        click.echo(line)
+    cost = "n/a" if t["cost_usd"] is None else f"${t['cost_usd']:.2f}"
+    judge_cost = "" if t["judge_cost_usd"] is None else f" + judge ${t['judge_cost_usd']:.2f}"
+    hit = "n/a" if t["cache_hit_rate"] is None else f"{t['cache_hit_rate']:.0%}"
+    click.echo(
+        f"passed {t['passed']}/{t['questions']} ({(t['pass_rate'] or 0):.0%}); judge passed "
+        f"{t['judge_passed']}/{t['judged']}; cost {cost}{judge_cost}; {t['model_calls']} model "
+        f"calls, {hit} of input from cache; p50 {t['p50_seconds']}s, max {t['max_seconds']}s"
+    )
+    if t["mean_scores"]:
+        click.echo(
+            "  mean judge scores: " + ", ".join(f"{k} {v}" for k, v in t["mean_scores"].items())
+        )
+    if against is not None:
+        base_run, base_results = against
+        diff = compare(results, base_results)
+        click.echo(
+            f"against {str(base_run['run_id'])[:8]} ({base_run['model']}), "
+            f"{diff['questions']} shared questions: pass rate {diff['pass_rate'][0]} -> "
+            f"{diff['pass_rate'][1]}; regressions {diff['regressions'] or 'none'}; "
+            f"fixes {diff['fixes'] or 'none'}; cost delta {diff['cost_delta_usd']}; "
+            f"p50 seconds delta {diff['p50_seconds_delta']}"
+        )
+
+
+@eval_group.command("run")
+@click.option(
+    "--model", "model_spec", default=None, help="Model under test (default PAID_MEDIA_MODEL)."
+)
+@click.option(
+    "--judge", "judge_spec", default=None, help="Judge model (default PAID_MEDIA_EVAL_JUDGE_MODEL)."
+)
+@click.option("--no-judge", is_flag=True, help="Deterministic checks only.")
+@click.option("--ids", default=None, help="Comma-separated question ids or prefixes (q01,q16).")
+@click.option(
+    "--rpm",
+    type=click.IntRange(0, 600),
+    default=15,
+    show_default=True,
+    help="Model requests per minute, for rate-limited keys (0: no limit).",
+)
+@click.option("--store", "store_path", default=None, help="Eval results file.")
+@click.option("--json", "as_json", is_flag=True)
+def eval_run(
+    model_spec: str | None,
+    judge_spec: str | None,
+    no_judge: bool,
+    ids: str | None,
+    rpm: int,
+    store_path: str | None,
+    as_json: bool,
+) -> None:
+    """Ask every question on synced sample accounts and grade the answers (bills the model)."""
+    from paid_media_agent.evals.suite import run_suite
+
+    root = project_root()
+    settings = actions.load_settings(root)
+    _configure_logging(settings)
+    spec = model_spec or settings.paid_media_model
+    judge = None if no_judge else (judge_spec or settings.paid_media_eval_judge_model)
+    model = _eval_model(spec, settings, rpm=rpm)
+    judge_model = _eval_model(judge, settings, rpm=rpm) if judge else None
+    store = _eval_store(store_path)
+
+    def progress(row: dict[str, Any]) -> None:
+        if not as_json:
+            mark = "PASS" if row["passed"] else "FAIL"
+            click.echo(f"  {mark} {row['question_id']} ({row['seconds']}s)", err=True)
+
+    try:
+        run_id, results = asyncio.run(
+            run_suite(
+                settings,
+                project_root=root,
+                model=model,
+                model_spec=spec,
+                judge_model=judge_model,
+                judge_spec=judge,
+                store=store,
+                ids=ids.split(",") if ids else None,
+                on_result=progress,
+            )
+        )
+        run = store.run(run_id)
+        base_id = store.resolve("baseline")
+        against = (
+            (store.run(base_id), store.results(base_id))
+            if base_id is not None and base_id != run_id
+            else None
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    finally:
+        store.close()
+    if as_json:
+        click.echo(json.dumps({"run": run, "results": results}, indent=2, default=str))
+        return
+    _echo_eval(run, results, against)
+
+
+@eval_group.command("report")
+@click.argument("run_ref", required=False)
+@click.option(
+    "--against", default="baseline", show_default=True, help="Run id, prefix, or baseline."
+)
+@click.option("--store", "store_path", default=None)
+@click.option("--json", "as_json", is_flag=True)
+def eval_report(run_ref: str | None, against: str, store_path: str | None, as_json: bool) -> None:
+    """Show a stored run (default the latest) and what changed against another run."""
+    from paid_media_agent.evals.report import compare, totals
+
+    store = _eval_store(store_path)
+    try:
+        run_id = store.resolve(run_ref)
+        if run_id is None:
+            raise click.ClickException("no eval run found; run `paid-media-agent eval run` first")
+        run, results = store.run(run_id), store.results(run_id)
+        other = store.resolve(against)
+        base = (store.run(other), store.results(other)) if other and other != run_id else None
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    finally:
+        store.close()
+    if as_json:
+        body = {"run": run, "totals": totals(results), "results": results}
+        if base is not None:
+            body["against"] = {"run_id": base[0]["run_id"], **compare(results, base[1])}
+        click.echo(json.dumps(body, indent=2, default=str))
+        return
+    _echo_eval(run, results, base)
+
+
+@eval_group.command("baseline")
+@click.argument("run_ref")
+@click.option("--store", "store_path", default=None)
+def eval_baseline(run_ref: str, store_path: str | None) -> None:
+    """Mark a run as the baseline later runs are compared with."""
+    store = _eval_store(store_path)
+    try:
+        run_id = store.resolve(run_ref)
+        if run_id is None:
+            raise click.ClickException(f"no eval run {run_ref}")
+        store.set_baseline(run_id)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    finally:
+        store.close()
+    click.echo(f"baseline is now {run_id}")
 
 
 @main.group()

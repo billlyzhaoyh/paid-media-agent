@@ -76,7 +76,7 @@ async def test_a_turn_round_trips_tool_calls_and_replays_reasoning_unmodified() 
     request = sent[0]
     assert request["messages"][0] == {"role": "system", "content": "rules"}
     assert request["tools"][0]["function"]["name"] == "lookup"
-    assert request["provider"] == {"zdr": True}
+    assert "provider" not in request, "zero data retention is OpenRouter's routing option only"
 
     history = [UserMessage("hi"), first, ToolMessage("c1", "lookup", "result")]
     await model.complete(system="rules", messages=history, tools=[TOOL])

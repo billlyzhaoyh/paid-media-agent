@@ -47,6 +47,36 @@ The dispatcher also appends each performance read and campaign listing to the hi
 the state file ([History and simulation](history-and-simulation.md)). The model reads that history
 only through `query_history`'s fixed queries.
 
+## Context budget and caching
+
+Every model call sends the whole thread, read back from the state file.
+
+- **Context budget.** `harness/context.py` estimates the tokens of system prompt, tools, and
+  messages (characters / 3.5).
+  - Past `PAID_MEDIA_CONTEXT_BUDGET_TOKENS` (default 60,000; 0 turns it off), it replaces the
+    oldest tool results **in the view sent to the model only** with a stub:
+    `{stubbed, tool, artifact_ids, summary, note}`. Artifact ids are kept, so earlier reads can
+    still be compared and rendered.
+  - Results since the latest user message are kept, unless that turn alone is over budget, in
+    which case its newest four are kept.
+  - Stored history never changes, so a restarted agent builds the same view. Every call still
+    has one result, and assistant messages are untouched.
+- **Prompt caching.** For `anthropic/*` models on OpenRouter, requests carry OpenRouter's
+  automatic `cache_control` (`PAID_MEDIA_PROMPT_CACHE=auto`, the default).
+  - The cached prefix (tools, system prompt, earlier turns) moves forward as a thread grows, so
+    each step of a tool loop reads the thread so far from cache.
+  - Tool order is stable, so only activating a read tool changes the prefix.
+  - The direct `anthropic:` provider goes through Anthropic's OpenAI-compatible endpoint, which
+    does not cache.
+- **Usage.** Every attempt is a row in `llm_calls`, via `harness/usage.py`:
+  - thread, caller, purpose, provider, model, attempt, status, latency;
+  - the provider's token counts, including cache reads and writes;
+  - the provider's reported cost: OpenRouter reports it, others record none;
+  - messages sent, the token estimate, and how many results were stubbed.
+
+  Usage rides on the reply, never in the stored thread. `paid-media-agent usage` and
+  `history --view usage` summarise it for operators; the model cannot query it.
+
 ## Filesystem
 
 The runtime may read wiki and skill files, write analysis artifacts, and render reports. It cannot

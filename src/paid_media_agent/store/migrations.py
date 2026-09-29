@@ -511,6 +511,72 @@ CREATE TABLE bandit_decision_constraints (
 );
 """  # noqa: S608 - schema text built from constants
 
+# Every model call attempt: who asked, what it cost as the provider reported it, and how long it
+# took. Failed attempts have no tokens. `purpose` is agent, eval_judge, or model_test.
+LLM_CALLS = """
+CREATE TABLE llm_calls (
+    call_id UUID PRIMARY KEY,
+    thread_id VARCHAR,
+    caller_ref VARCHAR,
+    purpose VARCHAR NOT NULL,
+    provider VARCHAR,
+    model VARCHAR NOT NULL,
+    attempt INTEGER NOT NULL,
+    status VARCHAR NOT NULL,
+    error VARCHAR,
+    latency_ms INTEGER,
+    input_tokens BIGINT,
+    output_tokens BIGINT,
+    cached_tokens BIGINT,
+    cache_write_tokens BIGINT,
+    reasoning_tokens BIGINT,
+    cost_usd DOUBLE,
+    response_model VARCHAR,
+    generation_id VARCHAR,
+    messages_sent INTEGER,
+    est_prompt_tokens BIGINT,
+    stubbed_results INTEGER,
+    cache_requested BOOLEAN,
+    created_at TIMESTAMP NOT NULL
+);
+"""
+
+# Eval runs over the sample accounts and each question's verdict. They live in their own file
+# (workspace/state/evals.duckdb); the tables exist everywhere so one schema serves both.
+EVALS = """
+CREATE TABLE eval_runs (
+    run_id UUID PRIMARY KEY,
+    started_at TIMESTAMP NOT NULL,
+    finished_at TIMESTAMP,
+    git_sha VARCHAR,
+    model VARCHAR NOT NULL,
+    judge_model VARCHAR,
+    anchor DATE NOT NULL,
+    questions_sha VARCHAR NOT NULL,
+    settings JSON NOT NULL,
+    totals JSON,
+    baseline BOOLEAN NOT NULL DEFAULT false
+);
+CREATE TABLE eval_results (
+    run_id UUID NOT NULL,
+    question_id VARCHAR NOT NULL,
+    passed BOOLEAN NOT NULL,
+    checks JSON NOT NULL,
+    judge JSON,
+    answer VARCHAR,
+    calls JSON NOT NULL,
+    model_calls INTEGER,
+    input_tokens BIGINT,
+    output_tokens BIGINT,
+    cached_tokens BIGINT,
+    cost_usd DOUBLE,
+    judge_cost_usd DOUBLE,
+    seconds DOUBLE,
+    error VARCHAR,
+    PRIMARY KEY (run_id, question_id)
+);
+"""
+
 MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("0001_operational", OPERATIONAL),
     ("0002_conversations", CONVERSATIONS),
@@ -522,6 +588,8 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("0008_bandit_outcomes", BANDIT_OUTCOMES),
     ("0009_account_goals", ACCOUNT_GOALS),
     ("0010_delivery_signals", DELIVERY_SIGNALS),
+    ("0011_llm_calls", LLM_CALLS),
+    ("0012_evals", EVALS),
 )
 
 

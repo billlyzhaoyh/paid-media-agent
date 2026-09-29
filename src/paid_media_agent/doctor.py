@@ -253,3 +253,38 @@ def format_checks(checks: list[Check]) -> str:
     width = max(len(c.name) for c in checks)
     lines = [f"{c.status.upper():<5} {c.name:<{width}}  {c.detail}" for c in checks]
     return "\n".join(lines)
+
+
+def usage_check(settings: Settings, *, project_root: Path, days: int = 7) -> Check:
+    """Model calls over the last week, from the state file (never created here)."""
+    from datetime import UTC, datetime, timedelta
+
+    from paid_media_agent.harness.usage import usage_summary
+    from paid_media_agent.runtime.self_hosted import state_path
+    from paid_media_agent.store import Store, StoreBusy
+
+    path = state_path(settings, project_root)
+    if not path.exists():
+        return Check("model usage", "ok", "no state file yet; nothing recorded")
+    try:
+        store = Store(path)
+    except StoreBusy:
+        return Check("model usage", "warn", "`serve` holds the state file; run `usage` there")
+    try:
+        since = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days)
+        totals = usage_summary(store, since=since)["totals"]
+    finally:
+        store.close()
+    if not totals["calls"]:
+        return Check("model usage", "ok", f"no model calls in the last {days} days")
+    cost = "cost not reported" if totals["cost_usd"] is None else f"${totals['cost_usd']:.2f}"
+    hit = totals["cache_hit_rate"]
+    failed = totals["failed"] / totals["calls"]
+    return Check(
+        "model usage",
+        "warn" if failed > 0.2 else "ok",
+        f"last {days} days: {totals['calls']} calls ({failed:.0%} failed), {cost}, "
+        f"{totals['input_tokens']:,} input tokens"
+        + (f" ({hit:.0%} from cache)" if hit is not None else "")
+        + f", p95 latency {totals['p95_latency_ms']} ms",
+    )

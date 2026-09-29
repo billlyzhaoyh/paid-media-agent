@@ -8,18 +8,18 @@ and the account's conversions per unit of spend is the spend-weighted sum E = su
 where w_i is the campaign's share of spend. CPA is 1/E, conversions are S * E (S the total spend),
 and ROAS multiplies each e_i by its value per conversion (AOV).
 
-The change is split with the logarithmic mean Divisia index (LMDI-I; Ang 2004, 2015), the standard
-exact method of index decomposition analysis: with X_i the campaign's component of the aggregate
-X and L the logarithmic mean,
-
-    ln(X1/X0) = sum_i L(X1_i, X0_i) / L(X1, X0) * sum_f ln(x_f,1 / x_f,0),
-
-with no residual, over the campaigns that spent in both windows. A campaign with a factor that is
-zero in one window takes its whole contribution (X1_i - X0_i) / L(X1, X0), the LMDI limit at zero
-(Ang & Liu 2007). A campaign that spent in only one window (new or paused) moves the aggregate from
-the continuing campaigns' rate: ln(E/E_both) = (E - E_both) / L(E, E_both), split by each one's
-gap (its conversions minus E_both times its spend), also exact. The shares of the log change are
-scaled to percentage points of the actual change, so the effects add up to the headline exactly.
+The change is split exactly, in two stages. For the campaigns that spent in both windows, the
+change in E splits in levels into spend mix and each campaign's own rate change (the Bennet
+indicator, dE = sum_i e_bar_i dw_i + sum_i w_bar_i de_i, with no residual). Each campaign's mix term
+is (its rate - the account's) x its change in share, so moving share toward a campaign that
+converts better than the account lowers CPA: the signs read the way a marketer reads them. Each
+rate change splits into its funnel factors by their log changes, because L(e1, e0) * ln(e1/e0) =
+e1 - e0 with L the logarithmic mean (LMDI within the campaign; Ang 2004, 2015). A rate that goes to
+or from zero is wholly that factor's. A campaign that spent in only one window (new or paused)
+then moves the aggregate from the continuing campaigns' rate: ln(E/E_both) = (E - E_both) /
+L(E, E_both), split by each one's gap (its conversions minus E_both times its spend), also exact.
+The parts are scaled to percentage points of the actual change, so they add up to the headline
+exactly.
 
 Conversions are lag-corrected with the account's lag curve (as pacing does); significance uses the
 reported counts. Every number is computed here and every reading is code-written.
@@ -233,7 +233,7 @@ class Decomposition:
     reason: str | None = None
     """Why the change cannot be split, when it cannot."""
     weights: dict[tuple[str, str], float] = field(default_factory=dict)
-    """Each continuing campaign's LMDI weight L(X1_i, X0_i) / L(X1, X0)."""
+    """Each continuing campaign's weight on its log rate change: w_bar * L(e1, e0) / L(E1, E0)."""
 
     def amount(self, points: float) -> float | None:
         """Points of the relative change, in the metric's own units (currency for CPA)."""
@@ -308,8 +308,9 @@ def decompose(
 ) -> Decomposition:
     """Split the metric's change from `previous` to `current` into campaign x factor effects.
 
-    Two exact stages. Campaigns that spent in both windows are split by LMDI into spend mix and
-    funnel rates, within themselves. A campaign that spent in only one window then moves the
+    Two exact stages. Campaigns that spent in both windows are split in levels into spend mix and
+    each campaign's rate change (Bennet), and each rate change into its funnel factors by their log
+    changes (LMDI within the campaign). A campaign that spent in only one window then moves the
     aggregate away from the continuing campaigns' rate by (its numerator - that rate x its spend),
     so starting a campaign cheaper than the rest lowers CPA and stopping a dear one does too.
     """
@@ -344,23 +345,31 @@ def decompose(
     def add(key: tuple[str, str], factor: Factor, log_effect: float, **extra: Any) -> None:
         contributions.append(Contribution(key[0], key[1], factor, sign * log_effect, **extra))
 
+    # Continuing campaigns, in levels (Bennet): dE = sum(e_bar * dw) + sum(w_bar * de), exactly.
+    # Mix per campaign is (its rate - the account's) x its change in share, so moving share toward
+    # a campaign that converts better than the account lowers CPA; the sum is unchanged.
+    account_rate = (e0 + e1) / 2
     for key in both:
         a, b = previous[key], current[key]
-        xa, xb = _numerator(a, metric) / c0, _numerator(b, metric) / c1
-        if xa <= 0 or xb <= 0:
-            # A factor went to or from zero: the whole contribution is that factor's.
-            if not xa and not xb:
+        ea, eb = _numerator(a, metric) / a.spend, _numerator(b, metric) / b.spend
+        wa, wb = a.spend / c0, b.spend / c1
+        mix = ((ea + eb) / 2 - account_rate) * (wb - wa)
+        add(key, "spend_mix", mix / big_l, before=a.spend / s0, after=b.spend / s1)
+        share = (wa + wb) / 2
+        if ea <= 0 or eb <= 0:
+            # A rate went to or from zero: the campaign's whole rate change is that factor's.
+            if not ea and not eb:
                 continue
             conv_zero = not (a.conversions or 0.0) or not (b.conversions or 0.0)
             factor: Factor = (
                 ("cvr" if a.funnel and b.funnel else "cost_per_conversion") if conv_zero else "aov"
             )
-            add(key, factor, (xb - xa) / big_l, before=a.rate(factor), after=b.rate(factor))
+            add(key, factor, share * (eb - ea) / big_l, before=a.rate(factor),
+                after=b.rate(factor))  # fmt: skip
             continue
-        weight = log_mean(xb, xa) / big_l
+        # L(e1, e0) * ln(e1 / e0) = e1 - e0, so each factor's log change carries its exact part.
+        weight = share * log_mean(eb, ea) / big_l
         result.weights[key] = weight
-        add(key, "spend_mix", weight * math.log((b.spend / c1) / (a.spend / c0)),
-            before=a.spend / s0, after=b.spend / s1)  # fmt: skip
         rates: list[tuple[Factor, float]] = []
         if a.funnel and b.funnel:
             rates = [("cpm", -1.0), ("ctr", 1.0), ("cvr", 1.0)]

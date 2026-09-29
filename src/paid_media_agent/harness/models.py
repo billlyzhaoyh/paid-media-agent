@@ -11,8 +11,8 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Sequence
-from dataclasses import dataclass
-from typing import Any, Protocol
+from dataclasses import dataclass, replace
+from typing import Any, Literal, Protocol
 
 import httpx
 
@@ -22,8 +22,11 @@ from paid_media_agent.harness.messages import (
     Message,
     ToolCall,
     ToolMessage,
+    Usage,
     UserMessage,
 )
+
+PromptCache = Literal["auto", "off"]
 
 
 @dataclass(frozen=True)
@@ -162,6 +165,8 @@ class OpenAICompatibleModel:
         timeout_seconds: float = 120,
         max_tokens: int = 4096,
         zero_data_retention: bool = False,
+        prompt_cache: PromptCache = "auto",
+        provider: str | None = None,
         missing_key: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
@@ -169,6 +174,12 @@ class OpenAICompatibleModel:
         self._missing_key = missing_key
         self._max_tokens = max_tokens
         self._zdr = zero_data_retention
+        self._openrouter = "openrouter.ai" in base_url
+        self.provider = provider or ("openrouter" if self._openrouter else "openai_compatible")
+        self.cache_requested = (
+            prompt_cache == "auto" and self._openrouter and model.startswith("anthropic/")
+        )
+        """OpenRouter's automatic prompt caching, for Anthropic models (cache_control)."""
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             headers={"Authorization": f"Bearer {api_key}"},
@@ -192,8 +203,12 @@ class OpenAICompatibleModel:
         }
         if tools:
             body["tools"] = [t.as_openai() for t in tools]
-        if self._zdr:
+        if self._zdr and self._openrouter:
+            # OpenRouter's routing option; other providers do not accept the field.
             body["provider"] = {"zdr": True}
+        if self.cache_requested:
+            # Automatic caching: the breakpoint follows the last cacheable block as a thread grows.
+            body["cache_control"] = {"type": "ephemeral"}
         try:
             response = await self._client.post("/chat/completions", json=body)
         except httpx.TimeoutException as exc:
@@ -212,7 +227,38 @@ class OpenAICompatibleModel:
         if not choices:
             error = payload.get("error") or {}
             raise ModelError(f"model returned no choices: {str(error)[:300]}", transient=True)
-        return parse_assistant(choices[0].get("message") or {})
+        reply = parse_assistant(choices[0].get("message") or {})
+        return replace(reply, usage=parse_usage(payload))
+
+
+def _int(value: Any) -> int | None:
+    return int(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
+
+
+def parse_usage(payload: dict[str, Any]) -> Usage | None:
+    """The response's usage block (OpenAI shape, with OpenRouter's cost and cache details)."""
+    raw = payload.get("usage")
+    if not isinstance(raw, dict):
+        return None
+    prompt = raw.get("prompt_tokens_details") or {}
+    completion = raw.get("completion_tokens_details") or {}
+    cost = raw.get("cost")
+    return Usage(
+        input_tokens=_int(raw.get("prompt_tokens")),
+        output_tokens=_int(raw.get("completion_tokens")),
+        cached_tokens=_int(prompt.get("cached_tokens")) if isinstance(prompt, dict) else None,
+        cache_write_tokens=(
+            _int(prompt.get("cache_write_tokens")) if isinstance(prompt, dict) else None
+        ),
+        reasoning_tokens=(
+            _int(completion.get("reasoning_tokens")) if isinstance(completion, dict) else None
+        ),
+        cost_usd=float(cost)
+        if isinstance(cost, int | float) and not isinstance(cost, bool)
+        else None,
+        response_model=payload.get("model") if isinstance(payload.get("model"), str) else None,
+        generation_id=payload.get("id") if isinstance(payload.get("id"), str) else None,
+    )
 
 
 def resolve_model(
@@ -221,6 +267,7 @@ def resolve_model(
     api_key_env: str | None,
     timeout_seconds: int,
     zero_data_retention: bool = False,
+    prompt_cache: PromptCache = "auto",
 ) -> OpenAICompatibleModel:
     """The configured model. `base_url` overrides the provider's endpoint for compatible servers.
 
@@ -242,5 +289,7 @@ def resolve_model(
         api_key=api_key,
         timeout_seconds=timeout_seconds,
         zero_data_retention=zero_data_retention,
+        prompt_cache=prompt_cache,
+        provider=config.provider,
         missing_key=None if api_key else key_env,
     )

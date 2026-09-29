@@ -21,6 +21,8 @@
 | Propose budgets as the host | `allocate --propose`; `allocate` job with `PAID_MEDIA_BANDIT_PROPOSE` | `bandit/proposals.py` via `ProposalService` | proposals in `host:bandit:<run_id>` threads | operation not admitted, proposal refused (noted per campaign) |
 | Review host proposals | `proposals list/approve/reject`; `GET /proposals`, `POST /proposals/{id}/approve` | `AgentRunner` host path → `WriteExecutor` | claims, receipts, `change_events` | not an approver, already decided, gate refusal |
 | Evaluate the bandit | `paid-media-agent bandit simulate`, `bandit evaluate`, `bandit whatif-eval` | `bandit/evaluate.py`, `sim/scenario.py` | scenario files | invalid scenario name |
+| See model usage and cost | `paid-media-agent usage`; `history --view usage`; `doctor` | `harness/usage.py` from the loop | `llm_calls` | cost not reported by the provider (shown as such) |
+| Evaluate answers | `paid-media-agent eval run/report/baseline`; `make eval` | `evals/` (runner, checks, judge) | `eval_runs`, `eval_results` in `workspace/state/evals.duckdb` | no model key, rate limits (`--rpm`), judge reply not JSON (recorded) |
 | Summarize performance | `summarize_window` | `tools/summary.py` | per-entity totals, pacing, and daily series artifact | unsupported metric, grain, or window |
 | Compare performance | `compare_periods` | `tools/compute.py` | `PeriodComparison` artifact | incompatible window, grain, unit, or currency |
 | Generate report | `render_report` | `reports/render.py` + bridge | artifact receipt | reconciliation or render failure |

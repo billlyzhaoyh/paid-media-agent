@@ -15,6 +15,7 @@ from paid_media_agent.harness.loop import Agent, ApprovalGate
 from paid_media_agent.harness.models import ChatModel, resolve_model
 from paid_media_agent.harness.skills import discover_skills, skills_prompt
 from paid_media_agent.harness.tools import ToolDispatcher, ToolSpec
+from paid_media_agent.harness.usage import LlmCallRecorder
 from paid_media_agent.predict.factory import build_predictor
 from paid_media_agent.runtime.profiles import RuntimeProfile
 from paid_media_agent.store import Store
@@ -99,6 +100,7 @@ class AgentComponents:
     read_dispatcher: ReadDispatcher
     max_model_calls: int
     model_timeout_seconds: int
+    context_budget_tokens: int = 0
 
 
 def host_operations(runtime: RuntimeProfile) -> dict[str, HostOperation]:
@@ -172,6 +174,7 @@ def build_agent_components(
         api_key_env=settings.paid_media_model_api_key_env,
         timeout_seconds=settings.paid_media_model_timeout_seconds,
         zero_data_retention=settings.paid_media_model_zero_data_retention,
+        prompt_cache=settings.paid_media_prompt_cache,
     )
     read_dispatcher, service, executor = _services(settings, runtime)
     project_root = runtime.skills_root or Path.cwd()
@@ -244,6 +247,7 @@ def build_agent_components(
         read_dispatcher=read_dispatcher,
         max_model_calls=settings.paid_media_max_model_calls,
         model_timeout_seconds=settings.paid_media_model_timeout_seconds,
+        context_budget_tokens=settings.paid_media_context_budget_tokens,
     )
 
 
@@ -258,6 +262,8 @@ def build_agent(components: AgentComponents, store: Store) -> Agent:
         max_model_calls=components.max_model_calls,
         model_timeout_seconds=components.model_timeout_seconds,
         max_active_reads=components.metadata.max_active_reads,
+        call_log=LlmCallRecorder(store),
+        context_budget_tokens=components.context_budget_tokens,
     )
 
 

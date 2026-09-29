@@ -12,7 +12,8 @@ code; surfaces only translate inputs and presentation.
 5. [History and simulation](history-and-simulation.md)
 6. [Budget bandit](budget-bandit.md)
 7. [Surfaces and presentation](surfaces-and-presentation.md)
-8. [Capability map](capability-map.md)
+8. [Evals](evals.md)
+9. [Capability map](capability-map.md)
 
 ## Binding invariants
 

@@ -24,12 +24,30 @@ class UserMessage:
 
 
 @dataclass(frozen=True)
+class Usage:
+    """What one model call used, as the provider reported it. Never stored in the thread."""
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cached_tokens: int | None = None
+    """Input tokens read from the provider's prompt cache."""
+    cache_write_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    cost_usd: float | None = None
+    """The provider's own figure (OpenRouter reports one); None when it reports none."""
+    response_model: str | None = None
+    generation_id: str | None = None
+
+
+@dataclass(frozen=True)
 class AssistantMessage:
     content: str = ""
     tool_calls: tuple[ToolCall, ...] = ()
     provider_state: dict[str, Any] | None = None
     """Opaque provider data (reasoning blocks, signatures) replayed unmodified on the next call."""
     role: Literal["assistant"] = "assistant"
+    usage: Usage | None = field(default=None, compare=False, repr=False)
+    """The call that produced this reply; recorded in `llm_calls`, never replayed or stored."""
 
 
 @dataclass(frozen=True)

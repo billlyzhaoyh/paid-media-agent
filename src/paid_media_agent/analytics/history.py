@@ -12,10 +12,13 @@ from uuid import UUID
 
 from paid_media_agent.store.db import Store
 
-HistoryView = Literal[
+ModelHistoryView = Literal[
     "coverage", "daily", "settings", "changes", "lag", "outcomes", "goals", "signals", "constraints"
 ]
-HISTORY_VIEWS: tuple[HistoryView, ...] = (
+"""The views the model may query."""
+HistoryView = ModelHistoryView | Literal["usage"]
+"""Every view; `usage` (model calls and their cost) is for operators only."""
+MODEL_HISTORY_VIEWS: tuple[ModelHistoryView, ...] = (
     "coverage",
     "daily",
     "settings",
@@ -26,6 +29,7 @@ HISTORY_VIEWS: tuple[HistoryView, ...] = (
     "signals",
     "constraints",
 )
+HISTORY_VIEWS: tuple[HistoryView, ...] = (*MODEL_HISTORY_VIEWS, "usage")
 MAX_ROWS = 500
 
 _QUERIES: dict[HistoryView, tuple[str, str, str]] = {
@@ -88,6 +92,16 @@ _QUERIES: dict[HistoryView, tuple[str, str, str]] = {
         "decision_day",
         "ORDER BY decision_day DESC, account_alias, entity_ref",
     ),
+    "usage": (
+        "SELECT CAST(created_at AS DATE) AS day, purpose, provider, model, count(*) AS calls, "
+        "count(*) FILTER (WHERE status <> 'ok') AS failed, sum(input_tokens) AS input_tokens, "
+        "sum(cached_tokens) AS cached_tokens, sum(output_tokens) AS output_tokens, "
+        "sum(cost_usd) AS cost_usd, count(cost_usd) AS costed_calls, "
+        "CAST(median(latency_ms) AS INTEGER) AS p50_latency_ms, "
+        "CAST(quantile_cont(latency_ms, 0.95) AS INTEGER) AS p95_latency_ms FROM llm_calls",
+        "CAST(created_at AS DATE)",
+        "GROUP BY ALL ORDER BY day DESC, cost_usd DESC NULLS LAST",
+    ),
     "goals": (
         "SELECT account_alias, effective_from, target_cpa, target_roas, monthly_budget, notes, "
         "source, proposal_id, set_at FROM account_goals",
@@ -123,10 +137,12 @@ def query_history(
     select, day_column, order = _QUERIES[view]
     clauses: list[str] = []
     params: list[Any] = []
+    if account_alias is not None and view == "usage":
+        raise ValueError("model usage is not per account; omit the alias")
     if account_alias is not None:
         clauses.append("account_alias = ?")
         params.append(account_alias)
-    if entity_ref is not None and view not in ("coverage", "lag", "goals"):
+    if entity_ref is not None and view not in ("coverage", "lag", "goals", "usage"):
         clauses.append("entity_ref = ?")
         params.append(entity_ref)
     if day_column and start is not None:

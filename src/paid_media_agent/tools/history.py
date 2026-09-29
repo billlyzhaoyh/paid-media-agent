@@ -14,7 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
-from paid_media_agent.analytics.history import MAX_ROWS, HistoryView, query_history
+from paid_media_agent.analytics.history import MAX_ROWS, ModelHistoryView, query_history
 from paid_media_agent.config import AccountRegistry
 from paid_media_agent.harness.tools import ToolContext, ToolSpec, parameters_for
 from paid_media_agent.redaction import sanitize_exception
@@ -24,7 +24,7 @@ QUERY_HISTORY_TOOL = "query_history"
 
 
 class QueryHistoryArgs(BaseModel):
-    view: HistoryView = Field(
+    view: ModelHistoryView = Field(
         description=(
             "coverage: what is stored per account. daily: entity-day rows with budget, pacing, "
             "and matured conversions. settings: budget and status versions. changes: proposal "

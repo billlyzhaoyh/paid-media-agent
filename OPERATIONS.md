@@ -50,6 +50,8 @@ Add `--help` for options and `--json` where supported for machine-readable outpu
 | `uv run paid-media-agent pacing` | Month-to-date spend against the monthly budget, and CPA/ROAS against target |
 | `uv run paid-media-agent explain --alias demo-google` | Why CPA (or `--metric conversions/roas`) changed, newest week against the week before |
 | `uv run paid-media-agent whatif --alias demo-google --set g-101=+20%` | Forecast spend, conversions, and CPA at different budgets; `--total +10% --split best` |
+| `uv run paid-media-agent usage --days 7` | Model calls: tokens, cache hits, reported cost, failures, latency |
+| `uv run paid-media-agent eval run --model openrouter:anthropic/claude-haiku-4.5` | The 30-question eval on sample data, graded and stored (bills the model) |
 | `uv run paid-media-agent context init` | Create the company-context skill from its template |
 | `uv run paid-media-agent proposals list` | Proposals awaiting approval, including the budget bandit's |
 | `uv run paid-media-agent proposals approve ID` | Approve one through the running API; it is applied once and read back |
@@ -269,6 +271,29 @@ Both read stored history, so `sync` first. Neither changes anything.
     total, and, with goals set, the expected CPA against target and where the month would land.
   - `bandit whatif-eval` measures the forecasts against simulated truth (see
     [Budget bandit](docs/architecture/budget-bandit.md#what-if-forecasts)).
+
+## Model usage and evals
+
+- **Usage.** Every model call attempt is recorded in `llm_calls`, with its tokens, cache reads,
+  the provider's reported cost (OpenRouter reports one), status, and latency.
+  - `paid-media-agent usage [--days 7] [--by model|day|thread|purpose]` summarises it.
+  - `doctor` prints the last week in one line.
+  - The model cannot read it.
+- **Caching and context.**
+  - Anthropic models through OpenRouter use prompt caching (`PAID_MEDIA_PROMPT_CACHE=auto`; `off`
+    to compare).
+  - Threads past `PAID_MEDIA_CONTEXT_BUDGET_TOKENS` (60,000) send older tool results as short
+    stubs; the stored thread is unchanged.
+- **Evals.** `paid-media-agent eval run` asks 30 questions on the sample accounts, one fresh
+  runtime each, with 28 days synced and goals set.
+  - Each answer is graded by checks (tools called, expected figures, numbers found in tool
+    results, nothing applied without approval, no errors) and by a judge model
+    (`PAID_MEDIA_EVAL_JUDGE_MODEL`, default Claude Sonnet 5.5 on OpenRouter).
+  - Runs go to `workspace/state/evals.duckdb`. `eval baseline RUN` marks the one to compare
+    against, and `eval report` shows regressions, fixes, and cost and latency changes.
+  - `--rpm` keeps calls under a key's rate limit (15 a minute by default).
+  - A full run costs a few dollars. It is never part of `pytest` or CI.
+  - See [Evals](docs/architecture/evals.md).
 
 ## Direct platforms
 

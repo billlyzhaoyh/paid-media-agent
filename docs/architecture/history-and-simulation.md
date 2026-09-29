@@ -105,13 +105,22 @@ campaign, with conversions lag-corrected as pacing corrects them.
 - **Identity.** Conversions per unit of spend is `E = sum_i w_i * e_i`, where `w_i` is the
   campaign's share of spend and `e_i = 1000 * CTR * CVR / CPM`. CPA is `1/E`, conversions `S * E`,
   and ROAS multiplies each `e_i` by value per conversion.
-- **Exact split.** For campaigns that spent in both windows, the logarithmic mean Divisia index
-  (LMDI-I, Ang 2004 and 2015) splits `ln(E1/E0)` into spend mix and each funnel rate, with no
-  residual. A campaign that spent in only one window moves the aggregate away from the continuing
-  campaigns' rate. Its share is `(its conversions - E_both x its spend) / (S x L(E, E_both))`,
-  also exact. A factor that goes to zero takes its campaign's whole contribution (Ang & Liu
-  2007). The log shares are scaled to percentage points of the headline change, so they add up to
-  it exactly.
+- **Exact split.** For campaigns that spent in both windows, the change in `E` splits in levels
+  into spend mix and each campaign's own rate change: `dE = sum_i e_bar_i dw_i + sum_i w_bar_i
+  de_i`, the Bennet indicator, with no residual.
+  - Each campaign's mix part is `(its rate - the account's) x its change in share`, so moving
+    share toward a campaign that converts better than the account lowers CPA.
+  - Each rate change splits into CPM, CTR, conversion rate (and value per conversion) by their log
+    changes, because `L(e1, e0) x ln(e1/e0) = e1 - e0` (LMDI within the campaign; Ang 2004 and
+    2015). A rate that goes to or from zero is wholly that factor's.
+  - A campaign that spent in only one window moves the aggregate away from the continuing
+    campaigns' rate. Its share is `(its conversions - E_both x its spend) / (S x L(E, E_both))`,
+    also exact.
+  - The parts are scaled to percentage points of the headline change (and to an amount in the
+    metric's units), so they add up to it exactly.
+  - The first eval run showed why the per-campaign form matters. With a whole-account LMDI split,
+    a cut to a dear campaign showed as a "+" for that campaign; a model read that literally and
+    got the story backwards.
 - **Noise.** The headline and each campaign's conversion-rate, click-through, and impression-cost
   moves are tested against Poisson noise on the reported counts (two-sided, 95%). A headline within
   noise can still hide one campaign whose rate moved by more; the reading says so.
