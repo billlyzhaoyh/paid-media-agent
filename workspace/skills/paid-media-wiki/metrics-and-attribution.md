@@ -12,6 +12,25 @@
 Code handles zero denominators, decimal precision, units, and currency. A missing numerator or
 denominator yields unavailable, not zero or infinity.
 
+## Explaining a change
+
+CPA, conversions and ROAS move for four kinds of reason, and they call for different actions:
+
+- **Spend moved between campaigns** (mix): the account's CPA changes even when no campaign's own
+  rates changed. The action, if any, is about allocation.
+- **A campaign's funnel rates changed**: CPA per campaign is `CPM / (1000 * CTR * CVR)`, so a
+  cost rise shows in CPM (auctions, audience, season), an ad problem in CTR, and a site, offer,
+  or tracking problem in conversion rate. ROAS adds value per conversion (order value).
+- **Diminishing returns**: a campaign that spends more converts the extra spend at a higher cost.
+  That is expected from its response curve, not a new problem.
+- **Campaigns starting or stopping.**
+
+`explain_change` splits the change exactly (log-mean Divisia index: the parts add up to the
+headline) and marks each part that is within Poisson noise for its conversion, click, or
+impression counts. A small account's week-over-week change is often all noise; say so rather
+than explain noise. When the headline is within noise but one campaign's rate moved by more than
+noise, that campaign is the finding.
+
 ## Windows and completeness
 
 Every metric carries an inclusive start date, inclusive end date, timezone, and completeness flag.

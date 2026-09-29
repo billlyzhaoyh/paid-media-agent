@@ -48,11 +48,14 @@ Add `--help` for options and `--json` where supported for machine-readable outpu
 | `uv run paid-media-agent allocate --alias demo-google` | Recommend how to split an account's daily budget; `--propose` creates proposals |
 | `uv run paid-media-agent goals set --alias demo-google --target-cpa 30` | Set an account's target CPA/ROAS or monthly budget |
 | `uv run paid-media-agent pacing` | Month-to-date spend against the monthly budget, and CPA/ROAS against target |
+| `uv run paid-media-agent explain --alias demo-google` | Why CPA (or `--metric conversions/roas`) changed, newest week against the week before |
+| `uv run paid-media-agent whatif --alias demo-google --set g-101=+20%` | Forecast spend, conversions, and CPA at different budgets; `--total +10% --split best` |
 | `uv run paid-media-agent context init` | Create the company-context skill from its template |
 | `uv run paid-media-agent proposals list` | Proposals awaiting approval, including the budget bandit's |
 | `uv run paid-media-agent proposals approve ID` | Approve one through the running API; it is applied once and read back |
 | `uv run paid-media-agent bandit simulate` | Let the budget bandit run a simulated account and compare it with the truth |
 | `uv run paid-media-agent bandit evaluate --seeds 3` | Regret and forecast error of the bandit and its baselines on simulated accounts |
+| `uv run paid-media-agent bandit whatif-eval --seeds 5` | How close what-if forecasts come to the simulated truth |
 | `uv run paid-media-agent writes kill-switch on` | Stop mutations |
 | `uv run paid-media-agent test state` | Open the DuckDB state file and apply migrations |
 | `uv run paid-media-agent backup` | Export the state file as Parquet (through `serve` when it runs) |
@@ -244,6 +247,28 @@ All of these use a local pooled regression as the global model. `PAID_MEDIA_PRED
 (or `--predictor tabpfn`) uses TabPFN instead:
 one call per decision (at least 10,000 tokens each), under the same caps and cache as anomaly
 checks. See [Budget bandit](docs/architecture/budget-bandit.md).
+
+## Explaining changes and what-ifs
+
+Both read stored history, so `sync` first. Neither changes anything.
+
+- **`paid-media-agent explain`** (the agent's `explain_change`, `GET /explain`) splits a change
+  in CPA, conversions, or ROAS into spend moving between campaigns and each campaign's CPM,
+  click-through rate, conversion rate, and value per conversion. The parts add up to the change.
+  - It marks what is within noise, and how much of a campaign's rate change its own spend change
+    explains (diminishing returns).
+  - It lists the settings changes in the windows.
+  - The default is the newest 7 days of data against the 7 before; `--current START:END` and
+    `--previous START:END` choose others.
+- **`paid-media-agent whatif`** (the agent's `what_if_budgets`, `POST /what-if`) forecasts one
+  account at today's budgets and at a scenario, with 80% ranges.
+  - Scenarios are `--set CAMPAIGN=+20%` / `--set CAMPAIGN=150`, or `--total +10%` / `--total 1500`
+    with `--split proportional|best`.
+  - It reports the cost of each extra conversion, budget that campaigns limited by demand or a bid
+    target cannot spend, how many changes a large move takes, the curves' best split of the same
+    total, and, with goals set, the expected CPA against target and where the month would land.
+  - `bandit whatif-eval` measures the forecasts against simulated truth (see
+    [Budget bandit](docs/architecture/budget-bandit.md#what-if-forecasts)).
 
 ## Direct platforms
 

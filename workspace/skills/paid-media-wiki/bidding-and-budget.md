@@ -73,6 +73,25 @@ recompute them.
 - `query_history` with `view: outcomes` shows whether past recommendations were followed and how
   many conversions the week after each one brought against what was expected.
 
+## What if the budgets changed
+
+`what_if_budgets` forecasts one account's daily spend, conversions, and CPA at today's budgets
+and at a scenario: named campaigns raised or cut, or a new account total split in proportion or
+the way the curves say is best. It uses the same curves and spend limits as `recommend_budgets`.
+
+- The number to lead with is the **incremental CPA**: what each extra conversion costs (or each
+  lost one saves). It is usually far above the account's average CPA, because extra spend buys the
+  dearest conversions.
+- The 80% ranges cover how uncertain the curves are and how far they have recently been from
+  actual conversions, not day-to-day noise. When the range on the change includes zero, say the
+  forecast cannot tell the scenario apart from today.
+- `capped`: budget above what demand or a bid target lets the campaign spend buys nothing.
+- `outside_history`: spend beyond 1.5 times the most the campaign has spent is a guess.
+- `step_advice`: a large move takes several changes of at most the step limit, days apart.
+- `best_split` shows what the same total would buy split by the curves, without the step limit;
+  `recommend_budgets` gives the next safe step toward it.
+- It changes nothing. Apply a scenario only when the user asks, as proposals.
+
 ## Bidding strategies, in general terms
 
 - Automated strategies (target CPA, target ROAS, maximize conversions) need conversion volume and a

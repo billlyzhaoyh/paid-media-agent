@@ -45,7 +45,13 @@ recommendations.
    their expected range from stored history. For how to split or shift budget between campaigns,
    call `recommend_budgets` (see the wiki's bidding-and-budget page); read each campaign's
    `constraint` before advising a budget change, because only a budget-limited campaign can use
-   more budget. For period-over-period change, call
+   more budget. For why a KPI moved (CPA, conversions, ROAS), call `explain_change`: it reads
+   stored history and returns exact drivers (spend mix, CPM, CTR, conversion rate, value per
+   conversion) that add up to the change, which moves are noise, and how much of a campaign's
+   rate change its own spend change explains (diminishing returns). For "what if I raise, cut, or
+   move budget", call `what_if_budgets` for that account; quote its reading, its ranges, and its
+   flags (`capped`: the campaign cannot spend more; `outside_history`: treat as a guess;
+   `step_advice`: how many changes it takes). For period-over-period change, call
    `compare_periods` with the artifact ids and both windows. List any failed read in
    `unavailable_sources` so it stays visible and suppresses the cross-platform total.
 7. Read the `analysis_summary`. Quote its values verbatim; never recompute from previews or rows.

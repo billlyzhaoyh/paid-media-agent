@@ -29,12 +29,14 @@ from paid_media_agent.tools.discovery import (
     build_discover_tools_tool,
     build_list_accounts_tool,
 )
+from paid_media_agent.tools.drivers import EXPLAIN_CHANGE_TOOL, build_explain_change_tool
 from paid_media_agent.tools.history import QUERY_HISTORY_TOOL, build_query_history_tool
 from paid_media_agent.tools.host_writes import HostOperation, goals_operation
 from paid_media_agent.tools.pacing import CHECK_PACING_TOOL, build_check_pacing_tool
 from paid_media_agent.tools.reads import ReadDispatcher, build_platform_read_tools
 from paid_media_agent.tools.reports import RENDER_REPORT_TOOL, build_render_report_tool
 from paid_media_agent.tools.summary import SUMMARIZE_WINDOW_TOOL, build_summarize_window_tool
+from paid_media_agent.tools.whatif import WHAT_IF_BUDGETS_TOOL, build_what_if_budgets_tool
 from paid_media_agent.tools.write_tools import build_execute_gate, build_write_tools
 from paid_media_agent.tools.writes import (
     DISCOVER_WRITE_OPERATIONS_TOOL,
@@ -56,6 +58,8 @@ CORE_TOOLS: tuple[str, ...] = (
     CHECK_ANOMALIES_TOOL,
     RECOMMEND_BUDGETS_TOOL,
     CHECK_PACING_TOOL,
+    EXPLAIN_CHANGE_TOOL,
+    WHAT_IF_BUDGETS_TOOL,
 )
 WRITE_TOOLS: tuple[str, ...] = (
     DISCOVER_WRITE_OPERATIONS_TOOL,
@@ -172,6 +176,8 @@ def build_agent_components(
     read_dispatcher, service, executor = _services(settings, runtime)
     project_root = runtime.skills_root or Path.cwd()
     goals = GoalStore(runtime.store)
+    predictor = build_predictor(settings, runtime.store)
+    bandit_config = live_config(settings.paid_media_bandit_policy)
     core = [
         build_list_accounts_tool(runtime.accounts, goals),
         build_discover_tools_tool(runtime.catalog_provider),
@@ -189,8 +195,12 @@ def build_agent_components(
         build_recommend_budgets_tool(
             runtime.store,
             runtime.accounts,
-            build_predictor(settings, runtime.store),
-            config=live_config(settings.paid_media_bandit_policy),
+            predictor,
+            config=bandit_config,
+        ),
+        build_explain_change_tool(runtime.store, runtime.accounts, predictor, config=bandit_config),
+        build_what_if_budgets_tool(
+            runtime.store, runtime.accounts, predictor, config=bandit_config
         ),
     ]
     tools = (

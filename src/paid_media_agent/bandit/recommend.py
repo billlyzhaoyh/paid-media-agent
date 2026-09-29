@@ -29,16 +29,15 @@ from typing import Any, Literal
 import numpy as np
 
 from paid_media_agent.bandit.allocate import Allocation, allocate
-from paid_media_agent.bandit.arms import Arm, DataChecks, check_data, load_arms
+from paid_media_agent.bandit.arms import Arm, DataChecks
+from paid_media_agent.bandit.fit import fit_account
 from paid_media_agent.bandit.policy import GUARD_Z, draw_thompson, greedy
 from paid_media_agent.bandit.posterior import (
     LADDER_Z,
     PRIOR_KAPPA2,
     Posterior,
     PowerCurve,
-    fit_posterior,
 )
-from paid_media_agent.bandit.prior import pseudo_samples
 from paid_media_agent.predict.protocol import Predictor
 from paid_media_agent.store.db import Store, utc_now
 
@@ -227,28 +226,6 @@ def budget_bounds(arm: Arm, config: BanditConfig) -> tuple[float, float, list[st
     return lower, max(upper, lower), why
 
 
-def _last_good(store: Store, before: date, keys: set[str]) -> dict[str, tuple[Posterior, float]]:
-    rows = store.fetch(
-        """
-        SELECT d.arm_key, d.post_mean, d.post_cov, d.spend_unit
-        FROM bandit_decisions d JOIN bandit_runs r USING (run_id)
-        WHERE NOT r.fallback_used AND d.post_mean IS NOT NULL AND r.decision_day < ?
-        QUALIFY row_number() OVER (
-            PARTITION BY d.arm_key ORDER BY r.decision_day DESC, r.created_at DESC
-        ) = 1
-        """,
-        [before],
-    )
-    found = {}
-    for key, mean, cov, unit in rows:
-        if key in keys:
-            found[key] = (
-                Posterior.from_record(json.loads(mean), json.loads(cov), float(unit)),
-                float(unit),
-            )
-    return found
-
-
 def _usable(decision: ArmDecision) -> tuple[Posterior, tuple[float, float]]:
     """A movable campaign's posterior and its valid mean curve (checked when it was made movable)."""
     post = decision.posterior
@@ -366,19 +343,10 @@ async def recommend(
     config = config or BanditConfig()
     seed = secrets.randbits(63) if seed is None else seed
     rng = np.random.default_rng(seed)
-    arms = load_arms(store, as_of=as_of, train_days=config.train_days, account_alias=account_alias)
-    for arm in arms:
-        # The ceiling decides only where demand or a bid target, not the budget, limits spend.
-        arm.capped = (
-            config.spend_model == "ceiling"
-            and arm.ceiling is not None
-            and arm.constraint.kind in ("demand", "target")
-        )
-    accounts = {(a.platform, a.provider_account_id) for a in arms if a.eligible}
-    if len(accounts) > 1:
-        raise ValueError("budgets are allocated within one account; pass its alias")
-    checks = check_data(arms, as_of)
-    eligible = [a for a in arms if a.eligible]
+    fitted = await fit_account(
+        store, predictor, as_of=as_of, config=config, account_alias=account_alias
+    )
+    eligible = fitted.eligible
     currencies = {a.currency for a in eligible if a.currency}
     run = BanditRun(
         run_id=uuid.uuid4(),
@@ -386,11 +354,12 @@ async def recommend(
         policy=config.policy,
         total_budget=0.0,
         currency=next(iter(currencies), None),
-        prior_source="none",
-        data_checks=checks,
-        fallback_used=not checks.passed,
+        prior_source=fitted.prior_source,
+        data_checks=fitted.checks,
+        fallback_used=not fitted.checks.passed,
         seed=seed,
-        decisions=[ArmDecision(arm=a) for a in arms],
+        decisions=[ArmDecision(arm=a, posterior=fitted.posteriors.get(a.key)) for a in fitted.arms],
+        notes=list(fitted.notes),
     )
     decisions = [d for d in run.decisions if d.arm.eligible]
     for decision in run.decisions:
@@ -400,39 +369,6 @@ async def recommend(
     if not decisions:
         run.notes.append("no campaign can be allocated: none is enabled with spend and history")
         return _finish(store, run, config, mode, scenario_id, account_alias, record, clock)
-
-    # 1-3. Curves: fresh fits, or the last good ones when the data checks failed.
-    if checks.passed:
-        pseudo = await pseudo_samples(
-            [d.arm for d in decisions],
-            as_of=as_of,
-            k=config.pseudo_samples,
-            predictor=predictor,
-            half_life_days=config.prior_half_life_days,
-        )
-        run.prior_source = f"{pseudo.source}:{pseudo.model_version}"
-        run.notes += pseudo.notes
-        for i, decision in enumerate(decisions):
-            arm = decision.arm
-            decision.posterior = fit_posterior(
-                arm.spend,
-                arm.conversions,
-                arm.weekdays,
-                arm.unit,
-                pseudo_spend=pseudo.spend.get(i),
-                pseudo_target=pseudo.target.get(i),
-                pseudo_weight=pseudo.weight,
-                prior_kappa2=config.prior_kappa2,
-                ladder_z=config.ladder_z,
-            )
-    else:
-        failed = ", ".join(k for k, v in checks.results.items() if not v["ok"])
-        run.notes.append(f"data checks failed ({failed}); reusing the last good curves")
-        previous = _last_good(store, as_of, {d.arm.key for d in decisions})
-        run.prior_source = "last_good"
-        for decision in decisions:
-            if decision.arm.key in previous:
-                decision.posterior, decision.arm.unit = previous[decision.arm.key]
 
     # Bounds, and campaigns that stay where they are.
     fixed_total = 0.0

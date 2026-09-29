@@ -4,6 +4,17 @@
 
 ### Added
 
+- Why a KPI changed, and what if: an `explain_change` tool, `explain` command, and `GET /explain`
+  split a change in CPA, conversions, or ROAS exactly (LMDI) into spend moving between campaigns
+  and each campaign's CPM, click-through rate, conversion rate, and value per conversion. They
+  mark noise, separate diminishing returns from new problems with each campaign's response
+  curve, and list the settings changes in the windows. A `what_if_budgets` tool, `whatif`
+  command, and `POST /what-if` forecast spend, conversions, and CPA for different budgets with
+  80% ranges, using the bandit's curves and spend ceilings: the cost of each extra conversion,
+  budget that cannot be spent, step advice, the curves' best split, and goals and monthly pacing.
+  `bandit whatif-eval` checks forecasts against simulated truth. The simulator can plant CPM,
+  CTR, and conversion-rate changes (`ScenarioParams.events`). Curve fitting is shared as
+  `bandit/fit.py` (`fit_account`); recommendations are unchanged.
 - Paid-media analysis through one shared assembly and agent loop, with a credential-free fixture demo.
 - A local setup console and CLI for models, account connections, and running the agent.
 - Pipeboard tool discovery and read-only direct adapters behind a host-controlled account catalog.

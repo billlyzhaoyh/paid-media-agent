@@ -34,6 +34,28 @@ SHOCK_EFFECTS: dict[ShockKind, tuple[float, float]] = {
 }
 """(spend multiplier, conversion multiplier) for each labelled shock."""
 
+EventKind = Literal["cpm", "ctr", "cvr"]
+
+
+@dataclass(frozen=True)
+class SimEvent:
+    """A planted, lasting change to one campaign's funnel, so an explanation can be checked.
+
+    `cpm`: each impression costs `factor` times as much, so the same spend buys fewer impressions,
+    clicks and conversions. `ctr`: `factor` times as many clicks per impression, and conversions
+    with them. `cvr`: `factor` times as many conversions per click. Days `start` to `end`
+    inclusive (`end` None: to the end of the scenario).
+    """
+
+    entity_ref: str
+    kind: EventKind
+    factor: float
+    start: int
+    end: int | None = None
+
+    def active(self, index: int) -> bool:
+        return self.start <= index and (self.end is None or index <= self.end)
+
 
 @dataclass(frozen=True)
 class ScenarioParams:
@@ -67,11 +89,15 @@ class ScenarioParams:
     """Of the capped campaigns, the share held back by a bid target rather than by demand."""
     emit_signals: bool = False
     """Also report Google-style impression-share losses and status reasons, derived from truth."""
+    events: tuple[SimEvent, ...] = ()
+    """Planted funnel changes; none keeps every scenario exactly as before."""
 
     def as_json(self) -> dict[str, Any]:
         data = asdict(self)
         data["start"] = self.start.isoformat()
         data["platform"] = self.platform.value
+        if not self.events:
+            data.pop("events")
         return data
 
 
@@ -227,6 +253,22 @@ class Simulator:
         """The truth: expected final conversions for `spend` on day `index`, before shocks."""
         return self.weekday_factor(campaign, index) * campaign.response(spend)
 
+    def event_factors(self, entity_ref: str, index: int) -> tuple[float, float, float]:
+        """(cpm, ctr, cvr) multipliers from the planted events active on day `index`."""
+        factors = {"cpm": 1.0, "ctr": 1.0, "cvr": 1.0}
+        for event in self.params.events:
+            if event.entity_ref == entity_ref and event.active(index):
+                factors[event.kind] *= event.factor
+        return factors["cpm"], factors["ctr"], factors["cvr"]
+
+    def _expected(
+        self, campaign: CampaignTruth, spend: float, index: int, cpm_f: float, rate_f: float
+    ) -> float:
+        if cpm_f == 1.0 and rate_f == 1.0:
+            return self.expected_conversions(campaign, spend, index)
+        # Dearer impressions buy the traffic a smaller spend would; better rates convert more of it.
+        return self.expected_conversions(campaign, spend / cpm_f, index) * rate_f
+
     def step(self, index: int, budgets: Mapping[str, float]) -> list[DayOutcome]:
         """Run day `index` with the given daily budgets and return what really happened."""
         p = self.params
@@ -240,11 +282,12 @@ class Simulator:
             spend_mult, conv_mult = SHOCK_EFFECTS[anomaly] if anomaly else (1.0, 1.0)
             pacing = float(np.clip(rng.normal(p.pacing_mean, p.pacing_sd), 0.5, 1.0))
             spend = round(budget * pacing * spend_mult, 2)
-            expected = self.expected_conversions(campaign, spend, index)
+            cpm_f, ctr_f, cvr_f = self.event_factors(campaign.entity_ref, index)
+            expected = self._expected(campaign, spend, index, cpm_f, ctr_f * cvr_f)
             conversions = int(rng.poisson(expected * conv_mult))
             lags = rng.multinomial(conversions, self._lag_weights)
-            impressions = int(spend / campaign.cpm * 1000 * rng.lognormal(0.0, 0.05))
-            clicks = int(rng.binomial(impressions, campaign.ctr))
+            impressions = int(spend / (campaign.cpm * cpm_f) * 1000 * rng.lognormal(0.0, 0.05))
+            clicks = int(rng.binomial(impressions, min(campaign.ctr * ctr_f, 1.0)))
             value = round(conversions * campaign.aov * float(rng.lognormal(0.0, 0.1)), 2)
             limited_by: Literal["budget", "demand", "target"] = "budget"
             if campaign.ceiling is not None:
@@ -254,7 +297,7 @@ class Simulator:
                 if cap < spend:
                     share = cap / spend
                     spend, limited_by = cap, campaign.limit or "demand"
-                    expected = self.expected_conversions(campaign, spend, index)
+                    expected = self._expected(campaign, spend, index, cpm_f, ctr_f * cvr_f)
                     conversions = int(cap_rng.poisson(expected * conv_mult))
                     lags = cap_rng.multinomial(conversions, self._lag_weights)
                     impressions, clicks = int(impressions * share), int(clicks * share)

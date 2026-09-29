@@ -367,6 +367,57 @@ day (log-normal, sd 0.08).
   while daily demand varies around it, so a policy that leaves headroom can beat it. The oracle is
   a strong baseline here, not the exact optimum.
 
+## What-if forecasts
+
+`what_if_budgets` (the agent), `paid-media-agent whatif`, and `POST /what-if` forecast one
+account's daily spend, conversions, and CPA at today's budgets and at a scenario. They use exactly
+the curves a recommendation would, from `bandit/fit.py` (`fit_account`, steps 1 to 3 of a run):
+
+- **Spend** is `Arm.expected_spend(budget)`: the budget's share, up to the mean ceiling where
+  demand or a bid target limits the campaign.
+- **Conversions** come from the mean curve at that spend.
+- **Ranges (80%)** come from plain multivariate-normal draws of each curve's parameters (invalid
+  draws dropped; not the truncated Thompson draw). Each campaign also gets a model-error term:
+  how far its mean curve has been from its own conversions over the last four weeks, plus their
+  Poisson noise. The same draws and error price today's budgets and the scenario, so the range on
+  the *change* compares like with like. Account totals add the draws across campaigns.
+- **Scenarios**: named campaigns (new budget or relative change), or a new total split in
+  proportion to today's budgets or by the curves (`allocate` without the step limit, within
+  1.5x the most each campaign has spent and its ceiling). A proportional or named scenario also
+  reports the curves' split of the same total (`best_split`), and budget beyond what the
+  campaigns have shown they can spend (`unplaced`).
+- **Flags** per campaign: `capped` (budget it cannot spend), `outside_history`, `learning`,
+  `step_advice` (changes needed at the platform's step limit and spacing), `below_cpa_multiple`,
+  `no_curve` (counted at its recent average), `wide_uncertainty`.
+- **Goals**: the expected CPA against the target, and where the month would end at the scenario's
+  daily spend against the monthly budget (from `compute_pacing`).
+
+Nothing is recorded and nothing changes.
+
+### Forecasts against the truth
+
+`paid-media-agent bandit whatif-eval --scenario default|constrained --seeds 5` runs each seed's
+account for 90 days on the operator's schedule, forecasts 15 scenarios from the stored history
+(all +20%, all -20%, the capped campaigns +50%, and 12 random vectors of 0.6x to 1.6x per
+campaign), and compares them with the true expected conversions and spend over the next 7 days at
+those budgets (common random numbers). 6 campaigns, measured 2026-09-29:
+
+| Scenario, spend model | Account MAE | Bias | Change error | Direction | Coverage 80% | Change coverage 80% | Spend MAE |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Default, ceiling | 4.0% | -0.9% | 1.9% | 100% | 61% | 61% | 0.8% |
+| Constrained, ceiling | 2.7% | -0.2% | 1.0% | 100% | 80% | 65% | 0.5% |
+| Constrained, linear | 5.2% | 1.3% | 4.1% | 94% | 56% | 40% | 5.5% |
+
+- **Change error** is the error in the forecast change as a share of today's conversions;
+  **direction** is the share of changes over 5% forecast the right way.
+- **The forecasts are close and the direction is always right** with the ceiling model. On
+  capped campaigns, +50% budget is forecast to buy nothing, and the truth agrees.
+- **The ranges are too narrow** (61% and 80% against a nominal 80%). The level error is shared
+  across an account's campaigns, from two sources the draws cannot see. First, the model's shape
+  differs from the simulator's. Second, conversions that arrive after the 7-day maturity window
+  are never counted: the simulator's geometric lag puts about 4% of them there, so the history
+  runs a few percent low. See Limitations.
+
 ## Limitations
 
 - **Evaluated in simulation only.** The simulated curves have exactly the shape the local model
@@ -388,5 +439,8 @@ day (log-normal, sd 0.08).
 - **Target CPA uses mean curves.** The cap judges the expected CPA with each campaign's mean
   curve, so a Thompson draw can land a little above or below it. A campaign without a curve is
   left out of the expected CPA. `max_cpia` (marginal) remains configuration-only.
+- **What-if ranges are narrower than the real error** (61-80% coverage of a nominal 80% in
+  simulation). They add each campaign's recent model error but not an account-wide one, such as
+  conversions arriving after the maturity window, which history never counts.
 - **Fallback curves skip the mean correction.** A reused (fallback) curve lacks it, because only
   the curve parameters are stored.

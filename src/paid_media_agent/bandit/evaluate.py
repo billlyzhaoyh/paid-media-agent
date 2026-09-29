@@ -33,12 +33,14 @@ import numpy as np
 
 from paid_media_agent.bandit.allocate import allocate
 from paid_media_agent.bandit.arms import Arm, load_arms
+from paid_media_agent.bandit.fit import fit_account
 from paid_media_agent.bandit.posterior import fit_posterior
 from paid_media_agent.bandit.prior import Query, global_predict, pseudo_samples
 from paid_media_agent.bandit.recommend import BanditConfig, budget_bounds, recommend
+from paid_media_agent.bandit.whatif import forecast
 from paid_media_agent.predict.protocol import Predictor
 from paid_media_agent.sim.scenario import ScenarioDriver, run_scenario
-from paid_media_agent.sim.simulator import ScenarioParams, budget_schedule
+from paid_media_agent.sim.simulator import ScenarioParams, Simulator, budget_schedule
 from paid_media_agent.store.db import Store
 
 LoopPolicy = Literal["oracle", "static", "cpa_rule", "greedy", "thompson"]
@@ -385,3 +387,166 @@ async def payout_error(
         name: {group: errors.summary() for group, errors in by_group.items()}
         for name, by_group in groups.items()
     }
+
+
+# What-if forecasts against the truth ---------------------------------------------------------
+
+
+@dataclass
+class WhatIfCase:
+    label: str
+    predicted_base: float
+    predicted: float
+    predicted_low: float
+    predicted_high: float
+    change_low: float
+    change_high: float
+    true_base: float
+    truth: float
+    predicted_spend: float
+    true_spend: float
+
+    @property
+    def predicted_change(self) -> float:
+        return self.predicted - self.predicted_base
+
+    @property
+    def true_change(self) -> float:
+        return self.truth - self.true_base
+
+
+@dataclass
+class WhatIfCalibration:
+    cases: list[WhatIfCase] = field(default_factory=list)
+
+    def summary(self, material: float = 0.05) -> dict[str, float | int | None]:
+        """Errors over all cases; direction is judged where the true change is over `material`."""
+        if not self.cases:
+            return {"cases": 0}
+        rel = np.asarray([c.predicted / c.truth - 1 for c in self.cases])
+        change_err = np.asarray(
+            [(c.predicted_change - c.true_change) / c.true_base for c in self.cases]
+        )
+        spend_err = np.asarray([c.predicted_spend / c.true_spend - 1 for c in self.cases])
+        big = [c for c in self.cases if abs(c.true_change) > material * c.true_base]
+        return {
+            "cases": len(self.cases),
+            "bias": round(float(rel.mean()), 3),
+            "mae": round(float(np.abs(rel).mean()), 3),
+            "change_mae": round(float(np.abs(change_err).mean()), 3),
+            "direction": (
+                round(float(np.mean([c.predicted_change * c.true_change > 0 for c in big])), 3)
+                if big
+                else None
+            ),
+            "coverage80": round(
+                float(
+                    np.mean([c.predicted_low <= c.truth <= c.predicted_high for c in self.cases])
+                ),
+                3,
+            ),
+            "change_coverage80": round(
+                float(
+                    np.mean([c.change_low <= c.true_change <= c.change_high for c in self.cases])
+                ),
+                3,
+            ),
+            "spend_mae": round(float(np.abs(spend_err).mean()), 3),
+        }
+
+
+def _true_daily(
+    params: ScenarioParams,
+    refs: set[str],
+    budgets: dict[str, float],
+    schedule: dict[str, list[float]],
+    first: int,
+    horizon: int,
+) -> tuple[float, float]:
+    """Mean daily expected conversions and spend of `refs` over the horizon, from the truth."""
+    sim = Simulator(params)
+    conversions = spend = 0.0
+    for index in range(first, first + horizon):
+        day_budgets = {
+            c.entity_ref: budgets.get(c.entity_ref, schedule[c.entity_ref][index])
+            for c in sim.active(index)
+        }
+        for outcome in sim.step(index, day_budgets):
+            if outcome.entity_ref in refs:
+                conversions += outcome.expected_conversions
+                spend += outcome.spend
+    return conversions / horizon, spend / horizon
+
+
+async def whatif_calibration(
+    params: ScenarioParams,
+    *,
+    cutoff: int,
+    vectors: int = 12,
+    horizon: int = 7,
+    seed: int = 0,
+    config: BanditConfig | None = None,
+    predictor: Predictor | None = None,
+) -> WhatIfCalibration:
+    """Forecast random budget scenarios on day `cutoff` and compare them with the truth.
+
+    The account runs its operator's schedule until `cutoff`; then each scenario's forecast (made
+    from the stored history, exactly as the `what_if_budgets` tool makes it) is compared with the
+    true expected conversions and spend over the next `horizon` days at those budgets, with the
+    same pacing draws for every scenario (common random numbers).
+    """
+    config = config or BanditConfig()
+    if cutoff + horizon > params.days:
+        raise ValueError("the horizon runs past the scenario")
+    store = Store()
+    run_scenario(store, replace(params, days=cutoff))
+    as_of = params.start + timedelta(days=cutoff)
+    fitted = await fit_account(store, predictor, as_of=as_of, config=config)
+    arms = fitted.eligible
+    if not any(fitted.curve(a) is not None for a in arms):
+        return WhatIfCalibration()
+    refs = {a.entity_ref for a in arms}
+    schedule = budget_schedule(Simulator(params))
+    now = {a.entity_ref: float(a.current_budget or 0.0) for a in arms}
+    base_conv, _ = _true_daily(params, refs, now, schedule, cutoff, horizon)
+    rng = np.random.default_rng([seed, 17])
+    scenarios: list[tuple[str, dict[str, float]]] = [
+        ("all +20%", {r: b * 1.2 for r, b in now.items()}),
+        ("all -20%", {r: b * 0.8 for r, b in now.items()}),
+    ]
+    capped = [a.entity_ref for a in arms if a.capped]
+    if capped:
+        scenarios.append(
+            ("capped +50%", {r: b * (1.5 if r in capped else 1.0) for r, b in now.items()})
+        )
+    for n in range(vectors):
+        factors = np.exp(rng.uniform(math.log(0.6), math.log(1.6), len(now)))
+        scenarios.append(
+            (
+                f"random {n}",
+                {r: b * float(f) for (r, b), f in zip(now.items(), factors, strict=True)},
+            )
+        )
+    result = WhatIfCalibration()
+    by_ref = {a.entity_ref: a for a in arms}
+    for label, budgets in scenarios:
+        keyed = {by_ref[r].key: b for r, b in budgets.items()}
+        predicted = forecast(fitted, keyed, seed=seed)
+        truth, true_spend = _true_daily(params, refs, budgets, schedule, cutoff, horizon)
+        rows = [c for c in predicted.campaigns if c.entity_ref in refs]
+        result.cases.append(
+            WhatIfCase(
+                label=label,
+                predicted_base=sum(c.conversions_now or 0.0 for c in rows),
+                predicted=sum(c.conversions or 0.0 for c in rows),
+                predicted_low=predicted.scenario.conversions.low,
+                predicted_high=predicted.scenario.conversions.high,
+                change_low=predicted.conversions_change.low,
+                change_high=predicted.conversions_change.high,
+                true_base=base_conv,
+                truth=truth,
+                predicted_spend=sum(c.spend for c in rows),
+                true_spend=true_spend,
+            )
+        )
+    return result

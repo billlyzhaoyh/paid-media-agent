@@ -14,7 +14,11 @@ platforms.
    `check_anomalies` judges recent days against their expected range; name the method it used.
    `recommend_budgets` suggests how to split one account's budget across its campaigns; it changes
    nothing, and applying a suggestion is a normal proposal. `check_pacing` answers "are we on
-   budget this month" and "are we hitting target".
+   budget this month" and "are we hitting target". `explain_change` answers "why did CPA (or
+   conversions, or ROAS) change": it splits the change into spend moving between campaigns and
+   each campaign's funnel rates, says what is noise, and what a campaign's own spend change
+   explains. `what_if_budgets` answers "what if I change these budgets": spend, conversions, and
+   CPA against today with ranges, and what campaigns cannot spend.
 4. Let deterministic tools compute metrics and reconciliation. Do not calculate from raw rows in prose.
 5. Read the relevant paid-media skill and wiki page (`/skills/paid-media-wiki`) before making a
    recommendation. The numeric goals (target CPA or ROAS, monthly budget) come from `list_accounts`

@@ -1193,6 +1193,93 @@ def bandit_simulate(
     )
 
 
+@bandit.command("whatif-eval")
+@click.option(
+    "--scenario",
+    type=click.Choice(["default", "constrained"]),
+    default="default",
+    show_default=True,
+)
+@click.option("--seeds", type=click.IntRange(1, 50), default=5, show_default=True)
+@click.option("--campaigns", type=click.IntRange(2, 30), default=6, show_default=True)
+@click.option("--cutoff", type=click.IntRange(35, 365), default=90, show_default=True)
+@click.option("--vectors", type=click.IntRange(1, 200), default=12, show_default=True)
+@click.option(
+    "--spend-model",
+    type=click.Choice(["ceiling", "linear"]),
+    default="ceiling",
+    show_default=True,
+)
+@click.option("--json", "as_json", is_flag=True)
+def bandit_whatif_eval(
+    scenario: str,
+    seeds: int,
+    campaigns: int,
+    cutoff: int,
+    vectors: int,
+    spend_model: str,
+    as_json: bool,
+) -> None:
+    """How close what-if forecasts come to the simulated truth, on random budget scenarios."""
+    from paid_media_agent.bandit.evaluate import whatif_calibration
+    from paid_media_agent.bandit.recommend import BanditConfig
+    from paid_media_agent.sim.simulator import ScenarioParams
+
+    preset: dict[str, Any] = (
+        {"ceiling_share": 0.5, "target_share": 0.5, "emit_signals": True}
+        if scenario == "constrained"
+        else {}
+    )
+
+    async def run() -> list[dict[str, Any]]:
+        rows = []
+        for seed in range(1, seeds + 1):
+            params = ScenarioParams(
+                scenario_id=f"whatif-{seed}",
+                seed=seed,
+                n_campaigns=campaigns,
+                days=cutoff + 7,
+                start=date(2026, 1, 5),
+                **preset,
+            )
+            cal = await whatif_calibration(
+                params,
+                cutoff=cutoff,
+                vectors=vectors,
+                seed=seed,
+                config=BanditConfig(spend_model=spend_model),  # type: ignore[arg-type]
+            )
+            rows.append({"seed": seed, **cal.summary()})
+        return rows
+
+    rows = asyncio.run(run())
+    keys = (
+        "bias",
+        "mae",
+        "change_mae",
+        "direction",
+        "coverage80",
+        "change_coverage80",
+        "spend_mae",
+    )
+    means = {
+        k: round(sum(float(r[k]) for r in rows if r.get(k) is not None) / len(rows), 3)
+        for k in keys
+    }
+    if as_json:
+        click.echo(json.dumps({"seeds": rows, "mean": means}, indent=2))
+        return
+    click.echo(f"what-if forecasts against the truth, {scenario} scenario, {spend_model} spend:")
+    click.echo("seed  " + "  ".join(f"{k:>17}" for k in keys))
+    for r in rows:
+        click.echo(f"{r['seed']:>4}  " + "  ".join(f"{str(r.get(k)):>17}" for k in keys))
+    click.echo("mean  " + "  ".join(f"{means[k]:>17}" for k in keys))
+    click.echo(
+        "mae: account conversions; change_mae: error in the change, as a share of today's "
+        "conversions; direction: share of material changes called the right way."
+    )
+
+
 @bandit.command("evaluate")
 @click.option("--seeds", type=click.IntRange(1, 50), default=3, show_default=True)
 @click.option("--campaigns", type=click.IntRange(2, 30), default=5, show_default=True)
@@ -1735,6 +1822,197 @@ def pacing(alias: str | None, as_json: bool) -> None:
         click.echo(f"{report['account_alias']}: {report['reading']}")
         for note in report["notes"]:
             click.echo(f"  note: {note}")
+
+
+def _span(value: str | None, name: str) -> tuple[date | None, date | None]:
+    if value is None:
+        return None, None
+    start, sep, end = value.partition(":")
+    if not sep:
+        raise click.BadParameter("use START:END (YYYY-MM-DD:YYYY-MM-DD)", param_hint=name)
+    return _day(start), _day(end)
+
+
+@main.command()
+@click.option("--alias", "aliases", multiple=True, help="Account alias. Repeatable; default all.")
+@click.option(
+    "--metric", type=click.Choice(["cpa", "conversions", "roas"]), default="cpa", show_default=True
+)
+@click.option("--current", default=None, help="START:END; default the newest 7 days of data.")
+@click.option("--previous", default=None, help="START:END; default the days just before.")
+@_PREDICTOR
+@click.option("--json", "as_json", is_flag=True)
+def explain(
+    aliases: tuple[str, ...],
+    metric: str,
+    current: str | None,
+    previous: str | None,
+    predictor: str | None,
+    as_json: bool,
+) -> None:
+    """Why CPA, conversions or ROAS changed: spend mix, funnel rates, diminishing returns."""
+    from paid_media_agent.analytics.drivers import explain_accounts
+    from paid_media_agent.bandit.live import live_config
+    from paid_media_agent.predict.factory import build_predictor
+    from paid_media_agent.store import StoreBusy
+
+    settings = Settings()
+    if predictor is not None:
+        settings = settings.model_copy(update={"paid_media_predictor": predictor})
+    current_start, current_end = _span(current, "--current")
+    previous_start, previous_end = _span(previous, "--previous")
+    windows = {
+        "current_start": current_start,
+        "current_end": current_end,
+        "previous_start": previous_start,
+        "previous_end": previous_end,
+    }
+    try:
+        runtime = _state_runtime(settings)
+    except StoreBusy:
+        query = "&".join(
+            [f"alias={a}" for a in aliases]
+            + [f"metric={metric}"]
+            + [f"{k}={v.isoformat()}" for k, v in windows.items() if v is not None]
+        )
+        reports = _server_request(settings, "GET", f"/explain?{query}")["reports"]
+    else:
+        try:
+            accounts = runtime.profile.accounts
+            for alias in aliases:
+                if accounts.resolve(alias) is None:
+                    raise click.BadParameter(f"unknown account alias {alias}", param_hint="--alias")
+            found = asyncio.run(
+                explain_accounts(
+                    runtime.store,
+                    accounts,
+                    list(aliases) or None,
+                    metric=metric,  # type: ignore[arg-type]
+                    predictor=build_predictor(settings, runtime.store),
+                    config=live_config(settings.paid_media_bandit_policy),
+                    **windows,
+                )
+            )
+            reports = [r.as_json() for r in found]
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from None
+        finally:
+            runtime.store.close()
+    if as_json:
+        click.echo(json.dumps({"reports": reports}, indent=2, default=str))
+        return
+    for report in reports:
+        click.echo(f"{', '.join(report['accounts'])}: {report['reading']}")
+        for driver in report["drivers"]:
+            click.echo(f"  {driver['reading']}")
+        for note in report["notes"]:
+            click.echo(f"  note: {note}")
+
+
+def _budget_value(value: str, name: str) -> tuple[float | None, float | None]:
+    """'+20%' or '-30%' is a relative change; a plain number is an amount."""
+    text = value.strip()
+    try:
+        if text.endswith("%"):
+            return None, float(text[:-1]) / 100
+        return float(text), None
+    except ValueError:
+        raise click.BadParameter(
+            f"{value} is not an amount or a percentage", param_hint=name
+        ) from None
+
+
+@main.command()
+@click.option("--alias", required=True, help="Account alias.")
+@click.option(
+    "--set",
+    "sets",
+    multiple=True,
+    help="CAMPAIGN=150 (new daily budget) or CAMPAIGN=+20% (relative). Repeatable.",
+)
+@click.option("--total", default=None, help="New account total: 1500 a day, or +10%.")
+@click.option("--split", type=click.Choice(["proportional", "best"]), default="proportional")
+@click.option("--days", "horizon", type=click.IntRange(1, 92), default=7, show_default=True)
+@_PREDICTOR
+@click.option("--json", "as_json", is_flag=True)
+def whatif(
+    alias: str,
+    sets: tuple[str, ...],
+    total: str | None,
+    split: str,
+    horizon: int,
+    predictor: str | None,
+    as_json: bool,
+) -> None:
+    """Forecast spend, conversions and CPA for different daily budgets; nothing changes."""
+    from paid_media_agent.bandit.live import live_config
+    from paid_media_agent.bandit.whatif import what_if_account
+    from paid_media_agent.predict.factory import build_predictor
+    from paid_media_agent.store import StoreBusy
+    from paid_media_agent.tools.whatif import CampaignBudgetChange, WhatIfBudgetsArgs
+
+    settings = Settings()
+    if predictor is not None:
+        settings = settings.model_copy(update={"paid_media_predictor": predictor})
+    changes = []
+    for item in sets:
+        campaign, sep, value = item.partition("=")
+        if not sep or not campaign:
+            raise click.BadParameter("use CAMPAIGN=AMOUNT or CAMPAIGN=+N%", param_hint="--set")
+        budget, change = _budget_value(value, "--set")
+        changes.append(
+            CampaignBudgetChange(campaign=campaign.strip(), budget=budget, change=change)
+        )
+    total_budget, total_change = _budget_value(total, "--total") if total else (None, None)
+    try:
+        args = WhatIfBudgetsArgs(
+            account_alias=alias,
+            changes=changes or None,
+            total_daily_budget=total_budget,
+            total_change=total_change,
+            split=split,
+            horizon_days=horizon,
+        )
+    except ValueError as exc:
+        raise click.ClickException(sanitize_exception(exc)) from None
+    try:
+        runtime = _state_runtime(settings)
+    except StoreBusy:
+        result = _server_request(settings, "POST", "/what-if", args.model_dump(mode="json"))
+    else:
+        try:
+            if runtime.profile.accounts.resolve(alias) is None:
+                raise click.BadParameter(f"unknown account alias {alias}", param_hint="--alias")
+            report = asyncio.run(
+                what_if_account(
+                    runtime.store,
+                    runtime.profile.accounts,
+                    build_predictor(settings, runtime.store),
+                    alias,
+                    args.scenario(),
+                    config=live_config(settings.paid_media_bandit_policy),
+                )
+            )
+            result = report.as_json()
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from None
+        finally:
+            runtime.store.close()
+    if as_json:
+        click.echo(json.dumps(result, indent=2, default=str))
+        return
+    click.echo(f"{alias}: {result['reading']}")
+    for row in result["campaigns"]:
+        if abs((row["budget"] or 0) - (row["budget_now"] or 0)) < 0.01 and not row["notes"]:
+            continue
+        moved: dict[str, float] = row["conversions_change"] or {}
+        click.echo(
+            f"  {row['campaign']}: budget {row['budget_now']:.2f} -> {row['budget']:.2f}, "
+            f"conversions {moved.get('mean', 0):+.2f} a day"
+            + ("".join(f"; {n}" for n in row["notes"]))
+        )
+    for note in result["notes"]:
+        click.echo(f"  note: {note}")
 
 
 @main.group()

@@ -12,6 +12,7 @@ from paid_media_agent.reports.bridge import ArtifactBridge, BridgeError
 from paid_media_agent.scheduler import JobBusy, Scheduler, UnknownJob
 from paid_media_agent.surfaces.api.views import outcome_view
 from paid_media_agent.surfaces.runner import AgentRunner, RunOutcome, ThreadAccessDenied
+from paid_media_agent.tools.whatif import WhatIfBudgetsArgs
 from paid_media_agent.tools.writes import WriteDenied
 
 
@@ -51,7 +52,7 @@ def resolve_caller(token_map: dict[str, str], authorization: str | None) -> str 
 
 
 def create_app(runtime: Any, *, scheduler: Scheduler | None = None) -> Any:
-    from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+    from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 
     settings = runtime.settings
     token_map = settings.api_token_map()
@@ -203,6 +204,62 @@ def create_app(runtime: Any, *, scheduler: Scheduler | None = None) -> Any:
                 account_pacing(runtime.profile.store, accounts, a).as_json() for a in aliases
             ]
         }
+
+    @app.get("/explain", dependencies=[Depends(caller)])
+    async def explain_change(
+        alias: list[str] | None = Query(default=None),
+        metric: Literal["cpa", "conversions", "roas"] = "cpa",
+        current_start: date | None = None,
+        current_end: date | None = None,
+        previous_start: date | None = None,
+        previous_end: date | None = None,
+    ) -> dict[str, Any]:
+        """Why a KPI changed between two windows, from stored history."""
+        from paid_media_agent.analytics.drivers import explain_accounts
+        from paid_media_agent.bandit.live import live_config
+        from paid_media_agent.predict.factory import build_predictor
+
+        accounts = runtime.profile.accounts
+        if any(accounts.resolve(a) is None for a in alias or []):
+            raise HTTPException(status_code=404, detail="unknown account alias")
+        try:
+            reports = await explain_accounts(
+                runtime.profile.store,
+                accounts,
+                alias,
+                metric=metric,
+                predictor=build_predictor(settings, runtime.profile.store),
+                config=live_config(settings.paid_media_bandit_policy),
+                current_start=current_start,
+                current_end=current_end,
+                previous_start=previous_start,
+                previous_end=previous_end,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        return {"reports": [r.as_json() for r in reports]}
+
+    @app.post("/what-if", dependencies=[Depends(caller)])
+    async def what_if(body: WhatIfBudgetsArgs) -> dict[str, Any]:
+        """Forecast a budget scenario for one account; nothing changes."""
+        from paid_media_agent.bandit.live import live_config
+        from paid_media_agent.bandit.whatif import what_if_account
+        from paid_media_agent.predict.factory import build_predictor
+
+        if runtime.profile.accounts.resolve(body.account_alias) is None:
+            raise HTTPException(status_code=404, detail="unknown account alias")
+        try:
+            report = await what_if_account(
+                runtime.profile.store,
+                runtime.profile.accounts,
+                build_predictor(settings, runtime.profile.store),
+                body.account_alias,
+                body.scenario(),
+                config=live_config(settings.paid_media_bandit_policy),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        return report.as_json()
 
     @app.get("/proposals")
     def list_proposals(

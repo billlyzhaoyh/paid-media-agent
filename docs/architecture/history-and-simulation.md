@@ -96,6 +96,39 @@ rejected on this backtest (on the earlier simulator): dropping training days mor
 expectation (TabPFN precision 0.35 to 0.28, false alarms 18 to 26) and dropping days earlier
 checks flagged (the band narrows with each check and false alarms grow). Neither improved recall.
 
+## Explaining a change
+
+`analytics/drivers.py` (`explain_change`, `paid-media-agent explain`, `GET /explain`) explains why
+CPA, conversions, or ROAS changed between two windows, from `entity_daily_latest`. It works per
+campaign, with conversions lag-corrected as pacing corrects them.
+
+- **Identity.** Conversions per unit of spend is `E = sum_i w_i * e_i`, where `w_i` is the
+  campaign's share of spend and `e_i = 1000 * CTR * CVR / CPM`. CPA is `1/E`, conversions `S * E`,
+  and ROAS multiplies each `e_i` by value per conversion.
+- **Exact split.** For campaigns that spent in both windows, the logarithmic mean Divisia index
+  (LMDI-I, Ang 2004 and 2015) splits `ln(E1/E0)` into spend mix and each funnel rate, with no
+  residual. A campaign that spent in only one window moves the aggregate away from the continuing
+  campaigns' rate. Its share is `(its conversions - E_both x its spend) / (S x L(E, E_both))`,
+  also exact. A factor that goes to zero takes its campaign's whole contribution (Ang & Liu
+  2007). The log shares are scaled to percentage points of the headline change, so they add up to
+  it exactly.
+- **Noise.** The headline and each campaign's conversion-rate, click-through, and impression-cost
+  moves are tested against Poisson noise on the reported counts (two-sided, 95%). A headline within
+  noise can still hide one campaign whose rate moved by more; the reading says so.
+- **Curve check.** For campaigns whose daily spend moved by 10% or more, the fitted response curve
+  (`bandit/fit.py`) gives the change in conversions per unit of spend expected from the spend
+  change alone. That part is diminishing returns, not a new problem.
+- **Context.** Each campaign carries what limits its spend. Settings changes seen in the windows
+  (budget, status, bid strategy, targets) are listed.
+- **Scope.** Accounts sharing a currency are explained together; mixed currencies give one report
+  per account.
+
+The simulator can plant causes to check this: `ScenarioParams.events` holds `SimEvent`s that
+change a campaign's CPM, CTR, or conversion rate from a given day. The default (none) leaves every
+scenario unchanged. `tests/unit/test_sim_events.py` checks that each planted cause is named on the
+right campaign and funnel step. It also checks that a budget increase shows as spend mix plus a
+rate change its curve expects, and that a quiet account is mostly called noise.
+
 ## Scheduling
 
 `scheduler.py` runs inside `serve`, which owns the state file. `PAID_MEDIA_JOBS` selects the
