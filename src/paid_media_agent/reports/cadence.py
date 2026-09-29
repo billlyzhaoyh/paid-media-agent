@@ -12,6 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from paid_media_agent.analytics.goals import GoalLookup
 from paid_media_agent.analytics.sync import MAX_PAGES
 from paid_media_agent.config import AccountRegistry
 from paid_media_agent.domain.analysis import PeriodComparison
@@ -74,6 +75,7 @@ async def run_cadence_report(
     title: str | None = None,
     executive_summary: str | None = None,
     render: bool = True,
+    goals: GoalLookup | None = None,
 ) -> ReportRun:
     """Read every alias's campaign performance, compare the two windows, and render.
 
@@ -142,6 +144,7 @@ async def run_cadence_report(
             previous_end=windows.previous.end,
             unavailable_sources=unavailable,
         ),
+        goals=goals,
     )
     analysis_id = str(summary["artifact_id"])
     report_payload: dict[str, JsonValue] | None = None

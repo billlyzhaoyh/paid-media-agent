@@ -10,8 +10,9 @@ Ask Codex, Claude Code, Cursor, or another coding agent:
 > Read .agents/skills/paid-media-org-onboarding/SKILL.md and help me configure this agent for my
 > business. Use the briefs I share, ask only for missing facts, and update the runtime workspace.
 
-The coding agent writes `workspace/skills/company-context/`. To do this manually, create that
-folder and add a `SKILL.md`:
+The coding agent writes `workspace/skills/company-context/`. To do this manually, run
+`uv run paid-media-agent context init`, which creates `SKILL.md` from this template, or create it
+yourself:
 
 ```markdown
 ---
@@ -31,7 +32,8 @@ Primary conversions, attribution windows, reporting timezone, and currency.
 
 ## Goals
 
-Our CPA or ROAS targets and budget. Mark targets as unknown when none are defined.
+What the numeric goals mean for the business (the numbers themselves are set with
+`paid-media-agent goals set`). Mark anything undecided as unknown.
 
 ## Conventions
 
@@ -41,6 +43,17 @@ Campaign naming, funnel stages, and planned launches or seasonal changes.
 
 Links and dates for the briefs or decisions behind these facts.
 ```
+
+Numeric goals live in the state file, per account and dated, so pacing and past decisions are
+judged against the goal that applied then:
+
+```bash
+uv run paid-media-agent goals set --alias demo-google --target-cpa 30 --monthly-budget 25000
+uv run paid-media-agent goals show
+```
+
+The setup console has the same fields under Accounts. The agent reads them and can propose a
+change, which applies only after approval.
 
 Replace the guidance with your own facts. Keep the entry short and link to Markdown pages beside
 it when a topic needs detail. The Markdown is the source of truth; there is no profile format,

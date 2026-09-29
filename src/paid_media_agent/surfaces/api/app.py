@@ -1,7 +1,8 @@
 """Small authenticated API: threads, proposals, receipts, artifacts, jobs, health."""
 
 import hmac
-from typing import Any
+from datetime import date
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -24,6 +25,18 @@ class EditIn(BaseModel):
 
 class RejectIn(BaseModel):
     message: str = Field(default="", max_length=500)
+
+
+class GoalsIn(BaseModel):
+    account_alias: str
+    target_cpa: float | None = Field(default=None, gt=0)
+    target_roas: float | None = Field(default=None, gt=0)
+    monthly_budget: float | None = Field(default=None, gt=0)
+    clear: list[Literal["target_cpa", "target_roas", "monthly_budget"]] = Field(
+        default_factory=list
+    )
+    effective_from: date | None = None
+    notes: str | None = Field(default=None, max_length=2000)
 
 
 def resolve_caller(token_map: dict[str, str], authorization: str | None) -> str | None:
@@ -129,6 +142,67 @@ def create_app(runtime: Any, *, scheduler: Scheduler | None = None) -> Any:
                 status_code=403, detail="thread belongs to another caller"
             ) from None
         return _outcome(outcome)
+
+    @app.get("/goals", dependencies=[Depends(caller)])
+    def list_goals(alias: str | None = None) -> dict[str, Any]:
+        """Each account's goal in force today (its own timezone) and every version."""
+        from paid_media_agent.analytics.goals import GoalStore, account_today
+
+        accounts = runtime.profile.accounts
+        aliases = [alias] if alias else list(accounts.aliases())
+        if alias and accounts.resolve(alias) is None:
+            raise HTTPException(status_code=404, detail="unknown account alias")
+        goals = GoalStore(runtime.profile.store)
+
+        def listing(a: str) -> dict[str, Any]:
+            current = goals.current(a, account_today(accounts, a))
+            return {
+                "account_alias": a,
+                "current": current.as_json() if current else None,
+                "history": [v.as_json() for v in goals.history(a)],
+            }
+
+        return {"goals": [listing(a) for a in aliases]}
+
+    @app.post("/goals")
+    def set_goals(body: GoalsIn, who: str = Depends(caller)) -> dict[str, Any]:
+        """Set an account's goals directly; approvers only (the agent proposes instead)."""
+        from paid_media_agent.analytics.goals import GoalError, update_goals
+
+        if who not in runtime.profile.approval_policy.approver_refs:
+            raise HTTPException(status_code=403, detail="only approvers can set goals")
+        try:
+            goal = update_goals(
+                runtime.profile.store,
+                runtime.profile.accounts,
+                body.account_alias,
+                values={
+                    "target_cpa": body.target_cpa,
+                    "target_roas": body.target_roas,
+                    "monthly_budget": body.monthly_budget,
+                },
+                clear=body.clear,
+                effective_from=body.effective_from,
+                source=f"api:{who}",
+                **({"notes": body.notes} if body.notes is not None else {}),
+            )
+        except GoalError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        return {"goal": goal.as_json()}
+
+    @app.get("/pacing", dependencies=[Depends(caller)])
+    def pacing(alias: str | None = None) -> dict[str, Any]:
+        from paid_media_agent.analytics.pacing import account_pacing
+
+        accounts = runtime.profile.accounts
+        if alias and accounts.resolve(alias) is None:
+            raise HTTPException(status_code=404, detail="unknown account alias")
+        aliases = [alias] if alias else list(accounts.aliases())
+        return {
+            "accounts": [
+                account_pacing(runtime.profile.store, accounts, a).as_json() for a in aliases
+            ]
+        }
 
     @app.get("/proposals")
     def list_proposals(

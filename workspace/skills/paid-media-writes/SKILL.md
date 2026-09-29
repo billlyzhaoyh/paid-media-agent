@@ -41,5 +41,10 @@ recommended value and put the recommendation's run id in the reason; everything 
 Proposals from the budget bandit itself (requester `bandit`) are reviewed by an approver outside
 the conversation; do not re-propose them.
 
+To change an account's goals when the user asks (for example "set our target CPA to 40"), propose
+`host__set_account_goals` with the account alias as `target_ref` and only the fields that change
+(`target_cpa`, `target_roas`, `monthly_budget`; null clears one). It is approved and verified like
+any change and takes effect from today in the account's timezone. It never touches a platform.
+
 Never call a provider mutation directly, reveal raw ids or credentials, or suggest that a prompt can
 bypass the approval policy.

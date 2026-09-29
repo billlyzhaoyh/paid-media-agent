@@ -332,3 +332,78 @@ async def test_a_global_curve_that_is_not_concave_is_dropped(account: Store) -> 
     run = await recommend(account, _ConvexModel(), as_of=AS_OF, record=False, seed=5)
     assert any("outside 0 to 1, for" in n and "their own history only" in n for n in run.notes)
     assert all(d.posterior.n_pseudo == 0 for d in run.decisions if d.posterior is not None)
+
+
+async def test_a_target_cpa_cuts_the_total_until_the_expected_cpa_meets_it(account: Store) -> None:
+    greedy = BanditConfig(policy="greedy")
+    free = await recommend(account, None, as_of=AS_OF, config=greedy, mode="simulate", seed=5)
+    assert free.expected_cpa is not None and free.target_cpa_reached is None
+    assert not free.capped_by_target_cpa and free.total_source == "current"
+
+    generous = await recommend(
+        account,
+        None,
+        as_of=AS_OF,
+        config=BanditConfig(policy="greedy", target_cpa=free.expected_cpa * 2),
+        mode="simulate",
+        seed=5,
+    )
+    assert generous.budgets == free.budgets and generous.target_cpa_reached is True
+
+    impossible = await recommend(
+        account,
+        None,
+        as_of=AS_OF,
+        config=BanditConfig(policy="greedy", target_cpa=0.01),
+        mode="simulate",
+        seed=5,
+    )
+    assert impossible.capped_by_target_cpa and impossible.target_cpa_reached is False
+    movable = [d for d in impossible.decisions if d.lower != d.upper and d.arm.eligible]
+    assert all(d.final_budget == pytest.approx(d.lower) for d in movable)
+    floor_cpa = impossible.expected_cpa
+    assert floor_cpa is not None and floor_cpa < free.expected_cpa
+
+    target = (free.expected_cpa + floor_cpa) / 2  # reachable inside the step limits
+    capped = await recommend(
+        account,
+        None,
+        as_of=AS_OF,
+        config=BanditConfig(policy="greedy", target_cpa=target),
+        mode="simulate",
+        seed=5,
+    )
+    assert capped.capped_by_target_cpa and capped.target_cpa_reached
+    assert impossible.total_budget < capped.total_budget < free.total_budget
+    assert capped.expected_cpa == pytest.approx(target, rel=1e-3)
+    assert any("target_cpa" in d.constrained_by for d in capped.decisions)
+    assert any("cut by" in note for note in capped.notes)
+
+
+async def test_a_monthly_budget_scales_the_current_total(account: Store) -> None:
+    base = await recommend(
+        account, None, as_of=AS_OF, config=BanditConfig(policy="greedy"), mode="simulate", seed=6
+    )
+    scaled = await recommend(
+        account,
+        None,
+        as_of=AS_OF,
+        config=BanditConfig(policy="greedy"),
+        mode="simulate",
+        seed=6,
+        budget_scale=0.9,
+    )
+    assert scaled.total_source == "monthly_budget"
+    assert scaled.total_budget == pytest.approx(base.total_budget * 0.9)
+    assert sum(scaled.budgets.values()) <= sum(base.budgets.values())
+    explicit = await recommend(
+        account,
+        None,
+        as_of=AS_OF,
+        config=BanditConfig(policy="greedy"),
+        total_budget=base.total_budget,
+        mode="simulate",
+        seed=6,
+        budget_scale=0.5,
+    )
+    assert explicit.total_source == "explicit", "an explicit total wins over the monthly scale"

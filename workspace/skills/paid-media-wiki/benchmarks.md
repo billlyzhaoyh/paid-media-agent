@@ -26,7 +26,8 @@ strategies, and attribution settings, and they age quickly.
 
 ## When the user asks "is this good"
 
-1. State the configured goal if one exists. If none, say so.
+1. State the configured goal if one exists (`list_accounts`; `against_goals` and `check_pacing`
+   already judge against it). If none, say so and call the read directional.
 2. Give the entity's own trend over an equal prior window.
 3. Give the platform's account-level figure for the same window as a within-account comparison.
 4. Only then, optionally, an external range with its caveat.

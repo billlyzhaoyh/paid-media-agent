@@ -46,6 +46,9 @@ Add `--help` for options and `--json` where supported for machine-readable outpu
 | `uv run paid-media-agent simulate --days 180` | Simulate campaigns with known response curves into their own file |
 | `uv run paid-media-agent anomalies --days 7` | Flag recent campaign-days outside their expected range |
 | `uv run paid-media-agent allocate --alias demo-google` | Recommend how to split an account's daily budget; `--propose` creates proposals |
+| `uv run paid-media-agent goals set --alias demo-google --target-cpa 30` | Set an account's target CPA/ROAS or monthly budget |
+| `uv run paid-media-agent pacing` | Month-to-date spend against the monthly budget, and CPA/ROAS against target |
+| `uv run paid-media-agent context init` | Create the company-context skill from its template |
 | `uv run paid-media-agent proposals list` | Proposals awaiting approval, including the budget bandit's |
 | `uv run paid-media-agent proposals approve ID` | Approve one through the running API; it is applied once and read back |
 | `uv run paid-media-agent bandit simulate` | Let the budget bandit run a simulated account and compare it with the truth |
@@ -165,6 +168,33 @@ falls back to the day-over-day rule and says so. `predictor_calls` in the state 
 call. `PAID_MEDIA_ANOMALY_BAND` (default 0.95, or `--band` on the command) sets how much of normal
 variation the expected range covers: 0.8 catches more at the cost of more false alarms.
 
+## Goals and pacing
+
+Each account can have a target CPA or target ROAS and a monthly budget, in its own currency:
+
+```bash
+uv run paid-media-agent goals set --alias demo-google --target-cpa 30 --monthly-budget 25000
+uv run paid-media-agent goals show
+uv run paid-media-agent pacing
+```
+
+- **Versioned by date.** A set applies from today in the account's timezone (or `--from`), and
+  unchanged goals carry over. `--clear FIELD` removes one. `history --view goals` lists every
+  version and who set it: `cli`, `console`, `api:<caller>`, or `proposal`.
+- **Where they're used.**
+  - `list_accounts` shows them to the agent.
+  - `compare_periods` and `summarize_window` add `against_goals` readings.
+  - `pacing` / `check_pacing` compare month-to-date spend with the monthly budget and project the
+    month end.
+  - `allocate` cuts its total when the expected CPA would exceed the target. Without `--total`,
+    it follows the monthly pacing.
+- **Who changes them.** You change them directly: the CLI, the setup console (Accounts → Goals),
+  or `POST /goals` for approvers. With `serve` running, the CLI goes through its API. The agent
+  can only propose a change (`host__set_account_goals`), which an approver approves like any
+  other change.
+- **Business context.** `uv run paid-media-agent context init` creates the `company-context`
+  skill for the prose around the goals.
+
 ## Budget allocation
 
 The budget bandit splits each account's total daily budget across its campaigns to maximise
@@ -186,6 +216,10 @@ changed in the last 7 days is held.
   not appear as Slack cards.
 - **Outcomes.** `history --view outcomes` shows whether each recommendation was followed and how
   many conversions its week brought against what was expected, from matured days only.
+- **Goals.** With a target CPA, the total is cut when the model expects the account's average CPA
+  to exceed it (the output says whether the step limits let it get there). With a monthly budget
+  and no `--total`, the total is today's budgets scaled toward the daily spend that lands on the
+  budget. Each run records its `total_source`.
 - **Policy.** `PAID_MEDIA_BANDIT_POLICY` is `thompson` (explores within guardrails, the default) or
   `greedy`.
 

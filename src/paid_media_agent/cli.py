@@ -17,6 +17,7 @@ from typing import Any
 import click
 
 from paid_media_agent.admin import actions
+from paid_media_agent.analytics.history import HISTORY_VIEWS
 from paid_media_agent.config import Settings, project_root
 from paid_media_agent.domain.common import Platform
 from paid_media_agent.redaction import sanitize_exception
@@ -861,7 +862,7 @@ def _cell(value: Any) -> str:
 @main.command()
 @click.option(
     "--view",
-    type=click.Choice(["coverage", "daily", "settings", "changes", "lag", "outcomes"]),
+    type=click.Choice(list(HISTORY_VIEWS)),
     default="coverage",
     show_default=True,
 )
@@ -1390,7 +1391,7 @@ def allocate(
                 runtime.store,
                 build_predictor(settings, runtime.store),
                 aliases=aliases,
-                as_of=date.today(),
+                accounts=runtime.profile.accounts,
                 config=live_config(policy or settings.paid_media_bandit_policy),  # type: ignore[arg-type]
                 total_budget=total,
                 service=runtime.components.proposal_service,
@@ -1414,6 +1415,21 @@ def allocate(
             + f" a day, {run['policy']}, global model {run['prior_source']}"
             + (", LAST GOOD CURVES (data checks failed)" if run["fallback_used"] else "")
         )
+        if run.get("expected_cpa") is not None:
+            goal_cpa = (run.get("goals") or {}).get("target_cpa")
+            click.echo(
+                f"  expected CPA {run['expected_cpa']:.2f}"
+                + (f" against a {goal_cpa:.2f} target" if goal_cpa else "")
+                + (
+                    (
+                        " (total cut to meet it)"
+                        if run.get("target_cpa_reached")
+                        else " (total cut as far as the step limits allow; not reached)"
+                    )
+                    if run.get("capped_by_target_cpa")
+                    else ""
+                )
+            )
         for row in run["decisions"]:
             click.echo(f"  {budget_reading(row, currency)}")
         for note in run["notes"]:
@@ -1500,6 +1516,189 @@ def proposals_reject(proposal_id: str, message: str) -> None:
         settings, "POST", f"/proposals/{proposal_id}/reject", {"message": message}
     )
     click.echo(outcome.get("text") or "Rejected.")
+
+
+# ---------------------------------------------------------------- goals and pacing
+
+
+def _goal_line(goal: dict[str, Any] | None) -> str:
+    if not goal:
+        return "no goals set"
+    parts = [
+        f"{label} {goal[key]:,.2f}"
+        for key, label in (
+            ("target_cpa", "target CPA"),
+            ("target_roas", "target ROAS"),
+            ("monthly_budget", "monthly budget"),
+        )
+        if goal.get(key) is not None
+    ]
+    return (", ".join(parts) or "all goals cleared") + f" (from {goal['effective_from']})"
+
+
+@main.group()
+def goals() -> None:
+    """Each account's target CPA or ROAS and monthly budget, versioned by date."""
+
+
+@goals.command("set")
+@click.option("--alias", required=True, help="Account alias.")
+@click.option("--target-cpa", type=click.FloatRange(min=0, min_open=True), default=None)
+@click.option("--target-roas", type=click.FloatRange(min=0, min_open=True), default=None)
+@click.option(
+    "--monthly-budget",
+    type=click.FloatRange(min=0, min_open=True),
+    default=None,
+    help="In the account's currency, per calendar month.",
+)
+@click.option(
+    "--clear",
+    multiple=True,
+    type=click.Choice(["target_cpa", "target_roas", "monthly_budget"]),
+    help="Remove a goal. Repeatable.",
+)
+@click.option("--from", "from_date", default=None, help="First day it applies. Default: today.")
+@click.option("--notes", default=None, help="Why, for the record.")
+def goals_set(
+    alias: str,
+    target_cpa: float | None,
+    target_roas: float | None,
+    monthly_budget: float | None,
+    clear: tuple[str, ...],
+    from_date: str | None,
+    notes: str | None,
+) -> None:
+    """Set goals directly. Unchanged goals carry over; the agent can only propose changes."""
+    from paid_media_agent.analytics.goals import GoalError, update_goals
+    from paid_media_agent.store import StoreBusy
+
+    settings = Settings()
+    body: dict[str, Any] = {
+        "account_alias": alias,
+        "target_cpa": target_cpa,
+        "target_roas": target_roas,
+        "monthly_budget": monthly_budget,
+        "clear": list(clear),
+        "effective_from": from_date,
+        "notes": notes,
+    }
+    try:
+        runtime = _state_runtime(settings)
+    except StoreBusy:
+        goal = _server_request(settings, "POST", "/goals", body)["goal"]
+    else:
+        try:
+            goal = update_goals(
+                runtime.store,
+                runtime.profile.accounts,
+                alias,
+                values={k: body[k] for k in ("target_cpa", "target_roas", "monthly_budget")},
+                clear=clear,
+                effective_from=_day(from_date),
+                source="cli",
+                **({"notes": notes} if notes is not None else {}),
+            ).as_json()
+        except GoalError as exc:
+            raise click.ClickException(str(exc)) from None
+        finally:
+            runtime.store.close()
+    click.echo(f"{alias}: {_goal_line(goal)}.")
+
+
+@goals.command("show")
+@click.option("--alias", default=None, help="Account alias; default every account.")
+@click.option("--json", "as_json", is_flag=True)
+def goals_show(alias: str | None, as_json: bool) -> None:
+    """The goals in force today, per account, and their history."""
+    from paid_media_agent.analytics.goals import GoalStore, account_today
+    from paid_media_agent.store import StoreBusy
+
+    settings = Settings()
+    try:
+        runtime = _state_runtime(settings)
+    except StoreBusy:
+        query = f"?alias={alias}" if alias else ""
+        listed = _server_request(settings, "GET", f"/goals{query}")["goals"]
+    else:
+        try:
+            accounts = runtime.profile.accounts
+            if alias and accounts.resolve(alias) is None:
+                raise click.BadParameter(f"unknown account alias {alias}", param_hint="--alias")
+            store = GoalStore(runtime.store)
+            listed = []
+            for a in [alias] if alias else list(accounts.aliases()):
+                current = store.current(a, account_today(accounts, a))
+                listed.append(
+                    {
+                        "account_alias": a,
+                        "current": current.as_json() if current else None,
+                        "history": [g.as_json() for g in store.history(a)],
+                    }
+                )
+        finally:
+            runtime.store.close()
+    if as_json:
+        click.echo(json.dumps({"goals": listed}, indent=2, default=str))
+        return
+    for entry in listed:
+        click.echo(f"{entry['account_alias']}: {_goal_line(entry['current'])}")
+
+
+@main.command()
+@click.option("--alias", default=None, help="Account alias; default every account.")
+@click.option("--json", "as_json", is_flag=True)
+def pacing(alias: str | None, as_json: bool) -> None:
+    """Month-to-date spend against the monthly budget, and CPA/ROAS against targets."""
+    from paid_media_agent.analytics.pacing import account_pacing
+    from paid_media_agent.store import StoreBusy
+
+    settings = Settings()
+    try:
+        runtime = _state_runtime(settings)
+    except StoreBusy:
+        query = f"?alias={alias}" if alias else ""
+        reports = _server_request(settings, "GET", f"/pacing{query}")["accounts"]
+    else:
+        try:
+            accounts = runtime.profile.accounts
+            if alias and accounts.resolve(alias) is None:
+                raise click.BadParameter(f"unknown account alias {alias}", param_hint="--alias")
+            reports = [
+                account_pacing(runtime.store, accounts, a).as_json()
+                for a in ([alias] if alias else accounts.aliases())
+            ]
+        finally:
+            runtime.store.close()
+    if as_json:
+        click.echo(json.dumps({"accounts": reports}, indent=2, default=str))
+        return
+    for report in reports:
+        click.echo(f"{report['account_alias']}: {report['reading']}")
+        for note in report["notes"]:
+            click.echo(f"  note: {note}")
+
+
+@main.group()
+def context() -> None:
+    """The company-context runtime skill: business facts the agent reads."""
+
+
+@context.command("init")
+def context_init() -> None:
+    """Create workspace/skills/company-context/SKILL.md from the template; never overwrites."""
+    from paid_media_agent.admin.company_context import init_company_context
+
+    settings = Settings()
+    workspace = settings.paid_media_workspace_root
+    if not workspace.is_absolute():
+        workspace = project_root() / workspace
+    path, created = init_company_context(workspace)
+    if created:
+        click.echo(
+            f"Created {path}. Replace the guidance with your facts; set numbers with `goals set`."
+        )
+    else:
+        click.echo(f"{path} already exists; left unchanged.")
 
 
 # ---------------------------------------------------------------- self-hosted runtime

@@ -902,8 +902,34 @@
         el("tbody", {}, current.map((a) => el("tr", {}, [el("td", { class: "mono", text: a.alias }), el("td", { text: a.platform }), el("td", { class: "mono", text: a.provider_account_id_masked }), el("td", { text: a.currency }), el("td", { text: a.timezone }),
           el("td", {}, el("button", { class: "btn btn-ghost btn-compact", type: "button", text: "Remove", onclick: async (ev) => withBusy(ev.currentTarget, async () => { showResult(node, await api(`/api/accounts/${encodeURIComponent(a.alias)}`, { method: "DELETE" })); await loadStatus(); }) }))]))),
       ])]));
+      const goalsBox = el("div", { class: "table-scroll", tabindex: "0", role: "region", "aria-label": "Goals" });
+      wrap.append(el("div", { class: "section-title", text: "Goals" }), el("p", { class: "form-note", text: "Target CPA or ROAS and the monthly budget, in each account's currency. The agent reads them and can only propose changes. A blank field clears that goal." }), goalsBox);
+      loadGoals(goalsBox, node);
     }
     return wrap;
+  }
+  const GOAL_FIELDS = [["target_cpa", "Target CPA"], ["target_roas", "Target ROAS"], ["monthly_budget", "Monthly budget"]];
+  async function loadGoals(box, node) {
+    const result = await api("/api/goals").catch((error) => ({ ok: false, status: "fail", summary: error.message, detail: {} }));
+    if (!result.ok) { box.replaceChildren(el("p", { class: "form-note", text: result.summary })); return; }
+    box.replaceChildren(el("table", { class: "data" }, [
+      el("thead", {}, el("tr", {}, ["Alias", ...GOAL_FIELDS.map(([, label]) => label), "From", ""].map((h) => el("th", { text: h })))),
+      el("tbody", {}, result.detail.goals.map((row) => {
+        const current = row.current || {};
+        const inputs = GOAL_FIELDS.map(([key]) => el("input", { class: "input", type: "number", min: "0", step: "any", value: current[key] ?? "", "aria-label": `${row.account_alias} ${key}` }));
+        const save = el("button", { class: "btn btn-primary btn-compact", type: "button", text: "Save" });
+        save.addEventListener("click", () => withBusy(save, async () => {
+          const body = { alias: row.account_alias, clear: [] };
+          GOAL_FIELDS.forEach(([key], i) => {
+            const text = inputs[i].value.trim();
+            if (text) body[key] = Number(text); else if (current[key] != null) body.clear.push(key);
+          });
+          showResult(node, await api("/api/goals", { method: "POST", body }));
+          await loadGoals(box, node);
+        }));
+        return el("tr", {}, [el("td", { class: "mono", text: row.account_alias }), ...inputs.map((i) => el("td", {}, i)), el("td", { text: current.effective_from || "-" }), el("td", {}, save)]);
+      })),
+    ]));
   }
   function renderAccountTable(rows, node) {
     if (!rows.length) return el("p", { class: "form-note", text: "No accounts found. Connect Pipeboard or add direct platform credentials first." });

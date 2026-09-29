@@ -28,7 +28,7 @@ from typing import Any, Literal
 
 import numpy as np
 
-from paid_media_agent.bandit.allocate import allocate
+from paid_media_agent.bandit.allocate import Allocation, allocate
 from paid_media_agent.bandit.arms import Arm, DataChecks, check_data, load_arms
 from paid_media_agent.bandit.policy import GUARD_Z, draw_thompson, greedy
 from paid_media_agent.bandit.posterior import (
@@ -64,6 +64,9 @@ class BanditConfig:
     max_budget: float | None = None
     max_cpia: float | None = None
     """Stop a campaign where its next conversion would cost more than this (currency)."""
+    target_cpa: float | None = None
+    """The account's target average CPA (currency). When the model expects the split to cost more
+    per conversion than this, the total is cut until it does not."""
     prior_kappa2: float = PRIOR_KAPPA2
     ladder_z: float = LADDER_Z
     guard_z: float = GUARD_Z
@@ -140,6 +143,13 @@ class BanditRun:
     seed: int
     decisions: list[ArmDecision]
     notes: list[str] = field(default_factory=list)
+    total_source: str = "current"
+    """Where the total came from: `current` budgets, an `explicit` total, or the `monthly_budget`."""
+    expected_cpa: float | None = None
+    """The model's expected average CPA of the recommended split, over campaigns with a curve."""
+    capped_by_target_cpa: bool = False
+    target_cpa_reached: bool | None = None
+    """With a target CPA: whether the expected CPA is at or below it (None without a target)."""
 
     @property
     def budgets(self) -> dict[str, float]:
@@ -157,6 +167,10 @@ class BanditRun:
             "policy": self.policy,
             "objective": OBJECTIVE,
             "total_budget": round(self.total_budget, 2),
+            "total_source": self.total_source,
+            "expected_cpa": _round(self.expected_cpa),
+            "capped_by_target_cpa": self.capped_by_target_cpa,
+            "target_cpa_reached": self.target_cpa_reached,
             "currency": self.currency,
             "prior_source": self.prior_source,
             "data_checks": self.data_checks.results,
@@ -219,7 +233,16 @@ def _allocate_curves(
     total: float,
     config: BanditConfig,
 ) -> list[float]:
-    result = allocate(
+    return list(_allocation(decisions, curves, total, config).budgets)
+
+
+def _allocation(
+    decisions: list[ArmDecision],
+    curves: list[PowerCurve],
+    total: float,
+    config: BanditConfig,
+) -> Allocation:
+    return allocate(
         curves,
         [d.arm.pacing for d in decisions],
         [float(d.lower or 0.0) for d in decisions],
@@ -227,7 +250,70 @@ def _allocate_curves(
         total,
         max_cpia=[config.max_cpia] * len(decisions),
     )
-    return list(result.budgets)
+
+
+def _cap_to_target_cpa(
+    movable: list[ArmDecision],
+    curves: list[PowerCurve],
+    fixed: list[tuple[ArmDecision, float]],
+    free: float,
+    config: BanditConfig,
+    run: BanditRun,
+) -> tuple[float, bool]:
+    """The largest free budget whose expected account CPA is at or below the target.
+
+    With concave curves each extra unit of budget buys fewer conversions, so the expected CPA of
+    the best split rises with the total: bisection finds the cap. Returns (free, cut).
+    """
+    target = float(config.target_cpa or 0.0)
+    run.target_cpa_reached = True
+
+    def cpa(amount: float) -> float:
+        budgets = _allocate_curves(movable, curves, amount, config)
+        value = _expected_cpa([*zip(movable, budgets, strict=True), *fixed])
+        return math.inf if value is None else value
+
+    before = cpa(free)
+    if before <= target:
+        return free, False
+    floor = sum(float(d.lower or 0.0) for d in movable)
+    if floor >= free or cpa(floor) > target:
+        run.notes.append(
+            f"expected CPA {before:,.2f} is above the {target:,.2f} target even with every "
+            "movable campaign at its step limit; budgets are at their lower bounds"
+        )
+        cut = min(free, floor)
+        run.target_cpa_reached = False
+    else:
+        low, high = floor, free
+        for _ in range(60):
+            mid = (low + high) / 2
+            if cpa(mid) <= target:
+                low = mid
+            else:
+                high = mid
+        cut = low
+        run.notes.append(
+            f"expected CPA {before:,.2f} was above the {target:,.2f} target; the total was cut by "
+            f"{free - cut:,.2f} so the expected CPA lands at the target"
+        )
+    run.total_budget -= free - cut
+    run.capped_by_target_cpa = True
+    return cut, True
+
+
+def _expected_cpa(pairs: list[tuple[ArmDecision, float]]) -> float | None:
+    """Expected spend over expected conversions, with each campaign's mean curve."""
+    spend = conversions = 0.0
+    for decision, budget in pairs:
+        post = decision.posterior
+        mean = greedy(post) if post is not None else None
+        if post is None or mean is None:
+            continue
+        s = decision.arm.pacing * budget
+        spend += s
+        conversions += post.curve(mean).value(s)
+    return spend / conversions if conversions > 0 else None
 
 
 async def recommend(
@@ -243,6 +329,7 @@ async def recommend(
     seed: int | None = None,
     record: bool = True,
     clock: Callable[[], datetime] = utc_now,
+    budget_scale: float | None = None,
 ) -> BanditRun:
     """Recommend tomorrow's budgets for one account's campaigns; nothing is changed."""
     config = config or BanditConfig()
@@ -325,29 +412,59 @@ async def recommend(
         else:
             movable.append(decision)
     current_total = sum(float(d.arm.current_budget or 0.0) for d in decisions)
-    run.total_budget = current_total if total_budget is None else float(total_budget)
+    if total_budget is not None:
+        run.total_budget, run.total_source = float(total_budget), "explicit"
+    elif budget_scale is not None and current_total > 0:
+        run.total_budget, run.total_source = current_total * budget_scale, "monthly_budget"
+        run.notes.append(
+            f"the total follows the monthly budget: current budgets x {budget_scale:.2f} "
+            "(still within each campaign's step limits)"
+        )
+    else:
+        run.total_budget = current_total
     free = run.total_budget - fixed_total
+    moving = {id(d) for d in movable}
+    fixed_with_curves = [
+        (d, float(d.final_budget)) for d in decisions if id(d) not in moving and d.final_budget
+    ]
 
     # 4-5. Draw and allocate.
     if movable:
-        greedy_curves = []
+        greedy_curves = [post.curve(mean) for post, mean in map(_usable, movable)]
+        by_greedy = _allocate_curves(movable, greedy_curves, free, config)
+        if config.target_cpa is not None:
+            free, cut = _cap_to_target_cpa(
+                movable, greedy_curves, fixed_with_curves, free, config, run
+            )
+            if cut:
+                by_greedy = _allocate_curves(movable, greedy_curves, free, config)
         sampled_curves = []
         for decision in movable:
-            post, mean = _usable(decision)
-            greedy_curves.append(post.curve(mean))
+            post, _ = _usable(decision)
             decision.sampled, decision.rejected_draws = draw_thompson(
                 post, rng, guard_z=config.guard_z
             )
             sampled_curves.append(post.curve(decision.sampled))
-        by_greedy = _allocate_curves(movable, greedy_curves, free, config)
-        by_thompson = _allocate_curves(movable, sampled_curves, free, config)
+        by_thompson_run = _allocation(movable, sampled_curves, free, config)
+        by_thompson = list(by_thompson_run.budgets)
         chosen = by_thompson if config.policy == "thompson" else by_greedy
-        for decision, g, t, c in zip(movable, by_greedy, by_thompson, chosen, strict=True):
+        binding = (
+            by_thompson_run.binding
+            if config.policy == "thompson"
+            else _allocation(movable, greedy_curves, free, config).binding
+        )
+        for decision, g, t, c, stops in zip(
+            movable, by_greedy, by_thompson, chosen, binding, strict=True
+        ):
             decision.budget_greedy, decision.budget_thompson, decision.final_budget = g, t, c
             if c <= float(decision.lower or 0.0) + 1e-6:
                 decision.constrained_by.append("lower")
             elif c >= float(decision.upper or 0.0) - 1e-6:
                 decision.constrained_by.append("upper")
+            elif "cpia" in stops:
+                decision.constrained_by.append("cpia")
+            if run.capped_by_target_cpa and c < float(decision.arm.current_budget or 0):
+                decision.constrained_by.append("target_cpa")
         if config.policy == "thompson" and config.propensity_draws > 0:
             hits = np.zeros(len(movable))
             for _ in range(config.propensity_draws):
@@ -373,6 +490,9 @@ async def recommend(
                 decision.expected_conversions_now = curve.value(
                     decision.arm.pacing * decision.arm.current_budget
                 )
+    run.expected_cpa = _expected_cpa(
+        [(d, float(d.final_budget)) for d in decisions if d.final_budget is not None]
+    )
     if free < sum(float(d.lower or 0.0) for d in movable) - 1e-6:
         run.notes.append("the total is below the campaigns' minimum budgets; all are at minimum")
     return _finish(store, run, config, mode, scenario_id, account_alias, record, clock)

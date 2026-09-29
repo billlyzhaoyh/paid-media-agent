@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from paid_media_agent.analytics.changes import ChangeRecorder
+from paid_media_agent.analytics.goals import GoalStore, account_today
 from paid_media_agent.analytics.ingest import AnalyticsRecorder
 from paid_media_agent.bandit.live import live_config
 from paid_media_agent.config import Settings
@@ -29,6 +30,8 @@ from paid_media_agent.tools.discovery import (
     build_list_accounts_tool,
 )
 from paid_media_agent.tools.history import QUERY_HISTORY_TOOL, build_query_history_tool
+from paid_media_agent.tools.host_writes import HostOperation, goals_operation
+from paid_media_agent.tools.pacing import CHECK_PACING_TOOL, build_check_pacing_tool
 from paid_media_agent.tools.reads import ReadDispatcher, build_platform_read_tools
 from paid_media_agent.tools.reports import RENDER_REPORT_TOOL, build_render_report_tool
 from paid_media_agent.tools.summary import SUMMARIZE_WINDOW_TOOL, build_summarize_window_tool
@@ -52,6 +55,7 @@ CORE_TOOLS: tuple[str, ...] = (
     QUERY_HISTORY_TOOL,
     CHECK_ANOMALIES_TOOL,
     RECOMMEND_BUDGETS_TOOL,
+    CHECK_PACING_TOOL,
 )
 WRITE_TOOLS: tuple[str, ...] = (
     DISCOVER_WRITE_OPERATIONS_TOOL,
@@ -93,6 +97,14 @@ class AgentComponents:
     model_timeout_seconds: int
 
 
+def host_operations(runtime: RuntimeProfile) -> dict[str, HostOperation]:
+    """Changes to this deployment's own data that need approval: today, account goals."""
+    goals = goals_operation(
+        GoalStore(runtime.store), lambda alias: account_today(runtime.accounts, alias)
+    )
+    return {goals.tool_name: goals}
+
+
 def _services(
     settings: Settings, runtime: RuntimeProfile
 ) -> tuple[ReadDispatcher, ProposalService, WriteExecutor]:
@@ -113,6 +125,7 @@ def _services(
         approvals=runtime.approvals,
         read_provider=runtime.read_provider,
         change_log=ChangeRecorder(runtime.store, runtime.accounts),
+        host_operations=host_operations(runtime),
     )
     executor = WriteExecutor(
         service=service,
@@ -158,13 +171,15 @@ def build_agent_components(
     )
     read_dispatcher, service, executor = _services(settings, runtime)
     project_root = runtime.skills_root or Path.cwd()
+    goals = GoalStore(runtime.store)
     core = [
-        build_list_accounts_tool(runtime.accounts),
+        build_list_accounts_tool(runtime.accounts, goals),
         build_discover_tools_tool(runtime.catalog_provider),
-        build_compare_periods_tool(runtime.artifacts),
-        build_summarize_window_tool(runtime.artifacts),
+        build_compare_periods_tool(runtime.artifacts, goals.current),
+        build_summarize_window_tool(runtime.artifacts, goals.current),
         build_render_report_tool(runtime.artifacts),
         build_query_history_tool(runtime.store, runtime.accounts),
+        build_check_pacing_tool(runtime.store, runtime.accounts),
         build_check_anomalies_tool(
             runtime.store,
             runtime.accounts,

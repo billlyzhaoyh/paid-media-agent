@@ -290,3 +290,29 @@ def test_model_check_expires_when_shell_key_changes_behind_blank_env_entry(
     assert (
         "model_test" not in client.get("/api/status", headers=headers).json()["connection_checks"]
     )
+
+
+def test_goals_are_set_and_listed_from_the_console(client: TestClient, workspace: Path) -> None:
+    headers = {"X-Admin-Token": TOKEN}
+    listed = client.get("/api/goals", headers=headers).json()
+    assert listed["ok"] and {g["current"] for g in listed["detail"]["goals"]} == {None}
+    saved = client.post(
+        "/api/goals",
+        headers=headers,
+        json={"alias": "demo-google", "target_cpa": 30, "monthly_budget": 25000},
+    ).json()
+    assert saved["ok"] and saved["detail"]["goal"]["target_cpa"] == 30.0
+    cleared = client.post(
+        "/api/goals", headers=headers, json={"alias": "demo-google", "clear": ["target_cpa"]}
+    ).json()
+    assert cleared["detail"]["goal"]["target_cpa"] is None
+    assert cleared["detail"]["goal"]["monthly_budget"] == 25000.0
+    unknown = client.post(
+        "/api/goals", headers=headers, json={"alias": "nobody", "target_cpa": 3}
+    ).json()
+    assert unknown["status"] == "fail" and "unknown account alias" in unknown["summary"]
+    goals = {
+        g["account_alias"]: g["current"]
+        for g in client.get("/api/goals", headers=headers).json()["detail"]["goals"]
+    }
+    assert goals["demo-google"]["source"] == "console" and goals["demo-meta"] is None

@@ -81,6 +81,26 @@ a decision, because nothing else surfaces host proposals. A newer bandit run rej
 run's proposals that still await a decision for the same campaigns, with the note "superseded".
 Slack cards are not posted for host proposals.
 
+## Host operations
+
+Some changes are to this deployment's own data but still need a person's approval: today, an
+account's goals (`host__set_account_goals`, in `tools/host_writes.py`).
+- **The same path.** A host operation goes through `ProposalService` and `WriteExecutor` like a
+  provider mutation, so the pause at `execute_change`, approval cards, signed claims, replay
+  refusal, receipts, and `change_events` all apply.
+- **What differs.**
+  - It is never in the provider catalog: the `host__` prefix cannot occur in a catalog name, and
+    an unknown `host__` name is refused.
+  - Its `target_ref` is the account alias, and its canonical arguments are the alias plus the
+    validated fields.
+  - Its schema and policy digests are the operation's own, and its catalog revision is `host`.
+  - The executor checks the claim exactly as for a mutation, then only the kill switch (the
+    provider gate governs provider mutations). It applies the change once and reads it back
+    from the goals store.
+- **Change log.** Change events for it are recorded against the account (`entity_type =
+  account`). A person can also set goals directly (CLI, console, `POST /goals` for approvers);
+  those are recorded in the goals table with their source rather than as proposals.
+
 ## Live-write notes
 
 - The reviewed mutation set is data: `WritePolicyFile` rows in `config/write-policy.example.toml`.

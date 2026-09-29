@@ -93,6 +93,22 @@ holds:
 | The `allocate` job | Mondays when listed in `PAID_MEDIA_JOBS`, every account; proposes only with `PAID_MEDIA_BANDIT_PROPOSE=true` |
 | `recommend_budgets` (agent tool) | Read-only recommendation for one account; the agent applies one only when asked, through `propose_change` |
 
+**Goals** (`analytics/goals.py`). Each account decides on its own local date, under the goal in
+force that day.
+- **Target CPA.** A target CPA is an *average*. After the split, the expected account CPA (mean
+  curves, over campaigns with a curve) is compared with the target. If it is higher, the free
+  budget is bisected down to the largest total whose expected CPA meets it. Because the curves
+  are concave, the expected CPA rises with the total.
+  - Lowered campaigns carry `target_cpa` in `constrained_by`.
+  - The run records `capped_by_target_cpa` and whether the target was reachable within the step
+    limits (`target_cpa_reached`).
+  - This is deliberately not CBS's CPIA cap: capping the *marginal* cost at an average target
+    would keep the average near half the target and leave budget unspent. `max_cpia` stays a
+    separate, explicit option.
+- **Monthly budget.** Without an explicit total, the total is today's budgets × `budget_scale`
+  from pacing: the daily spend that lands on the monthly budget divided by the projected daily
+  spend. The step limits still apply, and the run records `total_source`.
+
 **Proposals** (`bandit/proposals.py`). A campaign whose recommended budget moves at least
 `PAID_MEDIA_BANDIT_MIN_CHANGE` (5%, and at least one currency unit) becomes a proposal:
 - it uses the platform's admitted daily-budget operation, with the budget rounded to cents;
@@ -259,7 +275,8 @@ data to judge. Until then the pooled model is the default.
   still came within 9 conversions of the oracle over 60 days.
 - **One account at a time.** Budgets are split within one account and currency. Shared and
   lifetime budgets are not allocated.
-- **CPIA cap from configuration only.** `max_cpia` is applied uniformly; it is not yet read from
-  each campaign's target CPA.
+- **Target CPA uses mean curves.** The cap judges the expected CPA with each campaign's mean
+  curve, so a Thompson draw can land a little above or below it. A campaign without a curve is
+  left out of the expected CPA. `max_cpia` (marginal) remains configuration-only.
 - **Fallback curves skip the mean correction.** A reused (fallback) curve lacks it, because only
   the curve parameters are stored.

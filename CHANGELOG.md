@@ -69,6 +69,27 @@
 - `backup` and `restore` commands and a `backup` job: a consistent Parquet export of the state file
   while `serve` runs, restored only into a new file.
 
+- **Account goals.** Target CPA, target ROAS, and a monthly budget per account, versioned by the
+  day they take effect.
+  - Set them with `goals set` / `goals show`, the setup console, or `GET/POST /goals`.
+  - The agent reads them in `list_accounts` and can only propose a change
+    (`host__set_account_goals`), which runs through the same approval, receipt, and change log
+    as a platform change.
+- **Pacing.** The `check_pacing` tool, the `pacing` command, and `GET /pacing` show:
+  - month-to-date spend against the monthly budget and the projected month end (weekday-adjusted
+    run rate);
+  - the daily spend that lands on budget;
+  - CPA and ROAS, with lag-corrected conversions, against target.
+- **Analyses judged against goals.** `compare_periods` and `summarize_window` add code-written
+  `against_goals` readings.
+- **Budget recommendations follow goals.**
+  - The total is cut when the expected account CPA would exceed the target CPA.
+  - Without an explicit total, the total follows the monthly budget's pacing.
+  - Runs record `total_source`, `expected_cpa`, and whether the target was reached.
+  - The CPIA binding is reported.
+- **Company context.** `context init` creates the company-context skill from its template.
+- **Fix.** Rewriting `accounts.toml` from the console keeps `conversion_action`.
+
 Live provider writes remain disabled by default and require the documented release gates.
 
 ### Changed

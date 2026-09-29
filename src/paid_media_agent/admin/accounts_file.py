@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from paid_media_agent.config import AccountBinding, AccountRegistry, Settings
@@ -32,13 +33,15 @@ def read_accounts(path: Path) -> AccountRegistry:
 
 
 def render_accounts(registry: AccountRegistry) -> str:
+    """Every binding field, so a rewrite never drops one (such as `conversion_action`)."""
     blocks = [_HEADER]
     for binding in sorted(registry.bindings, key=lambda b: b.alias):
-        blocks.append(
-            f'[accounts.{_toml_key(binding.alias)}]\nplatform = "{binding.platform.value}"\n'
-            f'provider_account_id = "{binding.provider_account_id}"\ncurrency = "{binding.currency}"\n'
-            f'timezone = "{binding.timezone}"\n'
-        )
+        lines = [f"[accounts.{_toml_key(binding.alias)}]"]
+        for key, value in binding.model_dump(mode="json", exclude={"alias"}).items():
+            if value is not None:
+                # JSON string escapes are valid TOML basic strings.
+                lines.append(f"{key} = {json.dumps(value)}")
+        blocks.append("\n".join(lines) + "\n")
     return "\n".join(blocks)
 
 

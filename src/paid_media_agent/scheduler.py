@@ -176,6 +176,7 @@ class Scheduler:
 
 def build_jobs(runtime: SelfHostedRuntime, *, clock: Callable[[], datetime] = utc_now) -> list[Job]:
     """Every job, bound to the server's accounts and read path; `PAID_MEDIA_JOBS` schedules them."""
+    from paid_media_agent.analytics.goals import GoalStore
     from paid_media_agent.analytics.sync import run_sync
     from paid_media_agent.reports.cadence import Cadence, run_cadence_report
 
@@ -219,7 +220,8 @@ def build_jobs(runtime: SelfHostedRuntime, *, clock: Callable[[], datetime] = ut
             runtime.store,
             build_predictor(settings, runtime.store),
             aliases=profile.accounts.aliases(),
-            as_of=clock().date(),
+            accounts=profile.accounts,
+            now=clock(),
             config=live_config(settings.paid_media_bandit_policy),
             service=runtime.components.proposal_service,
             propose=settings.paid_media_bandit_propose,
@@ -236,6 +238,7 @@ def build_jobs(runtime: SelfHostedRuntime, *, clock: Callable[[], datetime] = ut
                 catalog=runtime.catalog,
                 dispatcher=dispatcher,
                 artifacts=profile.artifacts,
+                goals=GoalStore(runtime.store).current,
             )
             listed = (run.report or {}).get("files")
             files = (

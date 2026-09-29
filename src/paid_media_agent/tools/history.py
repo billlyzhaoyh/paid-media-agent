@@ -31,7 +31,8 @@ class QueryHistoryArgs(BaseModel):
             "decisions, executions, and changes detected outside this agent. lag: share of "
             "final conversions reported N days after the day. outcomes: each budget "
             "recommendation, whether it was followed, and matured conversions over the week "
-            "after it against what was expected."
+            "after it against what was expected. goals: versions of each account's target CPA, "
+            "target ROAS, and monthly budget, and who set them."
         )
     )
     account_alias: str | None = Field(default=None, description="Alias from list_accounts.")

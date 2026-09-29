@@ -655,6 +655,86 @@ def accounts_add(
     )
 
 
+def _goals_store(root: Path) -> tuple[Settings, Store] | ActionResult:
+    settings = load_settings(root)
+    try:
+        return settings, Store(state_path(settings, root))
+    except StoreBusy:
+        return _result(
+            "goals",
+            "warn",
+            "`serve` holds the state file; set goals with `paid-media-agent goals set`, which "
+            "goes through its API",
+        )
+
+
+def goals_list(root: Path) -> ActionResult:
+    from paid_media_agent.analytics.goals import GoalStore, account_today
+
+    opened = _goals_store(root)
+    if isinstance(opened, ActionResult):
+        return opened
+    settings, store = opened
+    try:
+        accounts = read_accounts(active_accounts_path(settings, root))
+        goals = GoalStore(store)
+        rows: list[JsonValue] = []
+        for alias in accounts.aliases():
+            current = goals.current(alias, account_today(accounts, alias))
+            rows.append({"account_alias": alias, "current": current.as_json() if current else None})
+    finally:
+        store.close()
+    return _result(
+        "goals_list",
+        "ok",
+        f"{sum(1 for r in rows if isinstance(r, dict) and r['current'])} of {len(rows)} "
+        "account(s) have goals",
+        {"goals": rows},
+        command="paid-media-agent goals show --json",
+    )
+
+
+def goals_set(
+    root: Path,
+    *,
+    alias: str,
+    target_cpa: float | None,
+    target_roas: float | None,
+    monthly_budget: float | None,
+    clear: list[str],
+) -> ActionResult:
+    from paid_media_agent.analytics.goals import GoalError, update_goals
+
+    opened = _goals_store(root)
+    if isinstance(opened, ActionResult):
+        return opened
+    settings, store = opened
+    try:
+        goal = update_goals(
+            store,
+            read_accounts(active_accounts_path(settings, root)),
+            alias,
+            values={
+                "target_cpa": target_cpa,
+                "target_roas": target_roas,
+                "monthly_budget": monthly_budget,
+            },
+            clear=clear,
+            source="console",
+        )
+    except GoalError as exc:
+        return _result("goals_set", "fail", str(exc))
+    finally:
+        store.close()
+    return _result(
+        "goals_set",
+        "ok",
+        f"goals saved for {alias} from {goal.effective_from.isoformat()}",
+        {"goal": goal.as_json()},
+        command=f"paid-media-agent goals set --alias {alias} ...",
+    )
+
+
 def accounts_remove(root: Path, alias: str) -> ActionResult:
     settings = load_settings(root)
     path = active_accounts_path(settings, root)

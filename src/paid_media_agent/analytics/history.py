@@ -12,7 +12,7 @@ from uuid import UUID
 
 from paid_media_agent.store.db import Store
 
-HistoryView = Literal["coverage", "daily", "settings", "changes", "lag", "outcomes"]
+HistoryView = Literal["coverage", "daily", "settings", "changes", "lag", "outcomes", "goals"]
 HISTORY_VIEWS: tuple[HistoryView, ...] = (
     "coverage",
     "daily",
@@ -20,6 +20,7 @@ HISTORY_VIEWS: tuple[HistoryView, ...] = (
     "changes",
     "lag",
     "outcomes",
+    "goals",
 )
 MAX_ROWS = 500
 
@@ -69,6 +70,12 @@ _QUERIES: dict[HistoryView, tuple[str, str, str]] = {
         "decision_day",
         "ORDER BY decision_day DESC, account_alias, entity_ref",
     ),
+    "goals": (
+        "SELECT account_alias, effective_from, target_cpa, target_roas, monthly_budget, notes, "
+        "source, proposal_id, set_at FROM account_goals",
+        "effective_from",
+        "ORDER BY effective_from DESC, account_alias",
+    ),
 }
 
 
@@ -101,7 +108,7 @@ def query_history(
     if account_alias is not None:
         clauses.append("account_alias = ?")
         params.append(account_alias)
-    if entity_ref is not None and view not in ("coverage", "lag"):
+    if entity_ref is not None and view not in ("coverage", "lag", "goals"):
         clauses.append("entity_ref = ?")
         params.append(entity_ref)
     if day_column and start is not None:

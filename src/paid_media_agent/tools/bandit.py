@@ -8,11 +8,12 @@ normal `propose_change` that waits for approval.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from paid_media_agent.analytics.goals import account_today
+from paid_media_agent.bandit.live import goal_inputs
 from paid_media_agent.bandit.recommend import BanditConfig, recommend
 from paid_media_agent.config import AccountRegistry
 from paid_media_agent.harness.tools import ToolContext, ToolSpec, parameters_for
@@ -29,6 +30,13 @@ _LIMITS = {
     "lower": "at the step limit (at most 25% down per change)",
     "spend_history": "capped at 1.5 times the most it has ever spent",
     "max_budget": "capped at the configured maximum budget",
+    "cpia": "stopped where its next conversion would cost more than the CPIA cap",
+    "target_cpa": "lowered toward the account's target CPA",
+}
+_TOTALS = {
+    "current": "the campaigns' current total",
+    "explicit": "the total you asked for",
+    "monthly_budget": "the total that paces toward the monthly budget",
 }
 
 
@@ -71,16 +79,27 @@ def build_recommend_budgets_tool(
     async def _run(kwargs: dict[str, Any], _context: ToolContext) -> str:
         try:
             args = RecommendBudgetsArgs.model_validate(kwargs)
-            if accounts.resolve(args.account_alias) is None:
+            binding = accounts.resolve(args.account_alias)
+            if binding is None:
                 raise ValueError(f"unknown account alias {args.account_alias}; call list_accounts")
+            day = account_today(accounts, args.account_alias)
+            account_config, scale, goals = goal_inputs(
+                store,
+                args.account_alias,
+                day,
+                config,
+                total_budget=args.total_budget,
+                currency=binding.currency,
+            )
             run = await recommend(
                 store,
                 predictor,
-                as_of=datetime.now(UTC).date(),
-                config=config,
+                as_of=day,
+                config=account_config,
                 total_budget=args.total_budget,
                 account_alias=args.account_alias,
                 mode="recommend",
+                budget_scale=scale,
             )
         except (ValidationError, ValueError) as exc:
             return json.dumps({"error": True, "detail": sanitize_exception(exc)})
@@ -88,11 +107,22 @@ def build_recommend_budgets_tool(
         rows = result.pop("decisions")
         moved = [r for r in rows if r["eligible"] and r["change"] and abs(r["change"]) >= 0.005]
         failed = [k for k, v in result["data_checks"].items() if not v["ok"]]
+        unit = f" {result['currency']}" if result["currency"] else ""
         summary = (
             f"{len(moved)} of {sum(r['eligible'] for r in rows)} allocated campaigns would move; "
-            f"total {result['total_budget']:.2f}"
-            + (f" {result['currency']}" if result["currency"] else "")
-            + " a day kept."
+            f"total {result['total_budget']:.2f}{unit} a day, "
+            f"{_TOTALS.get(result['total_source'], result['total_source'])}"
+            + (
+                (
+                    ", cut to meet the target CPA"
+                    if result["target_cpa_reached"]
+                    else ", cut as far as the step limits allow toward the target CPA, which "
+                    "is still not reached"
+                )
+                if result["capped_by_target_cpa"]
+                else ""
+            )
+            + "."
         )
         paired = [
             r
@@ -108,9 +138,14 @@ def build_recommend_budgets_tool(
                 f" Expected conversions {now:.1f} a day at current budgets and {then:.1f} as "
                 f"recommended ({then - now:+.1f}), by the model's estimate."
             )
+        target = (goals or {}).get("target_cpa")
+        if result["expected_cpa"] is not None:
+            summary += f" Expected CPA {result['expected_cpa']:.2f}" + (
+                f" against a {target:.2f} target." if target else "; no target CPA is set."
+            )
         if result["fallback_used"]:
             summary += f" Data checks failed ({', '.join(failed)}); the last good curves were used."
-        result = {"summary": summary, **result}
+        result = {"summary": summary, "goals": goals, **result}
         result["campaigns"] = [
             {"reading": budget_reading(r, run.currency), **r} for r in rows[:MAX_CAMPAIGNS]
         ]

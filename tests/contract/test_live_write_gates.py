@@ -310,7 +310,7 @@ async def test_discover_write_operations_lists_only_admitted_operations(
         f"{p}__update_campaign_{f}"
         for p in ("google_ads", "meta_ads", "reddit_ads")
         for f in ("budget", "status")
-    }
+    } | {"host__set_account_goals"}, "provider mutations plus the host goals operation"
     assert all("editable_fields" in op and "risk" in op for op in body["operations"])
     assert "fake provider" in body["execution_gate"]
 

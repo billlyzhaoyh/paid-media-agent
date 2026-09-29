@@ -14,12 +14,14 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from paid_media_agent.analytics.goals import GoalLookup
 from paid_media_agent.domain.common import JsonValue
 from paid_media_agent.domain.metrics import PerformanceRow
 from paid_media_agent.harness.tools import ToolContext, ToolSpec, parameters_for
 from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.tools.artifacts import ArtifactError, ArtifactStore
 from paid_media_agent.tools.compute import ComputeError, aggregate
+from paid_media_agent.tools.goal_check import against_goals
 from paid_media_agent.tools.normalize import NormalizationError, rows_from_payload
 
 SUMMARIZE_WINDOW_TOOL = "summarize_window"
@@ -141,7 +143,9 @@ def summarize_rows(
     }
 
 
-def run_summarize_window(artifacts: ArtifactStore, args: SummarizeWindowArgs) -> dict[str, Any]:
+def run_summarize_window(
+    artifacts: ArtifactStore, args: SummarizeWindowArgs, *, goals: GoalLookup | None = None
+) -> dict[str, Any]:
     if args.end_date < args.start_date:
         raise ComputeError("window end precedes start")
     budgets: dict[tuple[str, str], dict[str, Decimal]] = {}
@@ -158,6 +162,7 @@ def run_summarize_window(artifacts: ArtifactStore, args: SummarizeWindowArgs) ->
         scope = (record.metadata.platform, record.metadata.account_ref)
         budgets.setdefault(scope, {}).update(budgets_from_payload(record.payload))
     platforms: dict[str, dict[str, Any]] = {}
+    by_account: dict[str, list[PerformanceRow]] = {}
     for artifact_id in args.artifact_ids:
         record = artifacts.read(artifact_id)
         if record.metadata.kind != "performance_rows":
@@ -167,6 +172,7 @@ def run_summarize_window(artifacts: ArtifactStore, args: SummarizeWindowArgs) ->
             raise ComputeError(f"{artifact_id} contains no rows")
         platform = record.metadata.platform or rows[0].platform.value
         account = record.metadata.account_ref or rows[0].account_ref
+        by_account.setdefault(account, []).extend(rows)
         accounts = platforms.setdefault(platform, {})
         if account in accounts:
             raise ComputeError(f"provide one performance_rows artifact for {platform}/{account}")
@@ -186,14 +192,20 @@ def run_summarize_window(artifacts: ArtifactStore, args: SummarizeWindowArgs) ->
         requested_window=f"{args.start_date.isoformat()}..{args.end_date.isoformat()}",
         tool_name=SUMMARIZE_WINDOW_TOOL,
     )
-    return {"artifact_id": metadata.artifact_id, "platforms": platforms}
+    result: dict[str, Any] = {"artifact_id": metadata.artifact_id, "platforms": platforms}
+    judged = against_goals(by_account, start=args.start_date, end=args.end_date, goals=goals)
+    if judged:
+        result["against_goals"] = judged
+    return result
 
 
-def build_summarize_window_tool(artifacts: ArtifactStore) -> ToolSpec:
+def build_summarize_window_tool(
+    artifacts: ArtifactStore, goals: GoalLookup | None = None
+) -> ToolSpec:
     def _run(kwargs: dict[str, Any], _context: ToolContext) -> str:
         try:
             args = SummarizeWindowArgs.model_validate(kwargs)
-            return json.dumps(run_summarize_window(artifacts, args))
+            return json.dumps(run_summarize_window(artifacts, args, goals=goals))
         except (
             ArtifactError,
             ComputeError,

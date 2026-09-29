@@ -12,6 +12,11 @@ it per campaign when the `list_campaigns` artifact is supplied.
   look at bids, audience size, approval status, or creative fatigue.
 - A paused campaign with residual spend on the pause day is not an anomaly.
 
+Monthly pacing is a different question: `check_pacing` compares month-to-date spend with the
+account's monthly budget, projects the month end from the trailing week's run rate (adjusted for
+weekday patterns when four weeks exist), and gives the daily spend that lands on budget. Quote its
+reading. It counts days not yet synced as still to come, never as zero spend.
+
 ## Changing budgets
 
 - Prefer steps of roughly 20 to 30 percent. Large jumps reset learning on auction platforms and make
@@ -32,6 +37,9 @@ recompute them.
 
 - It never moves a campaign more than 25% at once, never above 1.5 times the most it has spent,
   and holds a campaign whose budget changed in the last 7 days while that change is measured.
+- With a target CPA, it cuts the total when the expected account CPA would exceed the target, and
+  says whether the step limits let it reach the target. With a monthly budget and no total asked
+  for, the total follows the monthly pacing (`total_source: monthly_budget`).
 - Expected conversions are the model's estimate from a few weeks of history. Say so, and say that
   the gain is small when it is small.
 - If its data checks failed, it used the last good curves; say that the data looked incomplete.

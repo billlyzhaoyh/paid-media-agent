@@ -18,6 +18,7 @@ from paid_media_agent.config import AccountRegistry
 from paid_media_agent.domain.common import JsonValue
 from paid_media_agent.domain.proposals import ProposalRecord, WriteReceipt
 from paid_media_agent.store.db import Store, json_rows, naive_utc, utc_now
+from paid_media_agent.tools.host_writes import is_host_tool
 
 log = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ class ChangeRecorder:
                 "INSERT INTO change_events (event_id, source, proposal_id, revision, platform, "  # noqa: S608
                 "provider_account_id, account_alias, entity_type, entity_ref, tool_name, field, "
                 "before_value, after_value, status, risk_flags, occurred_at) "
-                "SELECT event_id, 'agent', ?, ?, ?, ?, ?, 'campaign', ?, ?, field, before_value, "
+                "SELECT event_id, 'agent', ?, ?, ?, ?, ?, ?, ?, ?, field, before_value, "
                 f"after_value, ?, ?, ? FROM ({json_rows(_EVENT_SHAPE)})",
                 [
                     cs.proposal_id,
@@ -89,6 +90,8 @@ class ChangeRecorder:
                     cs.platform.value,
                     binding.provider_account_id if binding else "",
                     cs.account_ref,
+                    # A host change (goals) is about the account, not a campaign.
+                    "account" if is_host_tool(cs.tool_name) else "campaign",
                     cs.target_ref,
                     cs.tool_name,
                     status,

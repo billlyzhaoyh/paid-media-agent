@@ -441,6 +441,23 @@ JOIN windowed w USING (run_id, arm_key)
 LEFT JOIN proposal pr ON pr.proposal_id = x.proposal_id;
 """
 
+ACCOUNT_GOALS = """
+-- Business goals per account alias, versioned by the day they take effect. The goal on a day is
+-- the latest row with effective_from <= day. Money is in the account's currency.
+CREATE TABLE account_goals (
+    account_alias VARCHAR NOT NULL,
+    effective_from DATE NOT NULL,
+    target_cpa DECIMAL(18,4),
+    target_roas DECIMAL(18,6),
+    monthly_budget DECIMAL(18,4),
+    notes VARCHAR,
+    source VARCHAR NOT NULL,
+    proposal_id UUID,
+    set_at TIMESTAMP NOT NULL,
+    PRIMARY KEY (account_alias, effective_from)
+);
+"""
+
 MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("0001_operational", OPERATIONAL),
     ("0002_conversations", CONVERSATIONS),
@@ -450,6 +467,7 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("0006_predictions", PREDICTIONS),
     ("0007_bandit", BANDIT),
     ("0008_bandit_outcomes", BANDIT_OUTCOMES),
+    ("0009_account_goals", ACCOUNT_GOALS),
 )
 
 

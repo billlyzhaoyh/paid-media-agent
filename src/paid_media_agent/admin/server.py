@@ -69,6 +69,14 @@ class AccountAdd(BaseModel):
     timezone: str = "UTC"
 
 
+class GoalsRequest(BaseModel):
+    alias: str
+    target_cpa: float | None = Field(default=None, gt=0)
+    target_roas: float | None = Field(default=None, gt=0)
+    monthly_budget: float | None = Field(default=None, gt=0)
+    clear: list[str] = Field(default_factory=list)
+
+
 class KillSwitchRequest(BaseModel):
     engaged: bool
     confirm: bool = False
@@ -296,6 +304,23 @@ def create_console_app(
             provider_account_id=body.provider_account_id,
             currency=body.currency,
             timezone=body.timezone,
+        ).model_dump(mode="json")
+
+    @app.get("/api/goals")
+    def get_goals(console: ConsoleState = Depends(_authorized)) -> dict[str, JsonValue]:
+        return actions.goals_list(console.root).model_dump(mode="json")
+
+    @app.post("/api/goals")
+    def post_goals(
+        body: GoalsRequest, console: ConsoleState = Depends(_authorized)
+    ) -> dict[str, JsonValue]:
+        return actions.goals_set(
+            console.root,
+            alias=body.alias,
+            target_cpa=body.target_cpa,
+            target_roas=body.target_roas,
+            monthly_budget=body.monthly_budget,
+            clear=body.clear,
         ).model_dump(mode="json")
 
     @app.delete("/api/accounts/{alias}")
