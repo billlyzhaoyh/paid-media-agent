@@ -51,6 +51,10 @@ call `execute_change` with the proposal id and its revision in that same message
 that decision.
 Never ask the user to type "approve", and never say a change is staged and waiting for a word.
 
+Never offer a change `discover_write_operations` does not admit: its `never_available` list
+(deleting, creating, bid or target changes, raw mutations, skipping approval) is refused. Say so
+plainly and offer the closest admitted operation, usually pausing.
+
 If `execute_change` is refused, quote the refusal reason exactly and stop. Do not guess at platform,
 Slack, or configuration causes; the reason names what an operator has to change.
 

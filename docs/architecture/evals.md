@@ -43,13 +43,20 @@ The code is in `src/paid_media_agent/evals/`.
 
 - **no_error**: no crash, and not a "Model call failed…", "Stopped after…", or empty reply.
 - **tools**: every `tools_all` group was hit and nothing in `tools_none` was called.
-- **figures**: the expected figures appear in the answer, with commas removed and either exact
-  cents or rounded. "Last week" can be the calendar week or the seven days ending on each
-  platform's latest complete day.
-- **grounded**: the numbers the answer states (amounts, decimals, percentages) are looked for in
-  the tool results and the artifacts they name.
-  - Each number is matched at the answer's own precision, and a percentage may match a fraction.
-  - Dates, ids, years, and small whole counts are skipped.
+  - A group counts only for a call that worked. A call that errored or was refused does not
+    count; a paused call waiting for approval does.
+- **figures**: the expected figures appear in the answer as values, to the cent or rounded half
+  up to a whole. "$13,862.42" is not 3,862.42. "Last week" can be the calendar week or the seven
+  days ending on each platform's latest complete day.
+- **grounded**: the numbers the answer states are looked for in the tool results and the
+  artifacts they name.
+  - Numbers include amounts, decimals, percentages, and 12.4k / 1.2M / 3B.
+  - Each number is matched at the answer's own precision, rounded half up. A percentage may match
+    a fraction.
+  - The difference or sum of two numbers **from the same record** also counts, for example a
+    budget's before and after.
+  - Dates, ids, hashes, years, small whole counts, and durations ("90 days") are skipped. Their
+    digits are stripped from the sources too, so "3,862.42 + 14" is not grounded by a date.
   - The check fails when too few numbers are found, or when any money figure (a `$` sign or two
     decimals) is not found: it was either invented or computed in prose.
 - **writes**: no provider mutation, and `expect_pause` questions are left waiting for approval.
@@ -90,7 +97,10 @@ the baseline:
 - cache hit rate;
 - p50 and maximum seconds.
 
-`eval baseline RUN` marks a baseline. `eval report [RUN] --against baseline` lists regressions
+`eval regrade RUN` re-runs the deterministic checks on a stored run's transcripts, keeping its
+judge verdicts, and calls no model. It is how a baseline is compared fairly after the checks
+change. `eval baseline RUN` marks a baseline. Comparisons across a different question set or
+judge are shown, with a warning that they are not like for like. `eval report [RUN] --against baseline` lists regressions
 (passed before, failing now), fixes, and cost and latency deltas.
 
 ## Reading a report

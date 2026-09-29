@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from paid_media_agent.analytics.changes import ChangeRecorder
 from paid_media_agent.analytics.goals import GoalStore, account_today
@@ -21,6 +24,7 @@ from paid_media_agent.runtime.profiles import RuntimeProfile
 from paid_media_agent.store import Store
 from paid_media_agent.store.conversations import ConversationStore
 from paid_media_agent.tools.anomalies import CHECK_ANOMALIES_TOOL, build_check_anomalies_tool
+from paid_media_agent.tools.artifact_read import READ_ARTIFACT_TOOL, build_read_artifact_tool
 from paid_media_agent.tools.bandit import RECOMMEND_BUDGETS_TOOL, build_recommend_budgets_tool
 from paid_media_agent.tools.catalog import AuthorizedToolCatalog
 from paid_media_agent.tools.compare_periods import COMPARE_PERIODS_TOOL, build_compare_periods_tool
@@ -61,6 +65,7 @@ CORE_TOOLS: tuple[str, ...] = (
     CHECK_PACING_TOOL,
     EXPLAIN_CHANGE_TOOL,
     WHAT_IF_BUDGETS_TOOL,
+    READ_ARTIFACT_TOOL,
 )
 WRITE_TOOLS: tuple[str, ...] = (
     DISCOVER_WRITE_OPERATIONS_TOOL,
@@ -187,6 +192,7 @@ def build_agent_components(
         build_compare_periods_tool(runtime.artifacts, goals.current),
         build_summarize_window_tool(runtime.artifacts, goals.current),
         build_render_report_tool(runtime.artifacts),
+        build_read_artifact_tool(runtime.artifacts),
         build_query_history_tool(runtime.store, runtime.accounts),
         build_check_pacing_tool(runtime.store, runtime.accounts),
         build_check_anomalies_tool(
@@ -216,7 +222,15 @@ def build_agent_components(
         tools={t.name: t for t in tools},
         catalog_provider=runtime.catalog_provider,
         artifacts=runtime.artifacts,
-        secrets=tuple(s for s in (*_secret_values(settings), *runtime.extra_secrets) if s),
+        secrets=tuple(
+            s
+            for s in (
+                *_secret_values(settings),
+                *runtime.extra_secrets,
+                *_provider_id_forms(runtime.accounts.provider_ids()),
+            )
+            if s
+        ),
         offload_chars=settings.paid_media_result_offload_chars,
     )
     metadata = AssemblyMetadata(
@@ -251,9 +265,13 @@ def build_agent_components(
     )
 
 
-def build_agent(components: AgentComponents, store: Store) -> Agent:
+def build_agent(
+    components: AgentComponents, store: Store, *, clock: Callable[[], datetime] | None = None
+) -> Agent:
     """The loop over these components, with conversations in the profile's state store."""
+    extra: dict[str, Any] = {"clock": clock} if clock is not None else {}
     return Agent(
+        **extra,
         model=components.model,
         system_prompt=components.system_prompt,
         dispatcher=components.dispatcher,
@@ -265,6 +283,22 @@ def build_agent(components: AgentComponents, store: Store) -> Agent:
         call_log=LlmCallRecorder(store),
         context_budget_tokens=components.context_budget_tokens,
     )
+
+
+def _provider_id_forms(ids: frozenset[str]) -> tuple[str, ...]:
+    """Every way a provider account id shows up in results: the model only ever sees aliases.
+
+    Meta ids appear with and without `act_`; Google's ten digits also as 123-456-7890.
+    """
+    forms: set[str] = set()
+    for raw in ids:
+        bare = raw.removeprefix("act_")
+        forms |= {raw, bare, f"act_{bare}"}
+        digits = bare.replace("-", "")
+        if digits.isdigit() and len(digits) == 10:
+            forms |= {digits, f"{digits[:3]}-{digits[3:6]}-{digits[6:]}"}
+    # Longest first, so a prefixed form is replaced whole before its bare part.
+    return tuple(sorted(forms, key=len, reverse=True))
 
 
 def _secret_values(settings: Settings) -> tuple[str, ...]:

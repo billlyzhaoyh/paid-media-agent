@@ -77,6 +77,31 @@ def _error(call: ToolCall, body: dict[str, Any]) -> ToolMessage:
     return ToolMessage(call.id, call.name, json.dumps(body), status="error")
 
 
+KEPT_FIELDS = ("headline", "summary", "reading", "caveats", "notes", "note")
+KEPT_CHARS = 2000
+
+
+def _kept_fields(content: str) -> dict[str, Any]:
+    """The top-level fields that say what a result means, kept whole in an offload stub."""
+    try:
+        body = json.loads(content)
+    except ValueError:
+        return {}
+    if not isinstance(body, dict):
+        return {}
+    kept: dict[str, Any] = {}
+    used = 0
+    for key in KEPT_FIELDS:
+        if key not in body:
+            continue
+        size = len(json.dumps(body[key], default=str))
+        if used + size > KEPT_CHARS:
+            continue
+        kept[key] = body[key]
+        used += size
+    return kept
+
+
 @dataclass
 class ToolDispatcher:
     tools: dict[str, ToolSpec]
@@ -136,16 +161,19 @@ class ToolDispatcher:
             schema_version=OFFLOAD_SCHEMA_VERSION,
             tool_name=spec.name,
         )
-        return json.dumps(
-            {
-                "offloaded": True,
-                "artifact_id": metadata.artifact_id,
-                "byte_size": metadata.byte_size,
-                "sha256": metadata.sha256,
-                "preview": content[:PREVIEW_CHARS],
-                "note": "Result exceeded the context budget. Use the artifact id with deterministic tools.",
-            }
+        stub: dict[str, Any] = {
+            "offloaded": True,
+            "artifact_id": metadata.artifact_id,
+            "byte_size": metadata.byte_size,
+            "sha256": metadata.sha256,
+        }
+        stub.update(_kept_fields(content))
+        stub["preview"] = content[:PREVIEW_CHARS]
+        stub["note"] = (
+            "Result exceeded the context budget; the preview is partial and never the whole "
+            "result. Read more with read_artifact, or pass the artifact id to deterministic tools."
         )
+        return json.dumps(stub)
 
     async def dispatch(self, call: ToolCall, context: ToolContext) -> ToolMessage:
         refusal = self._refuse(call)

@@ -171,3 +171,21 @@ def test_budget_steps_are_explained_rather_than_flagged(history: Store) -> None:
     spend_flags = {(f.entity_ref, f.day) for f in report.flags if f.metric == "spend"}
     assert not (spend_flags & changed)
     assert np.isfinite([f.score for f in report.flags]).all()
+
+
+def test_the_day_over_day_rule_corrects_both_days_for_lag() -> None:
+    from datetime import date
+
+    from paid_media_agent.analytics.anomalies import _rule_flags, _Series
+    from paid_media_agent.analytics.panel import PanelRow
+
+    def row(day: int, conversions: float, age: int) -> PanelRow:
+        return PanelRow("google_ads", "p1", "acme", "c1", "C1", date(2026, 9, day), 100.0,
+                        conversions, True, age, 100.0)  # fmt: skip
+
+    today, yesterday = row(10, 12, 1), row(9, 10, 2)
+    # 75% of day 10's conversions and 80% of day 9's are in: the true change is about +28%.
+    test = _Series(rows=[today], features=[[0.0]], targets=[12.0], completeness=[0.75])
+    curves = {"p1": {1: 0.75, 2: 0.8}}
+    flags = _rule_flags(test, "conversions", [today, yesterday], {"google_ads": 7}, curves)
+    assert flags == [], "+28% is inside the +/-50% rule once both days are corrected"

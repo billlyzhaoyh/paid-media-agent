@@ -85,7 +85,8 @@ async def test_current_date_is_appended_per_model_call(tmp_path: Path) -> None:
     agent = _agent(tmp_path, model, clock=lambda: datetime(2026, 9, 2, 12, tzinfo=UTC))
     await agent.send("t-1", "local-user", "What happened last week?")
     assert model.systems[-1].startswith("Base instructions.")
-    assert "The current date is 2026-09-02 (UTC)" in model.systems[-1]
+    assert "Today is Wednesday 2026-09-02 (UTC)" in model.systems[-1]
+    assert "last week (Monday to Sunday): 2026-08-24 to 2026-08-30" in model.systems[-1]
 
 
 async def test_offload_leaves_paged_filesystem_tools_alone(tmp_path: Path) -> None:
@@ -119,3 +120,57 @@ async def test_model_timeout_turns_a_stalled_call_into_an_error(tmp_path: Path) 
     assert reply.content.startswith("Model call failed after 1 attempts with TimeoutError")
     quick = _agent(tmp_path, _Recorder(), model_timeout_seconds=0.05, model_attempts=1)
     assert (await quick.send("t-1", "local-user", "hi")).messages[-1].content == "answer"
+
+
+async def test_an_offloaded_result_keeps_its_meaning_and_can_be_read_in_pages(
+    tmp_path: Path,
+) -> None:
+    import json
+
+    from paid_media_agent.tools.artifact_read import build_read_artifact_tool
+
+    body = json.dumps(
+        {"headline": [{"platform": "google_ads", "spend": 1}, {"platform": "meta_ads", "spend": 2}],
+         "caveats": ["attribution differs"], "rows": ["x" * 50] * 400}
+    )  # fmt: skip
+    big = ToolSpec(
+        name="summarize_window",
+        description="big",
+        parameters={"type": "object", "properties": {}},
+        handler=lambda _args, _ctx: body,
+    )
+    dispatcher = _dispatcher(tmp_path, [big], offload_chars=1000)
+    reader = build_read_artifact_tool(dispatcher.artifacts)
+    dispatcher.tools[reader.name] = reader
+    context = ToolContext("t-1", "local-user")
+    stub = json.loads(
+        (await dispatcher.dispatch(ToolCall("c1", "summarize_window", {}), context)).content
+    )
+    assert stub["offloaded"] and [h["platform"] for h in stub["headline"]] == [
+        "google_ads",
+        "meta_ads",
+    ]
+    assert stub["caveats"] == ["attribution differs"] and "read_artifact" in stub["note"]
+    first = json.loads(
+        (
+            await dispatcher.dispatch(
+                ToolCall("c2", "read_artifact", {"artifact_id": stub["artifact_id"]}), context
+            )
+        ).content
+    )
+    assert first["total_chars"] == len(body) and first["text"] == body[:5000]
+    rest = json.loads(
+        (await dispatcher.dispatch(
+            ToolCall("c3", "read_artifact", {"artifact_id": stub["artifact_id"], "offset": first["next_offset"]}),
+            context,
+        )).content
+    )  # fmt: skip
+    assert rest["text"] == body[5000:10000] and "offloaded" not in rest
+    bad = json.loads(
+        (
+            await dispatcher.dispatch(
+                ToolCall("c4", "read_artifact", {"artifact_id": "../.env"}), context
+            )
+        ).content
+    )
+    assert bad["error"] is True

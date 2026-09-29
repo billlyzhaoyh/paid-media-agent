@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
+from paid_media_agent.analytics.goals import account_today
 from paid_media_agent.analytics.panel import PanelRow, completeness, lag_curves, maturity_days
 from paid_media_agent.config import AccountRegistry
 from paid_media_agent.store.db import Store
@@ -160,6 +161,7 @@ def window_cells(
             min(pulled_on - day) AS age_days
         FROM entity_daily_latest
         WHERE account_alias IN ({marks}) AND entity_type = 'campaign' AND day BETWEEN ? AND ?
+            AND is_complete
         GROUP BY account_alias, platform, provider_account_id, entity_ref, day
         ORDER BY day
         """,  # noqa: S608 - only placeholders are interpolated
@@ -185,24 +187,25 @@ def window_cells(
             cell.impressions = (cell.impressions or 0.0) + r["impressions"]
         if r["clicks"] is not None:
             cell.clicks = (cell.clicks or 0.0) + r["clicks"]
+        share = completeness(
+            PanelRow(
+                r["platform"], r["provider_account_id"], r["account_alias"], r["entity_ref"],
+                cell.entity_name, r["day"], r["spend"] or 0.0, r["conversions"], True,
+                int(r["age_days"]), None,
+            ),
+            maturity,
+            curves,
+        )  # fmt: skip
+        if r["reported"] and share is None:
+            cell.unknown_lag_days += 1
+        # Value arrives with its conversions, so it is corrected by the same share.
+        factor = 1 / max(share, 0.05) if share is not None else 1.0
         if r["conversion_value"] is not None:
-            cell.value = (cell.value or 0.0) + r["conversion_value"]
+            cell.value = (cell.value or 0.0) + r["conversion_value"] * factor
         if r["reported"]:
             conv = r["conversions"] or 0.0
-            share = completeness(
-                PanelRow(
-                    r["platform"], r["provider_account_id"], r["account_alias"], r["entity_ref"],
-                    cell.entity_name, r["day"], r["spend"] or 0.0, conv, True,
-                    int(r["age_days"]), None,
-                ),
-                maturity,
-                curves,
-            )  # fmt: skip
-            if share is None:
-                cell.unknown_lag_days += 1
-                share = 1.0
             cell.reported = (cell.reported or 0.0) + conv
-            cell.conversions = (cell.conversions or 0.0) + conv / max(share, 0.05)
+            cell.conversions = (cell.conversions or 0.0) + conv * factor
     return cells
 
 
@@ -772,16 +775,18 @@ def known_changes(
 
 
 def default_windows(
-    store: Store, aliases: Sequence[str], days: int = DEFAULT_DAYS
+    store: Store, aliases: Sequence[str], days: int = DEFAULT_DAYS, *, before: date | None = None
 ) -> tuple[Window, Window] | None:
-    """The newest `days` reported days across the accounts, and the `days` before them."""
+    """The newest `days` complete days across the accounts (before `before`, the accounts' today),
+    and the `days` before them. A partial day would understate spend and conversions."""
     if not aliases:
         return None
     marks = ", ".join("?" * len(aliases))
+    cutoff = "AND day < ?" if before is not None else ""
     newest = store.fetch(
         f"SELECT max(day) FROM entity_daily_latest WHERE account_alias IN ({marks}) "  # noqa: S608
-        "AND entity_type = 'campaign'",
-        list(aliases),
+        f"AND entity_type = 'campaign' AND is_complete {cutoff}",
+        [*aliases, *([before] if before is not None else [])],
     )[0][0]
     if newest is None:
         return None
@@ -916,6 +921,7 @@ def resolve_windows(
     current_end: date | None = None,
     previous_start: date | None = None,
     previous_end: date | None = None,
+    today: date | None = None,
 ) -> tuple[Window, Window]:
     """The windows asked for; by default the newest week of data against the week before."""
     if (current_start is None) != (current_end is None) or (previous_start is None) != (
@@ -925,7 +931,7 @@ def resolve_windows(
     if current_start is None or current_end is None:
         if previous_start is not None:
             raise ValueError("give the current window when giving the previous one")
-        found = default_windows(store, aliases)
+        found = default_windows(store, aliases, before=today)
         if found is None:
             raise ValueError("no synced history for these accounts; run sync first")
         return found
@@ -974,6 +980,7 @@ async def explain_accounts(
             current_end=current_end,
             previous_start=previous_start,
             previous_end=previous_end,
+            today=min(account_today(accounts, alias) for alias in group),
         )
         report = explain(
             store,

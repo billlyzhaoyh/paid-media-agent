@@ -96,3 +96,22 @@ async def test_more_budget_on_one_campaign_is_mix_and_diminishing_returns(seed: 
 def test_a_quiet_account_is_mostly_called_noise() -> None:
     quiet = [_explain(*_run(replace(QUIET, seed=seed))).significant for seed in (1, 2, 3, 5)]
     assert sum(1 for s in quiet if s is False) >= 3
+
+
+def test_a_stable_account_shows_stable_roas_and_ignores_the_partial_day() -> None:
+    """Value is lag-corrected with its conversions, and the newest (incomplete) day is left out."""
+    from paid_media_agent.analytics.drivers import default_windows
+
+    params = replace(QUIET, days=120, seed=7)
+    store, alias = _run(params)
+    newest = store.fetch("SELECT max(day), bool_and(is_complete) FROM entity_daily_latest "
+                         "WHERE day = (SELECT max(day) FROM entity_daily_latest)")[0]  # fmt: skip
+    current, previous = default_windows(store, [alias])
+    if newest[1] is False:
+        assert current.end < newest[0], "an incomplete day never ends the window"
+    report = explain(store, [alias], metric="roas", current=current, previous=previous,
+                     currency="USD")  # fmt: skip
+    # No budget moves and no events: any change is noise, never a lag artefact read as a fall in
+    # value per conversion (before value was lag-corrected: ROAS "fell 20%, more than noise").
+    assert report.significant is not True
+    assert report.decomposition.change > -0.1

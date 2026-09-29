@@ -35,6 +35,11 @@ from paid_media_agent.tools.writes import (
         (57.5, "minor", "USD", 5750, Decimal("57.5")),
         (5000, "minor", "JPY", 5000, Decimal(5000)),
         (1.234, "minor", "KWD", 1234, Decimal("1.234")),
+        # Meta's own offsets: whole units for HUF and IDR, hundredths for KWD.
+        (10000, "meta_minor", "HUF", 10000, Decimal(10000)),
+        (50000, "meta_minor", "IDR", 50000, Decimal(50000)),
+        (57.5, "meta_minor", "USD", 5750, Decimal("57.5")),
+        (1.23, "meta_minor", "KWD", 123, Decimal("1.23")),
         (12.345, "micros", "USD", 12_350_000, Decimal("12.35")),
         ("40", "currency", "USD", 40.0, Decimal(40)),
     ],

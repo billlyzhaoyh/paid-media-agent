@@ -61,6 +61,7 @@ from paid_media_agent.tools.host_writes import (
 from paid_media_agent.tools.providers import (
     ProviderError,
     ProviderTimeout,
+    ProviderUnknownOutcome,
     ReadProvider,
     WriteProvider,
 )
@@ -149,6 +150,10 @@ class ApprovalPolicy(BaseModel):
         if approver_ref == requester_ref and not self.allow_self_approval:
             return False, "self-approval is not allowed"
         return True, "ok"
+
+    def may_decide(self, actor_ref: str, requester_ref: str) -> bool:
+        """Edit or reject: the requester or an approver, nobody else."""
+        return actor_ref == requester_ref or actor_ref in self.approver_refs
 
 
 class ApprovalSigner:
@@ -594,6 +599,8 @@ class ProposalService:
     ) -> ProposalRecord:
         record = self._require(proposal_id)
         cs = record.changeset
+        if not self._approval_policy.may_decide(editor_ref, cs.requester_ref):
+            raise WriteDenied("not_permitted", "only the requester or an approver can edit it")
         next_state = transition(record.state, ProposalEvent.EDIT)
         before = tuple(fv for fv in cs.before if fv.field in changes)
         if {fv.field for fv in before} != set(changes):
@@ -648,6 +655,8 @@ class ProposalService:
 
     def reject(self, proposal_id: UUID, *, actor_ref: str, message: str = "") -> ProposalRecord:
         record = self._require(proposal_id)
+        if not self._approval_policy.may_decide(actor_ref, record.changeset.requester_ref):
+            raise WriteDenied("not_permitted", "only the requester or an approver can reject it")
         state_value = transition(record.state, ProposalEvent.REJECT)
         updated = record.model_copy(
             update={
@@ -1107,6 +1116,13 @@ class WriteExecutor:
             op_ref = str(ref) if ref is not None else None
         except (ProviderTimeout, TimeoutError):
             outcome_reason = "provider timed out after submission; no retry was attempted"
+        except ProviderUnknownOutcome as exc:
+            # The connection failed without an answer, so the change may have been applied:
+            # read it back rather than record a failure.
+            outcome_reason = (
+                f"connection failed after submission ({sanitize_exception(exc)}); "
+                "no retry was attempted"
+            )
         except ProviderError as exc:
             self._service.mark(
                 proposal_id, ProposalEvent.FAIL, f"provider error: {sanitize_exception(exc)}"

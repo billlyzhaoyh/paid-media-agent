@@ -23,6 +23,7 @@ from paid_media_agent.tools.compute import (
 )
 from paid_media_agent.tools.goal_check import against_goals
 from paid_media_agent.tools.normalize import NormalizationError, rows_from_payload
+from paid_media_agent.tools.summary import cross_platform_caveats
 
 COMPARE_PERIODS_TOOL = "compare_periods"
 
@@ -62,7 +63,12 @@ def run_compare_periods(
     for artifact_id in args.artifact_ids:
         record = artifacts.read(artifact_id)
         if record.metadata.kind != "performance_rows":
-            raise ComputeError(f"{artifact_id} is not a performance_rows artifact")
+            raise ComputeError(
+                f"{artifact_id} is a {record.metadata.kind} artifact, not performance rows: pass "
+                "the artifact_id of a platform performance read (read_result with "
+                "artifact_kind performance_rows); for stored history use query_history, "
+                "explain_change, or check_pacing instead"
+            )
         rows = rows_from_payload(record.payload)
         if not rows:
             raise ComputeError(f"{artifact_id} contains no rows")
@@ -127,6 +133,12 @@ def run_compare_periods(
         tool_name=COMPARE_PERIODS_TOOL,
     )
     summary = summarize(comparison, metadata.artifact_id).model_dump(mode="json")
+    caveats = cross_platform_caveats(
+        {p.platform.value for p in platforms},
+        {f"{p.current_window.start}..{p.current_window.end}" for p in platforms},
+    )
+    if caveats:
+        summary["caveats"] = caveats
     judged = against_goals(by_account, start=current.start, end=current.end, goals=goals)
     if judged:
         summary["against_goals"] = judged

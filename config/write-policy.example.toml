@@ -95,7 +95,7 @@ target_arg = "campaign_id"
 editable_fields = ["daily_budget"]
 readback_fields = { daily_budget = "daily_budget" }
 units = { daily_budget = "account currency per day" }
-provider_units = { daily_budget = "minor" }
+provider_units = { daily_budget = "meta_minor" }
 readback_entity_key = "campaign"
 risk = "medium"
 notes = "Live Meta budget row from published source; unverified live. Readback tool needs review."

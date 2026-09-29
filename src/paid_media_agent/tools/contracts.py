@@ -101,6 +101,30 @@ def _share(value: JsonValue) -> float | None:
     return share / 100 if share > 1.0 else share  # a percentage where a share was expected
 
 
+PAGING_ARGS = frozenset({"after", "before", "cursor", "page_token", "next_page_token", "limit"})
+
+
+def _normal(value: JsonValue) -> JsonValue:
+    """Arguments as compared: JSON-in-a-string decoded, whitespace in queries collapsed."""
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("{"):
+            try:
+                return _normal(json.loads(text))
+            except json.JSONDecodeError:
+                return " ".join(text.split())
+        return " ".join(text.split())
+    if isinstance(value, dict):
+        return {k: _normal(v) for k, v in value.items()}
+    return value
+
+
+def _same_call(given: Mapping[str, JsonValue], call: ReadCall) -> bool:
+    ours = {k: _normal(v) for k, v in call.arguments.items() if k not in PAGING_ARGS}
+    theirs = {k: _normal(v) for k, v in given.items() if k not in PAGING_ARGS}
+    return ours == theirs
+
+
 class ReadContract:
     """The host-side `rows` shape: fixtures and direct adapters. Other contracts override."""
 
@@ -151,6 +175,25 @@ class ReadContract:
             self.signals_tool,
             {"start_date": start.isoformat(), "end_date": end.isoformat()},
             (start, end),
+        )
+
+    def canonical(self, tool: str, arguments: Mapping[str, JsonValue]) -> bool:
+        """Whether a read is one this contract would make itself (so its result is complete).
+
+        History keeps only complete reads: a filtered or partial read by the model (a GAQL query
+        on one device, a listing without budgets) must never replace a synced snapshot.
+        """
+        if tool in self.extra_tools:
+            return True
+        candidates: list[ReadCall | None] = [self.settings_call()]
+        window = self.requested_window(arguments)
+        if window is not None:
+            schemas: tuple[dict[str, JsonValue], ...] = ({}, {"properties": {"time_increment": {}}})
+            for schema in schemas:
+                candidates += self.performance_calls(window[0], window[1], schema)
+            candidates.append(self.signals_call(window[0], window[1]))
+        return any(
+            c is not None and c.tool == tool and _same_call(arguments, c) for c in candidates
         )
 
     def signals(
@@ -245,7 +288,7 @@ class MetaInsightsContract(ReadContract):
         "get_insights": ("account_id", "time_range", "level", "limit", "after"),
         "get_campaigns": ("account_id", "limit", "after"),
     }
-    budget_unit: MoneyUnit = "minor"
+    budget_unit: MoneyUnit = "meta_minor"
     resync_days = 8
     page_size = 500
 
@@ -347,7 +390,7 @@ class MetaInsightsContract(ReadContract):
                 k: v for k, v in item.items() if k not in ("daily_budget", "lifetime_budget")
             }
             campaign["daily_budget"] = (
-                str(to_currency(daily, "minor", binding.currency)) if daily else None
+                str(to_currency(daily, "meta_minor", binding.currency)) if daily else None
             )
             campaign["budget_type"] = (
                 "daily" if daily else "lifetime" if lifetime else "ad_set_budgets"

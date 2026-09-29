@@ -36,7 +36,7 @@ contract matches", and their tools are still available to the agent for question
     account's `conversion_action` (`config/accounts.toml`). Meta omits an action type with
     nothing to report, so absent means zero. Without a conversion action, conversions are recorded
     as **missing, not zero**, and the read lists the action types it saw.
-  - *Budgets.* Budgets arrive as minor-unit strings (cents for USD, yen for JPY) and are stored in
+  - *Budgets.* Budgets arrive as strings in Meta's minor unit (cents for USD, yen for JPY, whole forints for HUF) and are stored in
     account currency. Campaigns that budget lifetime or at the ad-set level have no daily budget,
     so the bandit leaves them out.
 - **Google Ads.**
@@ -94,11 +94,19 @@ classified by its hint, and every other unannotated tool stays denied.
 
 ## Money units
 
-`domain/money.py` converts between account currency and a provider's `minor` units (ISO 4217
-exponents) or `micros`.
+`domain/money.py` converts between account currency and a provider's units:
+- `minor` uses ISO 4217 exponents;
+- `meta_minor` uses Meta's own offset table: whole units for CLP, COP, CRC, HUF, ISK, IDR, JPY,
+  KRW, PYG, TWD and VND, and hundredths for everything else, including ISO's three-decimal
+  currencies;
+- `micros`.
+
+Meta differs from ISO for COP, CRC, HUF, IDR and TWD, and for BHD, JOD, KWD, OMR and TND. With
+ISO's table, their budgets would be 100 or 10 times off. `doctor --live` checks budgets against
+spend on the first live account.
 - **Contracts** convert settings budgets on the way in.
 - **Writes** convert through a write-policy row's `provider_units`, such as
-  `{ daily_budget = "minor" }`. Proposals, change events, cards, and the bandit stay in account
+  `{ daily_budget = "meta_minor" }`. Proposals, change events, cards, and the bandit stay in account
   currency. The canonical arguments, which the approval digest covers, hold provider units, and
   readback converts back before comparing.
 

@@ -4,26 +4,43 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import tempfile
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
-from datetime import date
+from datetime import date, timedelta
 from importlib import resources
 from pathlib import Path
 from typing import Any
 
 from paid_media_agent.config import Settings
-from paid_media_agent.evals.checks import run_checks
+from paid_media_agent.evals.checks import CallRecord as ToolCallRecord
+from paid_media_agent.evals.checks import Transcript, run_checks
 from paid_media_agent.evals.judge import judge
 from paid_media_agent.evals.report import totals
 from paid_media_agent.evals.runner import eval_dates, run_question
 from paid_media_agent.evals.store import EvalStore
+from paid_media_agent.harness.messages import Usage
 from paid_media_agent.harness.models import ChatModel
 from paid_media_agent.harness.usage import CallRecord, LlmCallRecorder
 
 ResultHandler = Callable[[dict[str, Any]], Awaitable[None] | None]
+_REFUSED = re.compile(r"HTTP (401|402|403)\b")
+"""The provider refused the key (auth) or the account (credits): later questions would only
+measure that, so the run stops."""
+
+
+def provider_refusal(*texts: str | None) -> str | None:
+    for text in texts:
+        found = _REFUSED.search(text or "")
+        if found:
+            reason = {"401": "the key was refused", "402": "out of credits"}.get(
+                found.group(1), "access was refused"
+            )
+            return f"{reason} (HTTP {found.group(1)})"
+    return None
 
 
 def questions_text() -> str:
@@ -87,6 +104,7 @@ async def run_suite(
     )
     recorder = LlmCallRecorder(store.store)
     results: list[dict[str, Any]] = []
+    aborted: str | None = None
     for question in questions:
         with tempfile.TemporaryDirectory(prefix="pma-eval-") as workdir:
             run = await run_question(
@@ -113,6 +131,7 @@ async def run_suite(
                     attempt=1,
                     status="error" if verdict.error else "ok",
                     latency_ms=int((time.monotonic() - started) * 1000),
+                    usage=Usage(input_tokens=verdict.input_tokens, cost_usd=verdict.cost_usd),
                     error=verdict.error,
                 )
             )
@@ -135,11 +154,74 @@ async def run_suite(
             "seconds": transcript.seconds,
             "error": transcript.error,
         }
+        refused = provider_refusal(
+            transcript.error,
+            transcript.answer,
+            verdict.error if verdict is not None else None,
+        )
+        if refused:
+            # The provider refused; this question measured that, not the agent. Stop here.
+            aborted = f"stopped at {question['id']}: {refused}"
+            break
         store.add_result(run_id, row)
         results.append(row)
         if on_result is not None:
             outcome = on_result(row)
             if outcome is not None:
                 await outcome
-    store.finish_run(run_id, totals(results))
+    summary = totals(results)
+    if aborted:
+        summary["aborted"] = aborted
+    store.finish_run(run_id, summary)
     return run_id, results
+
+
+def regrade(store: EvalStore, run_id: uuid.UUID, *, project_root: Path) -> uuid.UUID:
+    """Re-run the deterministic checks on a stored run's transcripts, keeping its judge verdicts.
+
+    No model is called: the answers, calls, and results are the stored ones. Artifact payloads
+    the results pointed to are not stored, so grounding sees only the results themselves. The
+    new run records where it came from.
+    """
+    run = store.run(run_id)
+    results = store.results(run_id)
+    questions = {q["id"]: q for q in load_questions()}
+    anchor: date = run["anchor"]
+    today = anchor + timedelta(days=2)
+    previous = json.loads(run["settings"]) if isinstance(run["settings"], str) else run["settings"]
+    new_id = store.start_run(
+        model=run["model"],
+        judge_model=run["judge_model"],
+        anchor=anchor,
+        questions_sha=hashlib.sha256(questions_text().encode()).hexdigest()[:12],
+        git_sha=git_sha(project_root),
+        settings={**(previous or {}), "regraded_from": str(run_id)},
+    )
+    rows = []
+    for old in results:
+        question = questions.get(old["question_id"])
+        if question is None:
+            continue
+        writes = next((c for c in old["checks"] if c["name"] == "writes"), None)
+        detail = writes["detail"] if writes else ""
+        attempted = re.match(r"(\d+) provider mutation", detail)
+        mutations = int(attempted.group(1)) if attempted else 0
+        transcript = Transcript(
+            question_id=old["question_id"],
+            answer=old["answer"] or "",
+            calls=[ToolCallRecord(**call) for call in old["calls"]],
+            paused=detail == "paused for approval",
+            mutations=mutations,
+            error=old["error"],
+        )
+        checks = run_checks(transcript, question, anchor=anchor, today=today)
+        verdict = old["judge"]
+        row = {
+            **old,
+            "passed": all(c.passed for c in checks) and (verdict is None or verdict["passed"]),
+            "checks": [c.__dict__ for c in checks],
+        }
+        store.add_result(new_id, row)
+        rows.append(row)
+    store.finish_run(new_id, totals(rows))
+    return new_id

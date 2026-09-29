@@ -37,7 +37,11 @@ def _with_reading(flag: dict[str, Any]) -> dict[str, Any]:
         f"{flag['metric']} {flag['observed']} on {flag['day']} is {side} the expected range "
         f"{flag['lo']} to {flag['hi']} (expected {flag['expected']}; {flag['method']})"
     )
-    return {"reading": reading, **flag}
+    shown = {k: v for k, v in flag.items() if k != "score"}
+    if "score" in flag:
+        # "score" read as a percentage ("17% above"); name it for what it is.
+        shown["band_distance"] = flag["score"]
+    return {"reading": reading, **shown}
 
 
 def build_check_anomalies_tool(
@@ -72,8 +76,10 @@ def build_check_anomalies_tool(
             "A flag is a prompt to investigate, not a finding. Conversions are checked on an "
             "earlier window than spend (see windows) because recent conversions are still "
             "arriving; state both windows. The method says how each flag was judged; "
-            "dod_rule_fallback is the ±50% day-over-day rule. Days never pulled into history are "
-            "not checked."
+            "dod_rule_fallback is the ±50% day-over-day rule. band_distance is how far outside "
+            "the expected range a day fell, as a share of the range's width (0.2 = a fifth of a "
+            "range beyond its edge); it is not a percentage change. Days never pulled into "
+            "history are not checked."
         )
         return json.dumps(result)
 

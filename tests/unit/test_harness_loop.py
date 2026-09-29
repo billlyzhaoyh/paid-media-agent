@@ -259,3 +259,61 @@ async def test_read_tools_are_bound_only_once_activated_and_the_oldest_is_droppe
     context.activate(["platform_b"])
     assert {t.name for t in agent.bound_tools("t")} & {"platform_a", "platform_b"} == {"platform_b"}
     assert agent.conversation("t").activated_tools == ("platform_b",)
+
+
+async def test_two_turns_on_one_thread_run_one_after_the_other(tmp_path: Path) -> None:
+    import asyncio
+    from dataclasses import replace
+
+    steps = [
+        lambda _m: _calls("read"),
+        lambda _m: AssistantMessage("first done"),
+        lambda _m: AssistantMessage("second done"),
+    ]
+    agent, _ = _agent(Store(), tmp_path, ScriptedChatModel(steps=steps))
+    started = asyncio.Event()
+    spec = agent.dispatcher.tools["read"]
+
+    async def slow(args: dict[str, Any], context: ToolContext) -> str:
+        started.set()
+        await asyncio.sleep(0.05)
+        return "{}"
+
+    agent.dispatcher.tools["read"] = replace(spec, handler=slow)
+    first = asyncio.create_task(agent.send("t", "alice", "first"))
+    await started.wait()
+    await agent.send("t", "alice", "second")
+    await first
+    messages = agent.conversation("t").messages
+    ids = [m.tool_call_id for m in messages if isinstance(m, ToolMessage)]
+    assert len(ids) == len(set(ids)) == 1, "one result per call, never INTERRUPTED plus a result"
+    assert [m.content for m in messages if isinstance(m, AssistantMessage) and m.content] == [
+        "first done",
+        "second done",
+    ]
+
+
+async def test_a_failing_progress_callback_never_drops_a_pause(tmp_path: Path) -> None:
+    model = ScriptedChatModel(steps=[lambda _m: _calls("execute")])
+    agent, ran = _agent(Store(), tmp_path, model)
+
+    async def broken(_event: Any) -> None:
+        raise RuntimeError("slack is down")
+
+    conversation = await agent.send("t", "alice", "go", on_event=broken)
+    assert conversation.awaiting_approval and ran == []
+
+
+def test_the_calendar_resolves_windows_across_month_and_year_boundaries() -> None:
+    from datetime import date
+
+    from paid_media_agent.harness.loop import calendar_lines
+
+    text = calendar_lines(date(2026, 1, 1))
+    assert "Today is Thursday 2026-01-01" in text
+    assert "last week (Monday to Sunday): 2025-12-22 to 2025-12-28" in text
+    assert "last month: 2025-12-01 to 2025-12-31" in text
+    assert "this month to date: 2026-01-01 to 2026-01-01" in text
+    tuesday = calendar_lines(date(2026, 9, 29))
+    assert "last week (Monday to Sunday): 2026-09-21 to 2026-09-27" in tuesday
+    assert "the week before: 2026-09-14 to 2026-09-20" in tuesday

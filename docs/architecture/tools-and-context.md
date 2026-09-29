@@ -47,6 +47,18 @@ The dispatcher also appends each performance read and campaign listing to the hi
 the state file ([History and simulation](history-and-simulation.md)). The model reads that history
 only through `query_history`'s fixed queries.
 
+## Offloaded results
+
+A result over `PAID_MEDIA_RESULT_OFFLOAD_CHARS` becomes an artifact and a stub.
+- The stub keeps the result's top-level `headline`, `summary`, `reading`, `caveats` and notes
+  whole, up to 2,000 characters, next to a 400-character preview. Tools put those fields first,
+  so a partial view still shows every account.
+- The core tool `read_artifact(artifact_id, offset)` pages through any artifact, 5,000
+  characters at a time. It reads by id only, is never offloaded itself, and is how the model
+  reads the rest.
+- The first eval run showed why: a cross-platform summary's preview showed only Google, and the
+  model reported it as the total for every platform.
+
 ## Context budget and caching
 
 Every model call sends the whole thread, read back from the state file.

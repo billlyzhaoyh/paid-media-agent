@@ -76,3 +76,21 @@ def test_the_cli_backs_up_restores_and_checks_the_live_path_on_sample_data(
     assert checks["live:demo-google:contract"]["detail"] == "rows, host"
     assert checks["live:demo-google:read"]["status"] == "ok"
     assert checks["account_config"]["status"] == "ok", "the example file is fine in sample mode"
+
+
+def test_a_backup_from_before_a_migration_restores_into_a_file_that_opens(tmp_path: Path) -> None:
+    older = tmp_path / "older.duckdb"
+    store = Store(older)
+    # As an older build wrote it: without the two newest migrations' tables.
+    store.write("DROP TABLE eval_results")
+    store.write("DROP TABLE eval_runs")
+    store.write("DROP TABLE llm_calls")
+    store.write("DELETE FROM schema_migrations WHERE version IN ('0011_llm_calls', '0012_evals')")
+    exported = store.backup(tmp_path / "backup")
+    store.close()
+    target = restore_backup(exported, tmp_path / "restored.duckdb")
+    reopened = Store(target)
+    assert reopened.fetch("SELECT count(*) FROM llm_calls") == [(0,)]
+    versions = {v for (v,) in reopened.fetch("SELECT version FROM schema_migrations")}
+    assert {"0011_llm_calls", "0012_evals"} <= versions
+    reopened.close()

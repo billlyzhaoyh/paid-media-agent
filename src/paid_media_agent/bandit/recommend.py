@@ -46,6 +46,8 @@ Mode = Literal["recommend", "simulate", "backtest"]
 POLICY_VERSION = "cbs-v1"
 OBJECTIVE = "max_conversions"
 PROPENSITY_BAND = 0.05
+TARGET_TOLERANCE = 0.005
+"""A recommended split within 0.5% of the target CPA counts as meeting it."""
 """A redraw counts toward the propensity when its budget is within 5% of the chosen one."""
 
 
@@ -211,6 +213,9 @@ def budget_bounds(arm: Arm, config: BanditConfig) -> tuple[float, float, list[st
         return current, current, ["hold"]
     step = min(config.max_step, rules.max_step) if rules and rules.max_step else config.max_step
     floor = max(config.min_budget, (rules.min_daily_budget or 0.0) if rules else 0.0)
+    if floor > current * (1 + step):
+        # The platform's minimum is beyond one step: a decision may not jump there on its own.
+        return current, current, ["platform_minimum"]
     lower = max(floor, current * (1 - step))
     upper = current * (1 + step)
     why: list[str] = ["platform_step"] if step < config.max_step else []
@@ -223,6 +228,7 @@ def budget_bounds(arm: Arm, config: BanditConfig) -> tuple[float, float, list[st
             upper, why = can_spend, [f"{arm.constraint.kind}_ceiling"]
     if config.max_budget is not None and config.max_budget < upper:
         upper, why = config.max_budget, ["max_budget"]
+        lower = min(lower, upper)
     return lower, max(upper, lower), why
 
 
@@ -475,6 +481,17 @@ async def recommend(
     run.expected_cpa = _expected_cpa(
         [(d, float(d.final_budget)) for d in decisions if d.final_budget is not None]
     )
+    if config.target_cpa is not None and run.expected_cpa is not None:
+        # Judge the target on the budgets recommended, not on the mean-curve split used to cut:
+        # an exploring (Thompson) split can land a little above it.
+        target = float(config.target_cpa)
+        run.target_cpa_reached = run.expected_cpa <= target * (1 + TARGET_TOLERANCE)
+        if not run.target_cpa_reached and (run.capped_by_target_cpa or config.policy != "greedy"):
+            run.notes.append(
+                f"the recommended budgets' expected CPA is {run.expected_cpa:,.2f}, "
+                f"{run.expected_cpa / target - 1:+.1%} against the {target:,.2f} target "
+                "(this split explores, so it can sit a little above the mean-curve cut)"
+            )
     freed = sum(
         max(0.0, float(d.arm.current_budget or 0.0) - float(d.final_budget or 0.0))
         for d in decisions

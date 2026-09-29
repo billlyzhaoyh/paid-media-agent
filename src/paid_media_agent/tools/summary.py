@@ -69,6 +69,23 @@ def budgets_from_payload(payload: dict[str, JsonValue]) -> dict[str, Decimal]:
     return budgets
 
 
+def cross_platform_caveats(platforms: set[str], windows: set[str]) -> list[str]:
+    """What a reader must hear before comparing platforms or adding them up."""
+    caveats: list[str] = []
+    if len(platforms) > 1:
+        caveats.append(
+            "Each platform counts conversions with its own attribution; they are not "
+            "deduplicated, so platform conversions and CPAs are not comparable one to one and "
+            "do not add up to a total."
+        )
+    if len(windows) > 1:
+        caveats.append(
+            "Platforms cover different days (" + ", ".join(sorted(windows)) + "); name the "
+            "days each is missing."
+        )
+    return caveats
+
+
 def summarize_rows(
     rows: list[PerformanceRow],
     *,
@@ -166,7 +183,12 @@ def run_summarize_window(
     for artifact_id in args.artifact_ids:
         record = artifacts.read(artifact_id)
         if record.metadata.kind != "performance_rows":
-            raise ComputeError(f"{artifact_id} is not a performance_rows artifact")
+            raise ComputeError(
+                f"{artifact_id} is a {record.metadata.kind} artifact, not performance rows: pass "
+                "the artifact_id of a platform performance read (read_result with "
+                "artifact_kind performance_rows); for stored history use query_history, "
+                "explain_change, or check_pacing instead"
+            )
         rows = rows_from_payload(record.payload)
         if not rows:
             raise ComputeError(f"{artifact_id} contains no rows")
@@ -192,7 +214,28 @@ def run_summarize_window(
         requested_window=f"{args.start_date.isoformat()}..{args.end_date.isoformat()}",
         tool_name=SUMMARIZE_WINDOW_TOOL,
     )
-    result: dict[str, Any] = {"artifact_id": metadata.artifact_id, "platforms": platforms}
+    headline = [
+        {
+            "platform": platform,
+            "account": account,
+            "covered_window": summary["covered_window"],
+            "days_covered": summary["days_covered"],
+            "currency": summary["currency"],
+            **{k: summary["totals"][k] for k in ("spend", "conversions", "cpa", "roas")},
+        }
+        for platform, accounts in platforms.items()
+        for account, summary in accounts.items()
+    ]
+    # The headline comes first, so even a partial view of the result lists every account.
+    result: dict[str, Any] = {"headline": headline}
+    caveats = cross_platform_caveats(
+        {h["platform"] for h in headline},
+        {h["covered_window"] for h in headline},
+    )
+    if caveats:
+        result["caveats"] = caveats
+    result["artifact_id"] = metadata.artifact_id
+    result["platforms"] = platforms
     judged = against_goals(by_account, start=args.start_date, end=args.end_date, goals=goals)
     if judged:
         result["against_goals"] = judged

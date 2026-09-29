@@ -12,9 +12,9 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
 from paid_media_agent.harness.context import ContextView, fit_to_budget
@@ -53,8 +53,40 @@ ApprovalGate = Callable[[ToolCall, ToolContext], bool]
 
 
 async def _emit(handler: EventHandler | None, event: RunEvent) -> None:
-    if handler is not None:
+    """Progress is best effort: a failing surface callback never stops or drops a run."""
+    if handler is None:
+        return
+    try:
         await handler(event)
+    except Exception:
+        logger.warning("progress callback failed", exc_info=True)
+
+
+def _span(start: date, end: date) -> str:
+    return f"{start.isoformat()} to {end.isoformat()}"
+
+
+def calendar_lines(today: date) -> str:
+    """Today and the windows people ask about, resolved in code: models miscount dates."""
+    yesterday = today - timedelta(days=1)
+    this_monday = today - timedelta(days=today.weekday())
+    last_monday = this_monday - timedelta(days=7)
+    month_start = today.replace(day=1)
+    last_month_end = month_start - timedelta(days=1)
+    lines = [
+        f"Today is {today:%A} {today.isoformat()} (UTC). Resolved windows:",
+        f"- yesterday: {yesterday.isoformat()} ({yesterday:%A})",
+        f"- last week (Monday to Sunday): {_span(last_monday, last_monday + timedelta(days=6))}",
+        f"- the week before: {_span(last_monday - timedelta(days=7), last_monday - timedelta(days=1))}",
+        f"- the 7 days to yesterday: {_span(today - timedelta(days=7), yesterday)}",
+        f"- the 28 days to yesterday: {_span(today - timedelta(days=28), yesterday)}",
+        f"- this month to date: {_span(month_start, today)}",
+        f"- last month: {_span(last_month_end.replace(day=1), last_month_end)}",
+        "Use these windows. Platforms report a day or two late, so each read says the date its "
+        "data runs through: 'the last N days of data' ends there, and any days of a window "
+        "without data are named, never compared as if complete.",
+    ]
+    return "\n".join(lines)
 
 
 def unanswered_calls(messages: Sequence[Message]) -> list[ToolCall]:
@@ -97,6 +129,11 @@ class Agent:
         self._clock = clock
         self._call_log = call_log
         self._context_budget = context_budget_tokens
+        self._turns: dict[str, asyncio.Lock] = {}
+        """One turn at a time per thread: two at once would give a call two results."""
+
+    def _turn(self, thread_id: str) -> asyncio.Lock:
+        return self._turns.setdefault(thread_id, asyncio.Lock())
 
     # ------------------------------------------------------------------ public
 
@@ -114,6 +151,12 @@ class Agent:
 
     async def send(
         self, thread_id: str, caller_ref: str, text: str, on_event: EventHandler | None = None
+    ) -> Conversation:
+        async with self._turn(thread_id):
+            return await self._send(thread_id, caller_ref, text, on_event)
+
+    async def _send(
+        self, thread_id: str, caller_ref: str, text: str, on_event: EventHandler | None
     ) -> Conversation:
         conversation = self.conversations.load(thread_id)
         for call in conversation.pending:
@@ -136,8 +179,27 @@ class Agent:
         decision: Decision,
         message: str = "",
         on_event: EventHandler | None = None,
+        *,
+        call_ids: Collection[str] | None = None,
     ) -> Conversation:
-        pending = self.conversations.pending(thread_id)
+        """Decide paused calls, then continue the run. `call_ids` limits the decision to those
+        calls (a reviewer approves one proposal, never whatever else is paused); the rest stay
+        paused."""
+        async with self._turn(thread_id):
+            return await self._resume(thread_id, caller_ref, decision, message, on_event, call_ids)
+
+    async def _resume(
+        self,
+        thread_id: str,
+        caller_ref: str,
+        decision: Decision,
+        message: str,
+        on_event: EventHandler | None,
+        call_ids: Collection[str] | None,
+    ) -> Conversation:
+        pending = [
+            c for c in self.conversations.pending(thread_id) if call_ids is None or c.id in call_ids
+        ]
         if not pending:
             return self.conversations.load(thread_id)
         await _emit(on_event, RunEvent("start"))
@@ -160,6 +222,10 @@ class Agent:
                     thread_id, ToolMessage(call.id, call.name, result, status="error")
                 )
                 await _emit(on_event, RunEvent("tool", id=call.id, name=call.name, status="error"))
+        if self.conversations.pending(thread_id):
+            # Other calls still wait for their own decision; every call needs a result before
+            # the model runs again.
+            return self.conversations.load(thread_id)
         return await self._run(thread_id, caller_ref, on_event)
 
     # ------------------------------------------------------------------ loop
@@ -179,8 +245,7 @@ class Agent:
         return ToolContext(thread_id=thread_id, caller_ref=caller_ref, activate=activate)
 
     def _system(self) -> str:
-        today = self._clock().date().isoformat()
-        return f"{self.system_prompt}\n\nThe current date is {today} (UTC).".strip()
+        return f"{self.system_prompt}\n\n{calendar_lines(self._clock().date())}".strip()
 
     def _record(
         self,

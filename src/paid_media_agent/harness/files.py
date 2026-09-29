@@ -2,7 +2,8 @@
 
 Paths are virtual and rooted at the repository (`/workspace/note.md`). Every path is checked
 twice, as written and after resolving symlinks, so `/skills/..` or a link cannot reach a denied
-file. Denied paths answer "permission denied" and nothing else.
+file, and without regard to case, because the file systems on macOS and Windows ignore it.
+Denied paths answer "permission denied" and nothing else.
 """
 
 from __future__ import annotations
@@ -34,7 +35,12 @@ DENY_ALL = (
     "/workspace/sources/**",
     "/docs/org/**",
 )
-DENY_WRITE = ("/workspace/skills/**",)
+DENY_WRITE = (
+    "/workspace/skills/**",
+    # Artifacts and rendered reports are written by code and hashed; the model may not forge them.
+    "/workspace/analysis/**",
+    "/workspace/out/**",
+)
 ALLOW_WRITE = ("/workspace/**",)
 READ_LIMIT = 2000
 LINE_CHARS = 2000
@@ -42,7 +48,9 @@ MAX_MATCHES = 200
 
 
 def _matches(path: str, patterns: Sequence[str]) -> bool:
-    for pattern in patterns:
+    """Case-insensitive: macOS and Windows file systems are, so `/.ENV` is `/.env`."""
+    path = path.casefold()
+    for pattern in (p.casefold() for p in patterns):
         if pattern.endswith("/**"):
             base = pattern[:-3]
             if path == base or path.startswith(base + "/"):

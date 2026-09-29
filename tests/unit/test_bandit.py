@@ -407,3 +407,22 @@ async def test_a_monthly_budget_scales_the_current_total(account: Store) -> None
         budget_scale=0.5,
     )
     assert explicit.total_source == "explicit", "an explicit total wins over the monthly scale"
+
+
+async def test_target_cpa_reached_is_judged_on_the_budgets_recommended(account: Store) -> None:
+    free = await recommend(
+        account, None, as_of=AS_OF, config=BanditConfig(policy="greedy"), mode="simulate", seed=5
+    )
+    target = free.expected_cpa * 0.98
+    for seed in range(8):
+        run = await recommend(
+            account,
+            None,
+            as_of=AS_OF,
+            config=BanditConfig(policy="thompson", target_cpa=target),
+            mode="simulate",
+            seed=seed,
+        )
+        assert run.target_cpa_reached == (run.expected_cpa <= target * 1.005)
+        if not run.target_cpa_reached:
+            assert any("recommended budgets' expected CPA" in n for n in run.notes)

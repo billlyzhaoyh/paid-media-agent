@@ -2068,10 +2068,16 @@ def eval_group() -> None:
 
 def _eval_store(path: str | None) -> Any:
     from paid_media_agent.evals.store import DEFAULT_PATH, EvalStore
+    from paid_media_agent.store import StoreBusy
 
     target = Path(path) if path else project_root() / DEFAULT_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
-    return EvalStore(target)
+    try:
+        return EvalStore(target)
+    except StoreBusy:
+        raise click.ClickException(
+            f"{target} is in use (an eval run holds it); try again when it finishes"
+        ) from None
 
 
 def _eval_model(spec: str, settings: Settings, *, rpm: int) -> Any:
@@ -2094,6 +2100,9 @@ def _echo_eval(run: dict[str, Any], results: list[dict[str, Any]], against: Any)
     from paid_media_agent.evals.report import compare, totals, why
 
     t = totals(results)
+    aborted = (run.get("totals") or {}).get("aborted")
+    if aborted:
+        click.echo(f"RUN INCOMPLETE: {aborted}; graded questions below are the ones before it.")
     click.echo(
         f"run {str(run['run_id'])[:8]} · {run['model']} · judge {run['judge_model'] or 'none'} · "
         f"anchor {run['anchor']} · git {run['git_sha'] or '?'}"
@@ -2119,7 +2128,9 @@ def _echo_eval(run: dict[str, Any], results: list[dict[str, Any]], against: Any)
         )
     if against is not None:
         base_run, base_results = against
-        diff = compare(results, base_results)
+        diff = compare(results, base_results, current_run=run, against_run=base_run)
+        for warning in diff["warnings"]:
+            click.echo(f"warning: not like for like, {warning}")
         click.echo(
             f"against {str(base_run['run_id'])[:8]} ({base_run['model']}), "
             f"{diff['questions']} shared questions: pass rate {diff['pass_rate'][0]} -> "
@@ -2230,10 +2241,35 @@ def eval_report(run_ref: str | None, against: str, store_path: str | None, as_js
     if as_json:
         body = {"run": run, "totals": totals(results), "results": results}
         if base is not None:
-            body["against"] = {"run_id": base[0]["run_id"], **compare(results, base[1])}
+            body["against"] = {
+                "run_id": base[0]["run_id"],
+                **compare(results, base[1], current_run=run, against_run=base[0]),
+            }
         click.echo(json.dumps(body, indent=2, default=str))
         return
     _echo_eval(run, results, base)
+
+
+@eval_group.command("regrade")
+@click.argument("run_ref")
+@click.option("--store", "store_path", default=None)
+def eval_regrade(run_ref: str, store_path: str | None) -> None:
+    """Re-check a stored run's answers with the current checks (no model is called)."""
+    from paid_media_agent.evals.suite import regrade
+
+    store = _eval_store(store_path)
+    try:
+        run_id = store.resolve(run_ref)
+        if run_id is None:
+            raise click.ClickException(f"no eval run {run_ref}")
+        new_id = regrade(store, run_id, project_root=project_root())
+        run, results = store.run(new_id), store.results(new_id)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    finally:
+        store.close()
+    click.echo(f"regraded {str(run_id)[:8]} as {str(new_id)[:8]}")
+    _echo_eval(run, results, None)
 
 
 @eval_group.command("baseline")

@@ -29,6 +29,10 @@ class ProviderTimeout(ProviderError):
     """The provider did not answer in time. The outcome is unknown, not failed."""
 
 
+class ProviderUnknownOutcome(ProviderError):
+    """The connection failed before an answer: the provider may or may not have applied it."""
+
+
 class ProviderRateLimited(ProviderError):
     """The provider refused the call for rate or quota reasons. Reads may retry after a pause."""
 

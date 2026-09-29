@@ -61,6 +61,10 @@ def restore_backup(directory: Path, target: Path) -> Path:
         with store.transaction() as cursor:
             for table, source in copies:
                 name = table.strip('"')
+                if name == "schema_migrations":
+                    # The new file's record of its own migrations stands: an older backup's
+                    # would make the next open re-run migrations that already created tables.
+                    continue
                 parquet = directory / Path(source).name  # the backup may have been moved
                 # Names come from the backup's own load.sql, checked against the new schema.
                 if name not in tables:

@@ -207,10 +207,10 @@ async def test_meta_reads_are_admitted_and_sync_one_day_per_call_into_currency(
     assert insight_calls[0] == {
         "level": "campaign",
         "limit": 500,
-        "time_range": {"since": (END - timedelta(days=7)).isoformat()}
-        | {"until": (END - timedelta(days=7)).isoformat()},
+        "time_range": {"since": END.isoformat(), "until": END.isoformat()},
         "account_id": "act_1234567890",
-    }
+    }, "the newest day first, so a call limit never drops yesterday"
+    assert insight_calls[-1]["time_range"]["since"] == (END - timedelta(days=7)).isoformat()
     assert [a.get("after") for n, a in wired.client.calls if n == "get_campaigns"] == [
         None,
         "QVFIUm",
@@ -338,12 +338,12 @@ async def test_sync_stops_at_the_call_limit_and_says_what_it_skipped(
         aliases=("meta-us", "google"),
         max_calls=5,
     )
-    assert run.calls == 5 and len(wired.client.calls) == 5
-    assert run.unavailable == [
-        "meta-us 2026-09-06: stopped at the 5-call limit (PAID_MEDIA_SYNC_MAX_CALLS); later "
-        "windows were skipped"
-    ]
-    assert "google" not in run.contracts, "nothing after the limit is called"
+    assert run.calls <= 5 and len(wired.client.calls) == run.calls
+    (stopped,) = run.unavailable
+    assert stopped.startswith("meta-us 2026-09-2") and "share of the call limit" in stopped
+    assert "google" in run.contracts, "one account's per-day calls never starve the next"
+    meta_days = [a["time_range"]["since"] for n, a in wired.client.calls if n == "get_insights"]
+    assert meta_days == sorted(meta_days, reverse=True), "newest days first"
 
 
 @pytest.mark.parametrize("shape", ["nested", "dotted"])

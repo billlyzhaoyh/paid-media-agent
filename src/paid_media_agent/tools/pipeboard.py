@@ -29,6 +29,7 @@ from paid_media_agent.tools.providers import (
     ProviderRateLimited,
     ProviderResult,
     ProviderTimeout,
+    ProviderUnknownOutcome,
 )
 
 logger = logging.getLogger(__name__)
@@ -276,7 +277,8 @@ async def invoke_mcp_tool(
     except Exception as exc:
         if getattr(getattr(exc, "response", None), "status_code", None) == 429:
             raise ProviderRateLimited("rate limited (HTTP 429)") from None
-        raise ProviderError(sanitize_exception(exc)) from None
+        # A transport failure is not a provider answer: a mutation may have been applied.
+        raise ProviderUnknownOutcome(sanitize_exception(exc)) from None
     if result.is_error:
         raise ProviderError(sanitize_exception(RuntimeError(result.text[:300])))
     payload = _payload(result)

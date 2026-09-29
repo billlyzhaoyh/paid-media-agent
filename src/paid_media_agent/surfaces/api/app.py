@@ -309,7 +309,8 @@ def create_app(runtime: Any, *, scheduler: Scheduler | None = None) -> Any:
             )
         except WriteDenied as exc:
             raise HTTPException(
-                status_code=409, detail=f"{exc.reason}: {exc.detail}".rstrip(": ")
+                status_code=403 if exc.reason == "not_permitted" else 409,
+                detail=f"{exc.reason}: {exc.detail}".rstrip(": "),
             ) from None
         return _outcome(outcome)
 
@@ -319,7 +320,8 @@ def create_app(runtime: Any, *, scheduler: Scheduler | None = None) -> Any:
             view = runner.edit(proposal_id=proposal_id, editor_ref=who, changes=body.changes)
         except WriteDenied as exc:
             raise HTTPException(
-                status_code=409, detail=f"{exc.reason}: {exc.detail}".rstrip(": ")
+                status_code=403 if exc.reason == "not_permitted" else 409,
+                detail=f"{exc.reason}: {exc.detail}".rstrip(": "),
             ) from None
         return {"proposal": view.model_dump(mode="json")}
 

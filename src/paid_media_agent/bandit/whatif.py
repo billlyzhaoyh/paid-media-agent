@@ -618,6 +618,12 @@ def what_if(
                 if abs(best[a.key] - budgets[a.key]) >= 0.01
             },
             "unplaced": round(max(0.0, result.scenario.budget - sum(best.values())), 2),
+            "reading": (
+                f"The scenario's total of {_money(result.scenario.budget, report.currency)} a "
+                f"day (today's is {_money(result.baseline.budget, report.currency)}), split by "
+                f"the curves, would give about {best_forecast.scenario.conversions.mean:.1f} "
+                f"conversions a day ({gain:+.1f} against the scenario)."
+            ),
             "note": "the scenario's total (total_daily_budget) split by the curves, without "
             "the per-change step limit; "
             "'unplaced' is budget beyond what the campaigns have shown they can spend",
@@ -631,7 +637,13 @@ def what_if(
             store, account_alias=account_alias, today=fitted.as_of, goal=goal, currency=currency
         )
         if goal.monthly_budget:
-            month_end = pacing.spend + result.scenario.spend * pacing.days_remaining
+            # Pacing already projects every campaign at its run rate (including ones the curves
+            # cannot model); the scenario only changes that by its own difference in spend.
+            month_end = (
+                pacing.projected_spend + result.spend_change * pacing.days_remaining
+                if pacing.projected_spend is not None
+                else pacing.spend + result.scenario.spend * pacing.days_remaining
+            )
             gap = month_end / goal.monthly_budget - 1
             report.month = {
                 "spend_to_date": round(pacing.spend, 2),

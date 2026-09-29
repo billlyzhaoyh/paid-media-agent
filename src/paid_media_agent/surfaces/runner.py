@@ -78,6 +78,25 @@ class AgentRunner:
         records = self._service.proposals.list_for_thread(thread_id)
         return ProposalView.from_record(records[-1]) if records else None
 
+    def _paused_calls(self, thread_id: str, proposal_id: UUID) -> list[str]:
+        """Ids of the thread's paused execute calls for exactly this proposal."""
+        return [
+            call.id
+            for call in self._agent.conversation(thread_id).pending
+            if str(call.args.get("proposal_id", "")) == str(proposal_id)
+        ]
+
+    def paused_proposal(self, thread_id: str) -> ProposalView | None:
+        """The proposal the thread's first paused call would execute: what a reviewer decides."""
+        for call in self._agent.conversation(thread_id).pending:
+            try:
+                record = self._service.get(UUID(str(call.args.get("proposal_id"))))
+            except ValueError:
+                continue
+            if record is not None and record.changeset.thread_id == thread_id:
+                return ProposalView.from_record(record)
+        return None
+
     async def report_files(
         self, *, thread_id: str, caller_ref: str, artifacts: ArtifactStore
     ) -> set[str]:
@@ -111,12 +130,15 @@ class AgentRunner:
         text = ""
         if messages and isinstance(messages[-1], AssistantMessage):
             text = messages[-1].content
-        proposal = self.latest_proposal(thread_id)
+        interrupted = conversation.awaiting_approval
+        # The card shows what the paused call would execute, not merely the newest proposal.
+        proposal = (
+            self.paused_proposal(thread_id) if interrupted else None
+        ) or self.latest_proposal(thread_id)
         receipt = None
         if proposal is not None:
             stored = self._receipts.get(proposal.proposal_id)
             receipt = ReceiptView.from_receipt(stored) if stored else None
-        interrupted = conversation.awaiting_approval
         if interrupted and proposal is not None:
             prose = _last_assistant_text(messages)
             text = (prose + "\n\n" if prose else "") + "A change is waiting for review."
@@ -143,6 +165,7 @@ class AgentRunner:
         decision: str,
         message: str = "",
         on_event: EventHandler | None = None,
+        call_ids: list[str] | None = None,
     ) -> RunOutcome:
         self._claim(thread_id, caller_ref)
         conversation = await self._agent.resume(
@@ -151,6 +174,7 @@ class AgentRunner:
             "approve" if decision == "approve" else "reject",
             message,
             on_event,
+            call_ids=call_ids,
         )
         return self._outcome(thread_id, conversation)
 
@@ -200,10 +224,12 @@ class AgentRunner:
             raise WriteDenied("unknown_proposal")
         if is_host_thread(record.changeset.thread_id):
             return await self._approve_host(proposal_id, approver_ref)
-        if not self._agent.conversation(record.changeset.thread_id).pending:
-            # The conversation moved on without a decision, so no paused call would use a claim.
+        calls = self._paused_calls(record.changeset.thread_id, proposal_id)
+        if not calls:
+            # No paused call executes this proposal (the conversation moved on, or another
+            # proposal is paused), so a claim would go unused or reach the wrong change.
             raise WriteDenied(
-                "conversation_expired", "no paused conversation; propose the change again"
+                "conversation_expired", "this proposal is not paused for review; propose it again"
             )
         self._service.approve(proposal_id, approver_ref=approver_ref)
         return await self.resume(
@@ -211,6 +237,7 @@ class AgentRunner:
             caller_ref=record.changeset.requester_ref,
             decision="approve",
             on_event=on_event,
+            call_ids=calls,
         )
 
     async def reject(
@@ -227,12 +254,16 @@ class AgentRunner:
         self._service.reject(proposal_id, actor_ref=actor_ref, message=message)
         if is_host_thread(record.changeset.thread_id):
             return self._host_outcome(proposal_id, "Rejected; nothing was changed.")
+        calls = self._paused_calls(record.changeset.thread_id, proposal_id)
+        if not calls:
+            return self._host_outcome(proposal_id, "Rejected; nothing was changed.")
         return await self.resume(
             thread_id=record.changeset.thread_id,
             caller_ref=record.changeset.requester_ref,
             decision="reject",
             message=message or "rejected by reviewer",
             on_event=on_event,
+            call_ids=calls,
         )
 
     def edit(

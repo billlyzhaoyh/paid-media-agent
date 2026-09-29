@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -123,8 +123,24 @@ def test_platform_comparison_reconciles_to_fixture_oracle(project_root: Path) ->
     assert all(check.passed for check in result.reconciliation), result.reconciliation
     g103 = next(e for e in result.entities if e.entity_ref == "g-103")
     assert DataQualityFlag.INCOMPLETE_WINDOW in g103.quality_flags
-    assert not result.current_window.is_complete and result.previous_window.is_complete
+    # g-103 has rows on 5 of 7 days (platforms send no row for a day it did not serve): that is
+    # flagged on g-103, while the platform's window is complete because every day is covered.
+    assert result.current_window.is_complete and result.previous_window.is_complete
     assert sum(e.current.spend for e in result.entities) == result.current.spend
+
+
+def test_provider_totals_reconcile_against_the_whole_read_not_just_the_windows() -> None:
+    wide = [_row(d, "100.00", 1, 10, "1", "2") for d in CURRENT.days() + PREVIOUS.days()]
+    extra = wide[0].model_copy(update={"window": wide[0].window.model_copy(
+        update={"start": PREVIOUS.start - timedelta(days=1), "end": PREVIOUS.start - timedelta(days=1)}
+    )})  # fmt: skip
+    rows = [*wide, extra]
+    result = compare_platform(
+        platform=Platform.GOOGLE_ADS, account_ref="acme", rows=rows, current_window=CURRENT,
+        previous_window=PREVIOUS, entity_type=EntityType.CAMPAIGN, source_artifacts=["a"],
+        provider_totals={"spend": str(100 * len(rows)), "row_count": len(rows)},
+    )  # fmt: skip
+    assert all(check.passed for check in result.reconciliation), result.reconciliation
 
 
 def test_cross_platform_total_requires_compatible_complete_sources() -> None:

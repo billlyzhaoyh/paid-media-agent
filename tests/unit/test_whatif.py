@@ -153,6 +153,7 @@ async def test_the_report_flags_what_to_distrust_and_reads_against_goals(
         currency="USD",
     ).as_json()["best_split"]
     assert even["unplaced"] == 0 and even["gain"] >= -1e-6, "the curves' own split is not worse"
+    assert "today's is" in even["reading"], "the reading names both totals"
     huge = what_if(
         store,
         fitted,
@@ -176,3 +177,27 @@ async def test_the_report_flags_what_to_distrust_and_reads_against_goals(
     assert "beyond what these campaigns have shown they can spend" in unplaced.reading
     assert body["difference"]["conversions"]["low"] <= body["difference"]["conversions"]["mean"]
     assert "sim-wc" not in str(body["campaigns"]), "provider account ids stay in the host"
+
+
+async def test_an_unchanged_scenario_lands_the_month_where_pacing_does(
+    account: tuple[Store, FittedAccount],
+) -> None:
+    from paid_media_agent.analytics.pacing import compute_pacing
+
+    store, fitted = account
+    alias = fitted.eligible[0].account_alias
+    GoalStore(store).set(
+        alias, {"monthly_budget": 60_000}, effective_from=DEFAULT.start, source="test"
+    )
+    goal = GoalStore(store).current(alias, fitted.as_of)
+    report = what_if(
+        store,
+        fitted,
+        Scenario(total_change=0.0),
+        account_alias=alias,
+        config=BanditConfig(),
+        goal=goal,
+        currency="USD",
+    )
+    pacing = compute_pacing(store, account_alias=alias, today=fitted.as_of, goal=goal)
+    assert report.month["projected_spend"] == pytest.approx(pacing.projected_spend, abs=0.01)

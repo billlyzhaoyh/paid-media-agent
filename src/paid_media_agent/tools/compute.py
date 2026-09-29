@@ -183,7 +183,9 @@ def compare_platform(
         )
         if not cur_rows or not prev_rows:
             flags.add(DataQualityFlag.PARTIAL_SOURCE)
-        platform_flags |= flags
+        # A campaign that launched or paused mid-window is incomplete on its own; the platform's
+        # window is judged on its own day coverage below.
+        platform_flags |= flags - {DataQualityFlag.INCOMPLETE_WINDOW}
         entities.append(
             EntityComparison(
                 entity_type=entity_type,
@@ -200,10 +202,8 @@ def compare_platform(
     previous = aggregate(previous_rows)
     actual_current_days = {row.window.start for row in current_rows}
     actual_previous_days = {row.window.start for row in previous_rows}
-    current_complete = (
-        len(actual_current_days) == current_window.day_count
-        and all(row.window.is_complete for row in current_rows)
-        and DataQualityFlag.INCOMPLETE_WINDOW not in platform_flags
+    current_complete = len(actual_current_days) == current_window.day_count and all(
+        row.window.is_complete for row in current_rows
     )
     previous_complete = len(actual_previous_days) == previous_window.day_count and all(
         row.window.is_complete for row in previous_rows
@@ -223,7 +223,8 @@ def compare_platform(
         )
     )
     if provider_totals is not None:
-        all_rows = current_rows + previous_rows
+        # Provider totals cover the whole read, which can be wider than the two windows.
+        all_rows = list(rows)
         provider_spend = provider_totals.get("spend")
         if provider_spend is not None:
             expected = Decimal(str(provider_spend)).quantize(_MONEY_QUANTUM, rounding=ROUND_HALF_UP)

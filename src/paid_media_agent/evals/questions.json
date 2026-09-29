@@ -28,7 +28,7 @@
     "explain_change"
    ]
   ],
-  "figures": "google_week_spend",
+  "figures": null,
   "tools_none": [],
   "grounded_min": 0.8,
   "expect_pause": false

@@ -313,6 +313,8 @@ async def test_discover_write_operations_lists_only_admitted_operations(
     } | {"host__set_account_goals"}, "provider mutations plus the host goals operation"
     assert all("editable_fields" in op and "risk" in op for op in body["operations"])
     assert "fake provider" in body["execution_gate"]
+    assert any("deleting" in item for item in body["never_available"])
+    assert "never_available" in body["note"]
 
 
 async def test_proposal_carries_risk_flags_and_contract_identity(

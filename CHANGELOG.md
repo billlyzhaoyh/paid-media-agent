@@ -4,6 +4,51 @@
 
 ### Added
 
+- Review fixes and eval-driven answer quality.
+  - **Approvals.** Approving or rejecting a proposal decides only its own paused call, and a
+    stale approval can no longer execute a newer proposal. The review card shows the paused
+    proposal. Only the requester or an approver can edit or reject.
+  - **Threads.** One turn runs at a time per thread. A failing progress callback no longer drops
+    a pause.
+  - **File tools.** Their rules ignore case, as macOS does. The model cannot write artifacts or
+    reports.
+  - **State and writes.**
+    - Restoring an older backup opens after new migrations.
+    - A connection dropped after a write is read back, not recorded as failed.
+    - Only complete reads reach history.
+    - Provider account ids are redacted from tool results.
+    - Meta budgets use Meta's own currency offsets (`meta_minor`).
+  - **Numbers.**
+    - ROAS value is lag-corrected with its conversions (in `explain_change` and pacing).
+    - The pacing run rate counts zero-spend days.
+    - "Target CPA reached" is judged on the budgets recommended.
+    - The what-if month projection builds on pacing.
+    - Stale bandit proposals are superseded safely.
+    - `explain_change` windows end on complete days.
+    - The anomaly day-over-day rule corrects both days for lag.
+    - Oversized report reads are reported as incomplete.
+    - Platform minimum budgets hold rather than jump.
+    - Each account gets its share of the sync call limit, newest days first.
+    - Reconciliation compares against the whole read.
+  - **Answers.**
+    - The system prompt carries resolved calendar windows.
+    - Offloaded results keep their headline, reading and caveats, and `read_artifact` pages
+      through them.
+    - `summarize_window` leads with a per-account headline, and cross-platform results carry
+      attribution and coverage caveats.
+    - `query_history` explains easily misread fields.
+    - Anomaly flags show `band_distance`.
+    - `recommend_budgets` names today's and the recommended total.
+    - What-if best splits say which total they split.
+    - `discover_write_operations` lists what is never available.
+  - **Evals.**
+    - Grounding ignores dates and ids and derives only from pairs in the same record.
+    - Figures compare as values.
+    - Failed calls do not satisfy a tool check.
+    - Comparisons warn when runs were graded differently.
+    - The eval agent's clock is fixed.
+    - `eval regrade` re-checks stored runs.
+
 - Quality and cost you can see. Every model call attempt is recorded in `llm_calls` with tokens,
   cache reads and writes, the provider's reported cost, status, and latency (`usage` command,
   `history --view usage`, a `doctor` line). Anthropic models on OpenRouter use prompt caching

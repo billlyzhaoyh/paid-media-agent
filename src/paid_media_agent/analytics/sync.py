@@ -102,8 +102,8 @@ async def _call(
     while arguments is not None:
         if run.calls >= max_calls:
             run.unavailable.append(
-                f"{binding.alias} {label}: stopped at the {max_calls}-call limit "
-                "(PAID_MEDIA_SYNC_MAX_CALLS); later windows were skipped"
+                f"{binding.alias} {label}: stopped at this account's share of the call limit "
+                "(PAID_MEDIA_SYNC_MAX_CALLS); older windows were skipped"
             )
             raise _CallCapReached
         run.calls += 1
@@ -144,41 +144,49 @@ async def _pull(
     settings: bool,
     max_calls: int,
 ) -> SyncRun:
-    try:
-        for alias in aliases:
-            binding = accounts.resolve(alias)
-            if binding is None:
-                run.unavailable.append(f"{alias}: unknown alias")
-                continue
-            contract = contract_for(catalog, binding.platform)
-            if contract is None:
-                run.unavailable.append(
-                    f"{alias}: no read contract matches the {binding.platform.value} catalog; "
-                    "run `paid-media-agent doctor --live`"
-                )
-                continue
-            run.contracts[alias] = f"{contract.name} ({contract.verification})"
-            entry = catalog.get(qualified_name(binding.platform, contract.performance_tool))
-            schema = entry.input_schema if entry is not None else {}
-            spans = windows(binding, contract, contract.per_day(schema))
-            for start, end in spans:
-                for call in contract.performance_calls(start, end, schema):
-                    await _call(run, dispatcher, binding, call, max_calls=max_calls)
+    for position, alias in enumerate(aliases):
+        binding = accounts.resolve(alias)
+        if binding is None:
+            run.unavailable.append(f"{alias}: unknown alias")
+            continue
+        contract = contract_for(catalog, binding.platform)
+        if contract is None:
+            run.unavailable.append(
+                f"{alias}: no read contract matches the {binding.platform.value} catalog; "
+                "run `paid-media-agent doctor --live`"
+            )
+            continue
+        run.contracts[alias] = f"{contract.name} ({contract.verification})"
+        entry = catalog.get(qualified_name(binding.platform, contract.performance_tool))
+        schema = entry.input_schema if entry is not None else {}
+        spans = windows(binding, contract, contract.per_day(schema))
+        # Each account gets its share of the calls left, so one account that costs a call per
+        # day never starves the ones after it; within it, the newest days come first.
+        share = max(1, (max_calls - run.calls) // (len(aliases) - position))
+        limit = min(max_calls, run.calls + share)
+        try:
+            calls = [
+                c for start, end in spans for c in contract.performance_calls(start, end, schema)
+            ]
+            for call in sorted(
+                calls, key=lambda c: c.window[1] if c.window else date.min, reverse=True
+            ):
+                await _call(run, dispatcher, binding, call, max_calls=limit)
             listing = contract.settings_call() if settings else None
             if listing is not None and catalog.get(qualified_name(binding.platform, listing.tool)):
-                await _call(run, dispatcher, binding, listing, max_calls=max_calls, kind="settings")
+                await _call(run, dispatcher, binding, listing, max_calls=limit, kind="settings")
             # What limits spend (impression share, status reasons), where the platform says.
             # Its own call, so a field an account cannot report never costs the performance read.
-            for start, end in spans:
+            for start, end in reversed(spans):
                 signal_call = contract.signals_call(start, end)
                 if signal_call is not None and catalog.get(
                     qualified_name(binding.platform, signal_call.tool)
                 ):
                     await _call(
-                        run, dispatcher, binding, signal_call, max_calls=max_calls, kind="signals"
+                        run, dispatcher, binding, signal_call, max_calls=limit, kind="signals"
                     )
-    except _CallCapReached:
-        pass
+        except _CallCapReached:
+            continue
     return run
 
 

@@ -479,3 +479,23 @@ async def test_approving_after_the_conversation_moved_on_is_expired(
     assert runtime.profile.approvals.latest_unused(UUID(proposal_id), 1) is None
     assert runtime.profile.write_provider.mutation_calls == []  # type: ignore[attr-defined]
     runtime.store.close()
+
+
+def test_sample_reads_and_fake_writes_share_one_fixture_state_with_a_direct_adapter(
+    settings: Settings, project_root: Path
+) -> None:
+    from pydantic import SecretStr
+
+    from paid_media_agent.runtime.local import build_configured_runtime
+    from paid_media_agent.testing.scripted_model import ScriptedChatModel
+
+    runtime = build_configured_runtime(
+        settings.model_copy(update={"openai_ads_api_key": SecretStr("sk-test-direct-adapter")}),
+        project_root=project_root,
+        model=ScriptedChatModel(steps=[]),
+    )
+    reads = runtime.profile.read_provider
+    default = getattr(reads, "_default", None)
+    assert default is not None and default.state is runtime.profile.write_provider.state, (
+        "a fake write must be visible to the readback"
+    )

@@ -48,7 +48,24 @@ def _failed(result: dict[str, Any], name: str) -> bool:
     return any(c["name"] == name and not c["passed"] for c in result["checks"])
 
 
-def compare(current: list[dict[str, Any]], against: list[dict[str, Any]]) -> dict[str, Any]:
+def compare(
+    current: list[dict[str, Any]],
+    against: list[dict[str, Any]],
+    *,
+    current_run: dict[str, Any] | None = None,
+    against_run: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Regressions, fixes, and deltas on the questions both runs asked. Runs graded differently
+    (another question set or judge) are compared but marked as not like for like."""
+    warnings = []
+    if current_run and against_run:
+        if current_run.get("questions_sha") != against_run.get("questions_sha"):
+            warnings.append("the question set changed between the runs")
+        if current_run.get("judge_model") != against_run.get("judge_model"):
+            warnings.append(
+                f"judged differently ({against_run.get('judge_model') or 'no judge'} vs "
+                f"{current_run.get('judge_model') or 'no judge'})"
+            )
     before = {r["question_id"]: r for r in against}
     now = {r["question_id"]: r for r in current}
     common = sorted(set(before) & set(now))
@@ -60,6 +77,8 @@ def compare(current: list[dict[str, Any]], against: list[dict[str, Any]]) -> dic
         return round(float(b[key]) - float(a[key]), 4)
 
     return {
+        "comparable": not warnings,
+        "warnings": warnings,
         "questions": len(common),
         "regressions": [q for q in common if before[q]["passed"] and not now[q]["passed"]],
         "fixes": [q for q in common if not before[q]["passed"] and now[q]["passed"]],

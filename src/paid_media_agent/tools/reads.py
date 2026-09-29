@@ -248,6 +248,10 @@ class ReadDispatcher:
         contract = contract_for_tool(catalog, entry.platform, entry.name)
         reader = contract or HOST_CONTRACT
         window = reader.requested_window(scoped)
+        own_args = {k: v for k, v in scoped.items() if k != entry.account_arg}
+        # The model's own reads reach history only when they are the contract's complete call;
+        # a filtered or partial read must never replace a synced snapshot.
+        keep = source != "agent_read" or reader.canonical(entry.name, own_args)
         requested_window = f"{window[0].isoformat()}..{window[1].isoformat()}" if window else None
         complete_through = (
             date.fromisoformat(result.data_complete_through)
@@ -300,7 +304,7 @@ class ReadDispatcher:
                 catalog_revision=catalog.revision,
             )
             columns = tuple(sorted({k for r in extracted.rows for k in r}))
-            if self._recorder is not None:
+            if self._recorder is not None and keep:
                 try:
                     self._recorder.record_performance(
                         source=source,
@@ -348,7 +352,7 @@ class ReadDispatcher:
             tool_name=entry.qualified_name,
             catalog_revision=catalog.revision,
         )
-        if self._recorder is not None:
+        if self._recorder is not None and keep:
             try:
                 self._recorder.record_settings(
                     source=source,

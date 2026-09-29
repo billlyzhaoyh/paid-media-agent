@@ -20,7 +20,12 @@ from paid_media_agent.tools.catalog import (
     RawTool,
     build_authorized_catalog,
 )
-from paid_media_agent.tools.providers import ProviderError, ProviderResult, ProviderTimeout
+from paid_media_agent.tools.providers import (
+    ProviderError,
+    ProviderResult,
+    ProviderTimeout,
+    ProviderUnknownOutcome,
+)
 
 FIXTURE_SOURCE = "fixture"
 FIXTURE_ADMITTED_MUTATIONS = (
@@ -457,6 +462,7 @@ FakeWriteBehavior = Literal[
     "succeed",
     "timeout_after_commit",
     "timeout_without_commit",
+    "disconnect_after_commit",
     "error",
     "silent_no_change",
     "validation_error",
@@ -515,5 +521,7 @@ class FakeWriteProvider:
         result = self._apply(entry, arguments)
         if self.behavior == "timeout_after_commit":
             raise ProviderTimeout("provider timed out")
+        if self.behavior == "disconnect_after_commit":
+            raise ProviderUnknownOutcome("connection reset by peer")
         await asyncio.sleep(0)
         return result

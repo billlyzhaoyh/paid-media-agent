@@ -38,6 +38,7 @@ _LIMITS = {
     "learning": "held: its bid strategy is in a learning phase",
     "platform_step": "at the platform's own step limit for this campaign type",
     "target_cpa": "lowered toward the account's target CPA",
+    "platform_minimum": "kept: the platform's minimum daily budget is more than one step away",
 }
 _TOTALS = {
     "current": "the campaigns' current total",
@@ -122,9 +123,13 @@ def build_recommend_budgets_tool(
         moved = [r for r in rows if r["eligible"] and r["change"] and abs(r["change"]) >= 0.005]
         failed = [k for k, v in result["data_checks"].items() if not v["ok"]]
         unit = f" {result['currency']}" if result["currency"] else ""
+        current_total = sum(float(r["current_budget"] or 0) for r in rows if r["eligible"])
+        recommended = float(result["total_budget"])
+        change = f" ({recommended / current_total - 1:+.1%})" if current_total else ""
         summary = (
-            f"{len(moved)} of {sum(r['eligible'] for r in rows)} allocated campaigns would move; "
-            f"total {result['total_budget']:.2f}{unit} a day, "
+            f"{len(moved)} of {sum(r['eligible'] for r in rows)} allocated campaigns would move. "
+            f"Current budgets total {current_total:.2f}{unit} a day; the recommended total is "
+            f"{recommended:.2f}{unit}{change}, "
             f"{_TOTALS.get(result['total_source'], result['total_source'])}"
             + (
                 (

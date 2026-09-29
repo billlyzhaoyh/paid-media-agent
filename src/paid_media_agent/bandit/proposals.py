@@ -90,7 +90,12 @@ def _reason(run: BanditRun, decision: ArmDecision, new_budget: float) -> str:
 
 
 def _supersede(
-    store: Store, service: ProposalService, run: BanditRun, entity_refs: set[str]
+    store: Store,
+    service: ProposalService,
+    run: BanditRun,
+    entity_refs: set[str],
+    *,
+    keep: UUID | None = None,
 ) -> list[UUID]:
     rows = store.fetch(
         "SELECT d.entity_ref, d.proposal_id FROM bandit_decisions d JOIN bandit_runs r "
@@ -99,7 +104,7 @@ def _supersede(
     )
     superseded = []
     for entity_ref, proposal_id in rows:
-        if entity_ref not in entity_refs:
+        if entity_ref not in entity_refs or proposal_id == keep:
             continue
         record = service.get(proposal_id)
         if record is None or record.state is not ProposalState.AWAITING_APPROVAL:
@@ -132,8 +137,13 @@ async def propose_run(
         if not arm.eligible or current <= 0:
             continue
         change = abs(new_budget / current - 1)
-        if change < min_change or abs(new_budget - current) < 1.0:
+        if change < min_change:
             result.skipped[arm.entity_ref] = f"change {change:.1%} is below {min_change:.0%}"
+            continue
+        if abs(new_budget - current) < 1.0:
+            result.skipped[arm.entity_ref] = (
+                f"change of {abs(new_budget - current):.2f} is below 1.00 in account currency"
+            )
             continue
         if arm.platform not in operations:
             result.skipped[arm.entity_ref] = (
@@ -141,7 +151,12 @@ async def propose_run(
             )
             continue
         moving.append((decision, new_budget))
-    result.superseded = _supersede(store, service, run, {d.arm.entity_ref for d, _ in moving})
+    # This run's view replaces older recommendations for every campaign it decided on: a held or
+    # barely-moved campaign's older proposal is stale now. A moved one's is superseded only once
+    # its replacement exists, so an approver is never left with neither.
+    moved = {d.arm.entity_ref for d, _ in moving}
+    held = {d.arm.entity_ref for d in run.decisions if d.arm.eligible} - moved
+    result.superseded = _supersede(store, service, run, held)
     for decision, new_budget in moving:
         arm = decision.arm
         try:
@@ -164,6 +179,7 @@ async def propose_run(
             continue
         proposal_id = record.changeset.proposal_id
         result.proposals[arm.entity_ref] = proposal_id
+        result.superseded += _supersede(store, service, run, {arm.entity_ref}, keep=proposal_id)
         store.write(
             "UPDATE bandit_decisions SET proposal_id = ? WHERE run_id = ? AND arm_key = ?",
             [proposal_id, run.run_id, arm.key],

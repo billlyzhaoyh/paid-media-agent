@@ -50,6 +50,9 @@ async def test_the_agent_checks_synced_history_with_the_local_band(
     assert checked["methods"] == {"spend": "local_band95", "conversions": "local_band95"}
     assert checked["rows_checked"]["spend"] > 0 and checked["window"] == "2026-08-22..2026-08-28"
     assert "fixture-" not in json.dumps(checked), "provider ids stay host-side"
+    for flag in checked.get("flags", []):
+        assert "score" not in flag and "band_distance" in flag, "never read as a percentage"
+    assert "not a percentage" in checked["note"]
     assert unknown["error"] is True and "unknown account alias" in unknown["detail"]
 
 

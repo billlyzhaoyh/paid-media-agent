@@ -198,3 +198,36 @@ def test_compare_periods_refuses_a_window_the_read_did_not_cover(tmp_path: Path)
         assert "previous window starts 2026-08-15 but the read begins 2026-08-21" in str(exc)
     else:
         raise AssertionError("expected ComputeError")
+
+
+def test_the_headline_lists_every_account_first_and_platforms_carry_caveats(
+    tmp_path: Path,
+) -> None:
+    store = ArtifactStore(tmp_path)
+    ids = []
+    for platform, account, last in (("google_ads", "demo-google", 7), ("meta_ads", "demo-meta", 5)):
+        rows = [
+            _row(d, "c1", "100", "2").model_copy(
+                update={"platform": Platform(platform), "account_ref": account}
+            )
+            for d in range(1, last + 1)
+        ]
+        ids.append(
+            store.write_json(
+                "performance_rows", rows_to_payload(rows), schema_version=ROWS_SCHEMA_VERSION,
+                platform=platform, account_ref=account,
+            ).artifact_id
+        )  # fmt: skip
+    out = run_summarize_window(
+        store,
+        SummarizeWindowArgs(
+            artifact_ids=ids, start_date=date(2026, 8, 1), end_date=date(2026, 8, 7)
+        ),
+    )
+    assert next(iter(out)) == "headline", "first, so a partial view still lists every account"
+    assert [(h["account"], h["spend"], h["days_covered"]) for h in out["headline"]] == [
+        ("demo-google", "700.00", 7),
+        ("demo-meta", "500.00", 5),
+    ]
+    assert any("attribution" in c for c in out["caveats"])
+    assert any("different days" in c for c in out["caveats"])

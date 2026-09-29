@@ -23,6 +23,7 @@ from paid_media_agent.runtime.profiles import (
     resolve_write_policy,
 )
 from paid_media_agent.store import Store
+from paid_media_agent.tools.direct import CompositeReadProvider
 
 
 def run_coroutine(coro: Coroutine[Any, Any, Any]) -> Any:
@@ -60,7 +61,12 @@ def configured_profile(
     )
     overrides: dict[str, Any] = {"write_policy": write_policy, "write_policy_issues": issues}
     if loaded.read_provider is not None:
-        overrides["read_provider"] = loaded.read_provider
+        read_provider = loaded.read_provider
+        if not loaded.live and isinstance(read_provider, CompositeReadProvider):
+            # Sample reads must see the profile's fixture state, which the fake writes change;
+            # otherwise every fake write reads back the old value and is reported failed.
+            read_provider = read_provider.with_default(profile.read_provider)
+        overrides["read_provider"] = read_provider
     if loaded.live:
         # Live catalog: live reads and the gated live write adapter. The fake is never used here.
         overrides.update(

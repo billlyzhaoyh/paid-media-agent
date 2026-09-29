@@ -167,6 +167,21 @@ async def test_host_threads_are_reserved_and_rejects_need_no_conversation(
     pending = {v.proposal_id for v in runner.pending_proposals()}
     assert {str(p) for p in pending} == set(third["proposals"]["proposals"].values())
 
+    # A run that holds every campaign (no move is big enough) leaves no stale proposal behind.
+    (held,) = await allocate_accounts(
+        runtime.profile.store,
+        None,
+        aliases=("demo-google",),
+        as_of=TODAY,
+        config=live_config("greedy"),
+        service=runtime.components.proposal_service,
+        propose=True,
+        min_change=0.99,
+    )
+    assert held["proposals"]["proposals"] == {}
+    assert set(held["proposals"]["superseded"]) == set(third["proposals"]["proposals"].values())
+    assert runner.pending_proposals() == []
+
 
 async def test_the_agent_recommends_budgets_without_changing_anything(
     settings: Settings, project_root: Path
@@ -184,6 +199,10 @@ async def test_the_agent_recommends_budgets_without_changing_anything(
         if getattr(m, "name", "") == "recommend_budgets"
     ]
     assert known["total_budget"] == pytest.approx(900.0)
+    assert (
+        "Current budgets total 900.00 USD a day; the recommended total is 900.00 USD"
+        in (known["summary"])
+    ), "never leaves the model to guess which total is today's"
     readings = [c["reading"] for c in known["campaigns"]]
     assert len(readings) == 3 and all(r.startswith("g-10") for r in readings)
     assert "nothing has changed" in known["note"]

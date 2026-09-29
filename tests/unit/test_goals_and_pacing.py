@@ -158,3 +158,13 @@ def test_each_account_paces_its_own_local_month() -> None:
     assert report.reading == "No spend recorded for 2026-10 yet."
     with pytest.raises(ValueError, match="unknown account alias"):
         account_pacing(Store(), ACCOUNTS, "nobody", now=now)
+
+
+def test_days_with_no_rows_inside_the_synced_range_count_as_zero_spend() -> None:
+    store = Store()
+    # Weekdays only: platforms send no rows for days nothing spent.
+    days = [date(2026, 9, 1) + timedelta(days=i) for i in range(20)]
+    _spend(store, {d: 100.0 for d in days if d.weekday() < 5})
+    report = compute_pacing(store, account_alias="acme", today=TODAY, goal=None, currency="USD")
+    # The last seven days (14-20) hold five weekdays at 100 and a weekend at 0.
+    assert report.run_rate == pytest.approx(500 / 7)

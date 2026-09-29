@@ -10,8 +10,8 @@ from __future__ import annotations
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Literal
 
-MoneyUnit = Literal["currency", "minor", "micros"]
-MONEY_UNITS: tuple[MoneyUnit, ...] = ("currency", "minor", "micros")
+MoneyUnit = Literal["currency", "minor", "meta_minor", "micros"]
+MONEY_UNITS: tuple[MoneyUnit, ...] = ("currency", "minor", "meta_minor", "micros")
 
 _MINOR_EXPONENT: dict[str, int] = {
     # ISO 4217 currencies without two decimal places. Everything else has two.
@@ -28,8 +28,21 @@ _MINOR_EXPONENT: dict[str, int] = {
 in `doctor --live`'s budget plausibility check before any number is trusted."""
 
 
+_META_WHOLE_UNITS = frozenset(
+    ("CLP", "COP", "CRC", "HUF", "ISK", "IDR", "JPY", "KRW", "PYG", "TWD", "VND")
+)
+"""Meta's own currency offsets (Marketing API "Currencies": offset 1 for these, 100 for every
+other currency, including ISO's three-decimal ones). They differ from ISO for COP, CRC, HUF, IDR,
+and TWD (whole units at Meta) and for BHD, JOD, KWD, OMR, and TND (hundredths at Meta), which is
+why Meta budgets use `meta_minor`, not `minor`. Confirm on a live account (`doctor --live`)."""
+
+
 def minor_exponent(currency: str) -> int:
     return _MINOR_EXPONENT.get(currency.upper(), 2)
+
+
+def meta_exponent(currency: str) -> int:
+    return 0 if currency.upper() in _META_WHOLE_UNITS else 2
 
 
 def scale(unit: MoneyUnit, currency: str) -> Decimal:
@@ -38,6 +51,8 @@ def scale(unit: MoneyUnit, currency: str) -> Decimal:
         return Decimal(1)
     if unit == "minor":
         return Decimal(10) ** minor_exponent(currency)
+    if unit == "meta_minor":
+        return Decimal(10) ** meta_exponent(currency)
     if unit == "micros":
         return Decimal(1_000_000)
     raise ValueError(f"unknown money unit {unit!r}")
@@ -54,7 +69,8 @@ def to_provider(value: Decimal | float | int | str, unit: MoneyUnit, currency: s
     Minor units and micros are whole numbers; currency stays a two-decimal float so fixture and
     currency-unit providers see exactly what they did before.
     """
-    step = Decimal(1).scaleb(-minor_exponent(currency))
+    places = meta_exponent(currency) if unit == "meta_minor" else minor_exponent(currency)
+    step = Decimal(1).scaleb(-places)
     rounded = Decimal(str(value)).quantize(step, rounding=ROUND_HALF_UP)
     if unit == "currency":
         return float(rounded)

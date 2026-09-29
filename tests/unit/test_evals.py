@@ -39,7 +39,7 @@ class Analyst:
 
     async def complete(self, *, system: str, messages: Sequence[Message], tools: Any) -> Any:
         if self.fail:
-            raise ModelError("HTTP 401 bad key", transient=False)
+            raise ModelError("HTTP 400 bad request", transient=False)
         text, results = _question(messages), _results(messages)
         if "cost per conversion change" in text:
             if not results:
@@ -101,8 +101,18 @@ async def test_a_good_run_passes_every_check_and_is_stored(
     assert [r["question_id"] for r in stored] == sorted(by_id)
     run = store.run(run_id)
     assert run["totals"]["passed"] == 3 and run["model"] == "scripted:analyst"
-    judged = store.store.fetch("SELECT count(*) FROM llm_calls WHERE purpose = 'eval_judge'")
-    assert judged == [(3,)]
+    judged = store.store.fetch(
+        "SELECT count(*), count(input_tokens) FROM llm_calls WHERE purpose = 'eval_judge'"
+    )
+    assert judged == [(3, 0)], "scripted judges report no usage"
+
+    from paid_media_agent.evals.suite import regrade
+
+    again = regrade(store, run_id, project_root=project_root)
+    regraded = {r["question_id"]: r for r in store.results(again)}
+    assert all(r["passed"] for r in regraded.values()), "the same answers pass the same checks"
+    assert regraded["q09_budget_change"]["judge"] == by_id["q09_budget_change"]["judge"]
+    assert '"regraded_from"' in store.run(again)["settings"]
 
 
 async def test_invented_figures_errors_and_regressions_are_caught(
@@ -142,10 +152,16 @@ def test_question_set_and_figures_are_well_formed() -> None:
     anchor = figures.SHIPPED_ANCHOR
     week = figures.expected("google_week_spend", anchor, anchor + timedelta(days=2))
     trailing = week[1]
-    assert trailing[0][0] == str(
-        figures.window_spend("google_ads", (anchor - timedelta(days=6), anchor), anchor)
+    assert trailing[0] == figures.window_spend(
+        "google_ads", (anchor - timedelta(days=6), anchor), anchor
     )
-    assert figures.present("spend was 3,862.42 then", [[("3862.42",)]]) == (True, [])
+    from decimal import Decimal
+
+    three = Decimal("3862.42")
+    assert figures.present([(3862.42, 2)], [[three]]) == (True, [])
+    assert figures.present([(3862.0, 0)], [[three]])[0], "rounded to a whole is fine"
+    assert not figures.present([(13862.42, 2)], [[three]])[0], "a longer number is not a match"
+    assert figures.present([(3863.0, 0)], [[Decimal("3862.50")]])[0], "rounding is half up"
     assert [
         n.raw for n in numbers_in("On 2026-08-28 g-101 spent $1,200.50 (+12.5%) in 3 days")
     ] == [
@@ -154,12 +170,61 @@ def test_question_set_and_figures_are_well_formed() -> None:
     ]
 
 
-def test_grounding_allows_durations_and_simple_differences_but_not_invention() -> None:
-    from paid_media_agent.evals.checks import grounded
+def test_grounding_allows_durations_and_same_record_differences_but_not_invention() -> None:
+    from paid_media_agent.evals.checks import _source_values, derived_values, grounded
 
-    assert [
-        n.raw for n in numbers_in("last 90 days, a 24-48 hour delay, across 120 campaigns")
-    ] == ["120"]
-    assert grounded(numbers_in("+$36.00")[0], [180.0, 216.0]), "a budget moving 180 -> 216"
+    assert [n.raw for n in numbers_in("last 90 days, a 24-48 hour delay, reported 144 today")] == [
+        "144"
+    ], "'today' is not 'to day'"
+    assert [n.value for n in numbers_in("$1.2M pipeline and 12.4k clicks")] == [1_200_000, 12_400]
+    sources = [
+        json.dumps({"rows": [{"day": "2026-09-14", "spend": 3862.42, "conversions": 128}]}),
+        json.dumps({"campaign": "g-101", "budget_now": 180.0, "budget": 216.0}),
+    ]
+    values, derived = _source_values(sources), derived_values(sources)
+    assert grounded(numbers_in("+$36.00")[0], values, derived), "180 -> 216 in one record"
     assert grounded(numbers_in("13.7%")[0], [0.1372]), "a share read as a percentage"
-    assert not grounded(numbers_in("$12,345.67")[0], [27.97, 26.04])
+    for invented in ("$3,876.42", "148 conversions", "$12,345.67", "$101"):
+        assert not grounded(numbers_in(invented)[0], values, derived), invented
+
+
+def test_failed_calls_do_not_count_and_unlike_runs_are_flagged() -> None:
+    from paid_media_agent.evals.checks import CallRecord, Transcript, check_tools
+
+    question = {"tools_all": [["explain_change"]], "tools_none": ["execute_change"]}
+    failed = Transcript(
+        "q16",
+        "answer",
+        calls=[CallRecord("explain_change", {}, '{"error": true, "detail": "bad window"}')],
+    )
+    assert not check_tools(failed, question).passed
+    paused = Transcript("q09", "", calls=[CallRecord("explain_change", {}, "", status="pending")])
+    assert check_tools(paused, question).passed, "a paused call waits for approval: it counts"
+
+    row = {"question_id": "q1", "passed": True, "checks": []}
+    diff = compare(
+        [row],
+        [row],
+        current_run={"questions_sha": "a", "judge_model": None},
+        against_run={"questions_sha": "b", "judge_model": "judge"},
+    )
+    assert not diff["comparable"] and len(diff["warnings"]) == 2
+
+
+async def test_a_run_stops_when_the_provider_refuses_the_account(
+    settings: Settings, project_root: Path
+) -> None:
+    from paid_media_agent.evals.suite import provider_refusal
+
+    class Broke:
+        name = "scripted:broke"
+
+        async def complete(self, *, system: str, messages: Any, tools: Any) -> Any:
+            raise ModelError('model returned HTTP 402: {"error": "credits"}', transient=False)
+
+    store = EvalStore(store=Store())
+    run_id, results = await _run(settings, project_root, store, Broke(), None)
+    assert results == [], "nothing after the refusal is graded"
+    assert "out of credits (HTTP 402)" in store.run(run_id)["totals"]["aborted"]
+    assert provider_refusal("HTTP 401 unauthorized") == "the key was refused (HTTP 401)"
+    assert provider_refusal("HTTP 429 slow down") is None, "rate limits are retried, not fatal"

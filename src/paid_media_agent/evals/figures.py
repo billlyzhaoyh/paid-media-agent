@@ -9,15 +9,15 @@ accepted, as the instructions allow both when data ends mid-week.
 from __future__ import annotations
 
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from paid_media_agent.domain.common import FIXTURE_PLATFORMS
 from paid_media_agent.tools.fixtures import load_fixture_dataset, shift_dataset
 
 SHIPPED_ANCHOR = date(2026, 8, 28)
 Window = tuple[date, date]
-Figure = tuple[str, ...]
-"""Acceptable renderings of one number, commas removed (e.g. "3862.42", "3862")."""
+Figure = Decimal
+"""One expected amount; an answer may state it to the cent or rounded (half up) to a whole."""
 Alternative = list[Figure]
 
 
@@ -54,11 +54,6 @@ def trailing_weeks(end: date) -> tuple[Window, Window]:
     return last, (last[0] - timedelta(days=7), last[1] - timedelta(days=7))
 
 
-def forms(value: Decimal) -> Figure:
-    exact = f"{value:.2f}"
-    return (exact, str(round(value))) if value >= 100 else (exact,)
-
-
 def _weekly(platforms: tuple[str, ...], anchor: date, today: date) -> list[Alternative]:
     alternatives: list[Alternative] = []
     for pick in ("calendar", "trailing"):
@@ -69,7 +64,7 @@ def _weekly(platforms: tuple[str, ...], anchor: date, today: date) -> list[Alter
                 if pick == "calendar"
                 else trailing_weeks(data_end(platform, anchor))
             )
-            figures += [forms(window_spend(platform, w, anchor)) for w in weeks]
+            figures += [window_spend(platform, w, anchor) for w in weeks]
         alternatives.append(figures)
     return alternatives
 
@@ -84,10 +79,8 @@ def expected(name: str, anchor: date, today: date) -> list[Alternative]:
     if name == "window_28d_spend":
         return [
             [
-                forms(
-                    window_spend(
-                        p, (data_end(p, anchor) - timedelta(days=27), data_end(p, anchor)), anchor
-                    )
+                window_spend(
+                    p, (data_end(p, anchor) - timedelta(days=27), data_end(p, anchor)), anchor
                 )
                 for p in platforms
             ]
@@ -95,12 +88,21 @@ def expected(name: str, anchor: date, today: date) -> list[Alternative]:
     raise ValueError(f"unknown figure set {name}")
 
 
-def present(answer: str, alternatives: list[Alternative]) -> tuple[bool, list[Figure]]:
-    """Whether one alternative is fully in the answer; otherwise the closest one's missing figures."""
-    text = answer.replace(",", "")
+def stated(expected: Decimal, value: float, decimals: int) -> bool:
+    """Whether a stated number is this amount at its own precision (cents, or a whole, half up)."""
+    if decimals not in (0, 2) or (decimals == 0 and expected < 100):
+        return False
+    step = Decimal(1).scaleb(-decimals)
+    return expected.quantize(step, rounding=ROUND_HALF_UP) == Decimal(str(value)).quantize(step)
+
+
+def present(
+    numbers: list[tuple[float, int]], alternatives: list[Alternative]
+) -> tuple[bool, list[Figure]]:
+    """Whether one alternative is fully stated; otherwise the closest one's missing figures."""
     best: list[Figure] | None = None
     for alternative in alternatives:
-        missing = [f for f in alternative if not any(form in text for form in f)]
+        missing = [f for f in alternative if not any(stated(f, v, d) for v, d in numbers)]
         if not missing:
             return True, []
         if best is None or len(missing) < len(best):

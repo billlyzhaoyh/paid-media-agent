@@ -45,6 +45,28 @@ class QueryHistoryArgs(BaseModel):
     limit: int = Field(default=100, ge=1, le=MAX_ROWS)
 
 
+FIELD_NOTES: dict[str, dict[str, str]] = {
+    "daily": {
+        "pacing_ratio": "spend / daily budget that day; above 1 means it spent more than its "
+        "budget that day",
+        "conversions_matured": "conversions once the day is old enough to count as final; "
+        "empty while it is recent",
+    },
+    "signals": {
+        "budget_lost_share": "share of eligible impressions lost because the budget ran out: "
+        "the budget limits the campaign. It is not spend above the budget.",
+        "rank_lost_share": "share lost to ad rank (bid or quality): the bid target or ads "
+        "limit the campaign, not the budget",
+        "impression_share": "share of eligible impressions the campaign won",
+    },
+    "constraints": {
+        "kind": "what limits spend: budget, demand, target (bid target), learning, unknown",
+        "ceiling": "the most the campaign can spend a day whatever its budget",
+    },
+}
+"""What the easily misread fields mean, returned with the view."""
+
+
 def run_query_history(
     store: Store, accounts: AccountRegistry, args: QueryHistoryArgs
 ) -> dict[str, Any]:
@@ -63,13 +85,13 @@ def run_query_history(
         "History holds only what was pulled; missing days were never read. Matured conversions "
         "are final enough to compare; recent days are still arriving."
     )
-    return {
-        "view": args.view,
-        "row_count": len(rows),
-        "truncated": truncated,
-        "rows": rows,
-        "note": note,
-    }
+    # Headline and notes first: a large result is offloaded and shows only its beginning.
+    result: dict[str, Any] = {"view": args.view, "row_count": len(rows), "truncated": truncated}
+    if args.view in FIELD_NOTES:
+        result["notes"] = FIELD_NOTES[args.view]
+    result["note"] = note
+    result["rows"] = rows
+    return result
 
 
 def build_query_history_tool(store: Store, accounts: AccountRegistry) -> ToolSpec:

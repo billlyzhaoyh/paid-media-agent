@@ -52,6 +52,7 @@ Add `--help` for options and `--json` where supported for machine-readable outpu
 | `uv run paid-media-agent whatif --alias demo-google --set g-101=+20%` | Forecast spend, conversions, and CPA at different budgets; `--total +10% --split best` |
 | `uv run paid-media-agent usage --days 7` | Model calls: tokens, cache hits, reported cost, failures, latency |
 | `uv run paid-media-agent eval run --model openrouter:anthropic/claude-haiku-4.5` | The 30-question eval on sample data, graded and stored (bills the model) |
+| `uv run paid-media-agent eval regrade RUN` | Re-check a stored eval run with the current checks (no model is called) |
 | `uv run paid-media-agent context init` | Create the company-context skill from its template |
 | `uv run paid-media-agent proposals list` | Proposals awaiting approval, including the budget bandit's |
 | `uv run paid-media-agent proposals approve ID` | Approve one through the running API; it is applied once and read back |

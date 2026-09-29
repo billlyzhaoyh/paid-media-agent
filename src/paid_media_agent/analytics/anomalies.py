@@ -269,8 +269,14 @@ def _band_flags(
     return flags
 
 
-def _rule_flags(test: _Series, metric: Metric, panel: Sequence[PanelRow]) -> list[AnomalyFlag]:
-    """The ±50% day-over-day rule on the same eligible rows."""
+def _rule_flags(
+    test: _Series,
+    metric: Metric,
+    panel: Sequence[PanelRow],
+    maturity: dict[str, int],
+    curves: dict[str, dict[int, float]],
+) -> list[AnomalyFlag]:
+    """The ±50% day-over-day rule on the same eligible rows, both days corrected for lag."""
     index = {(r.key, r.day): r for r in panel}
     flags = []
     for i, row in enumerate(test.rows):
@@ -281,6 +287,10 @@ def _rule_flags(test: _Series, metric: Metric, panel: Sequence[PanelRow]) -> lis
         before = prior.spend if metric == "spend" else prior.conversions
         if not before:
             continue
+        if metric == "conversions":
+            # The previous day's conversions are still arriving too; compare like with like.
+            share = completeness(prior, maturity, curves)
+            before = before / max(share, 1e-6) if share is not None else before
         change = observed / before - 1
         if abs(change) < DOD_THRESHOLD:
             continue
@@ -292,7 +302,7 @@ def _rule_flags(test: _Series, metric: Metric, panel: Sequence[PanelRow]) -> lis
                 entity_name=row.entity_name,
                 day=row.day,
                 metric=metric,
-                observed=test.targets[i],
+                observed=observed,
                 expected=before,
                 lo=before * (1 - DOD_THRESHOLD),
                 hi=before * (1 + DOD_THRESHOLD),
@@ -393,7 +403,7 @@ async def check_anomalies(
                         method,
                     )
             if method == RULE:
-                report.flags += _rule_flags(test, metric, panel)
+                report.flags += _rule_flags(test, metric, panel, maturity, curves)
             report.methods[metric] = method
     report.flags.sort(key=lambda f: f.score, reverse=True)
     if record:

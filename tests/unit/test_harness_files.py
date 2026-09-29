@@ -48,6 +48,14 @@ def _run(root: Path, name: str, **args: Any) -> str:
         ("write", "/workspace/skills/new.md"),
         ("write", "/README.md"),
         ("write", "/workspace/state/forged.duckdb"),
+        # Case-insensitive file systems (macOS, Windows) must not open a way around the rules.
+        ("read", "/.ENV"),
+        ("read", "/workspace/State/pma.duckdb"),
+        ("write", "/workspace/SKILLS/x.md"),
+        ("write", "/workspace/State/pma.duckdb"),
+        # Artifacts and reports are written by code; the model may not forge them.
+        ("write", "/workspace/analysis/art_0123456789abcdef.json"),
+        ("write", "/workspace/out/rpt_0123.html"),
     ],
 )
 def test_denied_paths_are_refused_as_written_and_as_resolved(

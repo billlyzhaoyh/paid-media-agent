@@ -353,6 +353,14 @@ async def test_timeout_after_commit_is_verified_by_readback_without_retry(
     assert len(provider.mutation_calls) == 1
 
 
+async def test_a_dropped_connection_after_commit_is_read_back_not_failed(
+    settings: Settings, project_root: Path
+) -> None:
+    receipt, provider = await _run_with_behavior(settings, project_root, "disconnect_after_commit")
+    assert receipt["status"] == "verified" and "connection failed" in receipt["reason"]
+    assert len(provider.mutation_calls) == 1, "never retried"
+
+
 async def test_timeout_without_commit_is_failed_not_retried(
     settings: Settings, project_root: Path
 ) -> None:

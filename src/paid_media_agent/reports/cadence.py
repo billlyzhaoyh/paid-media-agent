@@ -123,6 +123,9 @@ async def run_cadence_report(
                 if result.artifact_kind == "performance_rows":
                     found.append(result.artifact_id)
                 arguments = result.next_page
+            if failure is None and arguments is not None:
+                # More pages remain: a partial read must not be compared or called reconciled.
+                failure = f"more than {MAX_PAGES} pages; the read is incomplete"
             if failure is not None:
                 break
         if failure is not None:

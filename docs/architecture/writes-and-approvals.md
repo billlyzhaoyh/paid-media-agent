@@ -53,10 +53,22 @@ attempts to bypass the dispatcher.
   `ApprovalClaim` for that revision, verifies the HMAC signature, digest, scope, requester, and
   expiry, checks the current catalog entry and schema, then claims the proposal and consumes the
   approval exactly once. Multiple valid approval claims cannot create multiple execution attempts.
+- **An approval decides exactly one paused call.** Approving or rejecting proposal P resumes
+  only the paused `execute_change` whose `proposal_id` is P. Any other paused calls stay paused,
+  and the model does not run until every call has its result.
+  - A proposal with no paused call is refused (`conversation_expired`), so a stale approval
+    button can never execute a newer proposal.
+  - The review card shows the proposal the paused call would execute, not merely the thread's
+    newest one.
+- **Who may decide.** Only the requester or an approver may edit or reject (`not_permitted`,
+  HTTP 403), and only an approver may approve.
+- **One turn at a time per thread.** `Agent.send` and `Agent.resume` hold a per-thread lock, so
+  two quick messages or an approval arriving mid-turn never give a call two results.
 - Only `ProposalService.approve` creates claims. Surfaces call it with an opaque routing id or
   proposal id; Slack button values carry no payload.
 - Readback runs through the authorized read path with bounded attempts and wall time. A timeout
-  after submission is reconciled by readback: matched after-state is `verified`, matched before-state
+  after submission, or a connection that fails without an answer (`ProviderUnknownOutcome`), is
+  reconciled by readback: matched after-state is `verified`, matched before-state
   is `failed`, anything else is `unknown`. No mutation is ever retried.
 - `WriteGate` admits fakes unconditionally and refuses live providers while
   `PAID_MEDIA_WRITES_ENABLED` is false or the live-write release gates are not met (see

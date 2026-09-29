@@ -52,6 +52,16 @@ class ExecuteChangeArgs(BaseModel):
     )
 
 
+NEVER_AVAILABLE = (
+    "deleting or archiving campaigns, ad groups, or ads (pause instead)",
+    "creating campaigns, ad groups, ads, or audiences",
+    "changing bids or bid targets such as target CPA or target ROAS (not admitted yet)",
+    "raw or arbitrary API mutations",
+    "applying any change without a human approval",
+)
+"""What the agent refuses, whatever the catalog offers, so it never offers them."""
+
+
 def _proposal_id(args: dict[str, Any]) -> UUID | None:
     try:
         return UUID(str(args.get("proposal_id")))
@@ -144,8 +154,13 @@ def build_write_tools(service: ProposalService, executor: WriteExecutor) -> list
         return json.dumps(
             {
                 "operations": service.admitted_operations(),
+                "never_available": list(NEVER_AVAILABLE),
                 "execution_gate": executor.gate.describe(),
-                "note": "Only these operations can be proposed. Each needs a human approval before one execution attempt.",
+                "note": (
+                    "Only these operations can be proposed. Each needs a human approval before "
+                    "one execution attempt. Anything in never_available cannot be done here: say "
+                    "so plainly and offer the closest admitted operation (usually pausing)."
+                ),
             }
         )
 

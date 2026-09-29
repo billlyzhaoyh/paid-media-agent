@@ -15,6 +15,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from datetime import time as clock_time
 from pathlib import Path
 from typing import Any
 
@@ -107,6 +108,8 @@ async def prepare(
         catalog=catalog,
         catalog_provider=provider,
         profile=profile,
+        # The agent's date is the run's date, even if a long run crosses midnight.
+        clock=lambda: datetime.combine(today, clock_time(12), tzinfo=UTC),
     )
     await run_sync(
         accounts=runtime.profile.accounts,

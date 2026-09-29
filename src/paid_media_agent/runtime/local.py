@@ -6,7 +6,9 @@ the configured profile, the same accounts and policy a server runs, with in-memo
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from paid_media_agent.assembly import AgentComponents, build_agent, build_agent_components
@@ -38,6 +40,7 @@ def build_local_runtime(
     profile: RuntimeProfile | None = None,
     fixture_state: FixtureState | None = None,
     workspace_root: Path | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> LocalRuntime:
     """Fixture catalog and fake writes with the model you pass: the demo and the test suite."""
     resolved_catalog = catalog or build_fixture_catalog()
@@ -57,7 +60,7 @@ def build_local_runtime(
         profile=resolved_profile,
         catalog=resolved_catalog,
         components=components,
-        agent=build_agent(components, resolved_profile.store),
+        agent=build_agent(components, resolved_profile.store, clock=clock),
     )
 
 
