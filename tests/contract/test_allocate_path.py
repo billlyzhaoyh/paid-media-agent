@@ -190,6 +190,21 @@ async def test_the_agent_recommends_budgets_without_changing_anything(
     assert "Expected conversions" in known["summary"] and "as recommended" in known["summary"]
     moved = [c for c in known["campaigns"] if c["change"]]
     assert all("at the current budget" in c["reading"] for c in moved)
+    # The fixture's own signals say what limits each campaign; the readings say it back.
+    limits = {c["entity_ref"]: c["constraint"]["kind"] for c in known["campaigns"]}
+    assert limits == {"g-101": "demand", "g-102": "budget", "g-103": "target"}
+    readings = {c["entity_ref"]: c["reading"] for c in known["campaigns"]}
+    assert (
+        "limited by its budget (high confidence: platform: BUDGET_CONSTRAINED" in readings["g-102"]
+    )
+    assert "loosen the target rather than the budget" in readings["g-103"]
+    assert "cannot spend more of their budget" in " ".join(known["notes"])
+    from paid_media_agent.analytics.history import query_history
+
+    kinds, _ = query_history(runtime.profile.store, "constraints", account_alias="demo-google")
+    assert {r["entity_ref"]: r["kind"] for r in kinds} == limits
+    shares, _ = query_history(runtime.profile.store, "signals", entity_ref="g-102", limit=1)
+    assert shares[0]["budget_lost_share"] == 0.24
     assert "fixture-" not in json.dumps(known), "provider ids stay host-side"
     assert unknown["error"] is True and "unknown account alias" in unknown["detail"]
     assert provider.mutation_calls == []

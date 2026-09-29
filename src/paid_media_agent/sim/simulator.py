@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date, timedelta
 from typing import Any, Literal
 
@@ -58,6 +58,15 @@ class ScenarioParams:
     cold_starts: int = 1
     budget_change_every: tuple[int, int] = (10, 28)
     budget_change_factor: tuple[float, float] = (0.7, 1.35)
+    ceiling_share: float = 0.0
+    """Share of campaigns whose spend stops at a ceiling (demand or a bid target), not the budget.
+    Zero keeps every scenario exactly as before: ceilings use their own random numbers."""
+    ceiling_range: tuple[float, float] = (0.5, 0.9)
+    """Each ceiling as a multiple of the campaign's spend at its base budget."""
+    target_share: float = 0.5
+    """Of the capped campaigns, the share held back by a bid target rather than by demand."""
+    emit_signals: bool = False
+    """Also report Google-style impression-share losses and status reasons, derived from truth."""
 
     def as_json(self) -> dict[str, Any]:
         data = asdict(self)
@@ -78,23 +87,32 @@ class CampaignTruth:
     ctr: float
     aov: float
     weekday_peak: int
+    ceiling: float | None = None
+    """The most the campaign can spend a day, whatever its budget (None: the budget binds)."""
+    limit: Literal["demand", "target"] | None = None
+    target_cpa: float | None = None
 
     def response(self, spend: float) -> float:
         """Expected final conversions at `spend` on an average weekday."""
         return math.exp(self.kappa1) * math.pow(max(spend, 0.0), self.kappa2)
 
     def value(self, spend: float) -> float:
-        return self.response(spend)
+        """Expected conversions at a spend level it may not reach: flat above the ceiling."""
+        return self.response(spend if self.ceiling is None else min(spend, self.ceiling))
 
     def marginal(self, spend: float) -> float:
         """Extra expected conversions per unit of extra spend at `spend`."""
+        if self.ceiling is not None and spend >= self.ceiling:
+            return 0.0
         return self.kappa2 * math.exp(self.kappa1) * math.pow(max(spend, 1e-9), self.kappa2 - 1)
 
     def spend_at_marginal(self, marginal: float) -> float:
         """The spend at which one more unit of spend buys `marginal` conversions."""
+        cap = math.inf if self.ceiling is None else self.ceiling
         if marginal <= 0:
-            return math.inf
-        return math.pow(marginal / (self.kappa2 * math.exp(self.kappa1)), 1 / (self.kappa2 - 1))
+            return cap
+        found = math.pow(marginal / (self.kappa2 * math.exp(self.kappa1)), 1 / (self.kappa2 - 1))
+        return min(found, cap)
 
 
 @dataclass(frozen=True)
@@ -113,6 +131,7 @@ class DayOutcome:
     anomaly: ShockKind | None
     lags: tuple[int, ...] = field(repr=False)
     """Conversions by reporting delay in days; `lags[d]` arrived `d` days after the day."""
+    limited_by: Literal["budget", "demand", "target"] = "budget"
 
     def reported_conversions(self, age_days: int) -> int:
         """Conversions visible to a pull made `age_days` after the day (delays below the age)."""
@@ -123,7 +142,7 @@ class Simulator:
     def __init__(self, params: ScenarioParams) -> None:
         self.params = params
         self._rng = np.random.default_rng(params.seed)
-        self.campaigns = self._draw_campaigns()
+        self.campaigns = self._draw_ceilings(self._draw_campaigns())
         self.shocks = self._draw_shocks()
         self.outcomes: dict[tuple[str, int], DayOutcome] = {}
         delays = np.arange(params.max_lag_days + 1)
@@ -157,6 +176,33 @@ class Simulator:
                 )
             )
         return tuple(campaigns)
+
+    def _draw_ceilings(self, campaigns: tuple[CampaignTruth, ...]) -> tuple[CampaignTruth, ...]:
+        """Ceilings from their own generator, so the rest of a scenario never changes."""
+        p = self.params
+        if p.ceiling_share <= 0:
+            return campaigns
+        rng = np.random.default_rng([p.seed, 1_000_003])
+        drawn = []
+        for campaign in campaigns:
+            capped = rng.random() < p.ceiling_share
+            multiple = float(rng.uniform(*p.ceiling_range))
+            by_target = rng.random() < p.target_share
+            if not capped:
+                drawn.append(campaign)
+                continue
+            ceiling = round(campaign.base_budget * p.pacing_mean * multiple, 2)
+            drawn.append(
+                replace(
+                    campaign,
+                    ceiling=ceiling,
+                    limit="target" if by_target else "demand",
+                    target_cpa=round(ceiling / campaign.response(ceiling), 2)
+                    if by_target
+                    else None,
+                )
+            )
+        return tuple(drawn)
 
     def _draw_shocks(self) -> dict[tuple[str, int], ShockKind]:
         kinds: list[ShockKind] = list(SHOCK_EFFECTS)
@@ -200,6 +246,21 @@ class Simulator:
             impressions = int(spend / campaign.cpm * 1000 * rng.lognormal(0.0, 0.05))
             clicks = int(rng.binomial(impressions, campaign.ctr))
             value = round(conversions * campaign.aov * float(rng.lognormal(0.0, 0.1)), 2)
+            limited_by: Literal["budget", "demand", "target"] = "budget"
+            if campaign.ceiling is not None:
+                # What the campaign can win today; its own generator keeps the others unchanged.
+                cap_rng = np.random.default_rng([p.seed, number, index, 1_000_003])
+                cap = round(campaign.ceiling * float(cap_rng.lognormal(0.0, 0.08)), 2)
+                if cap < spend:
+                    share = cap / spend
+                    spend, limited_by = cap, campaign.limit or "demand"
+                    expected = self.expected_conversions(campaign, spend, index)
+                    conversions = int(cap_rng.poisson(expected * conv_mult))
+                    lags = cap_rng.multinomial(conversions, self._lag_weights)
+                    impressions, clicks = int(impressions * share), int(clicks * share)
+                    value = round(
+                        conversions * campaign.aov * float(cap_rng.lognormal(0.0, 0.1)), 2
+                    )
             outcome = DayOutcome(
                 entity_ref=campaign.entity_ref,
                 index=index,
@@ -214,6 +275,7 @@ class Simulator:
                 clicks=clicks,
                 anomaly=anomaly,
                 lags=tuple(int(n) for n in lags),
+                limited_by=limited_by,
             )
             self.outcomes[(campaign.entity_ref, index)] = outcome
             outcomes.append(outcome)

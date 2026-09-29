@@ -18,7 +18,7 @@ from pathlib import Path
 
 from paid_media_agent.analytics.ingest import AnalyticsRecorder
 from paid_media_agent.config import AccountBinding
-from paid_media_agent.domain.common import EntityType
+from paid_media_agent.domain.common import EntityType, JsonValue
 from paid_media_agent.sim.simulator import (
     CampaignTruth,
     DayOutcome,
@@ -97,6 +97,15 @@ def _truth_rows(outcomes: list[DayOutcome], sim: Simulator) -> list[dict[str, ob
     ]
 
 
+def _bidding(campaign: CampaignTruth, params: ScenarioParams) -> dict[str, JsonValue]:
+    """Bid strategy in the listing, only for scenarios with ceilings (others stay unchanged)."""
+    if params.ceiling_share <= 0:
+        return {}
+    if campaign.limit == "target":
+        return {"bid_strategy": "TARGET_CPA", "target_cpa": campaign.target_cpa}
+    return {"bid_strategy": "MAXIMIZE_CONVERSIONS"}
+
+
 class ScenarioDriver:
     """Runs a scenario one day at a time into `store`, with budgets chosen by the caller.
 
@@ -143,6 +152,7 @@ class ScenarioDriver:
                     "name": c.name,
                     "status": "ENABLED",
                     "daily_budget": round(float(budgets[c.entity_ref]), 2),
+                    **_bidding(c, p),
                 }
                 for c in active
             ]
@@ -167,6 +177,8 @@ class ScenarioDriver:
                 [p.scenario_id, p.platform.value, json.dumps(_truth_rows(outcomes, sim))],
             )
             self.truth += len(outcomes)
+        if p.emit_signals and outcomes:
+            self._record_signals(outcomes, day)
         reported = sim.report(index + 1, self._window_days)
         if not reported:
             return outcomes
@@ -193,6 +205,46 @@ class ScenarioDriver:
         self.pulls += 1
         self.rows += len(normalized)
         return outcomes
+
+    def _record_signals(self, outcomes: list[DayOutcome], day: date) -> None:
+        """Google-style auction shares and status reasons, derived from what limited each day."""
+        shares = {"budget": (0.15, 0.10), "demand": (0.0, 0.05), "target": (0.0, 0.40)}
+        reasons = {
+            "budget": "BUDGET_CONSTRAINED",
+            "demand": "SEARCH_VOLUME_LIMITED",
+            "target": "BIDDING_STRATEGY_CONSTRAINED",
+        }
+        daily = [
+            {
+                "entity_ref": o.entity_ref,
+                "day": o.day.isoformat(),
+                "budget_lost_share": shares[o.limited_by][0],
+                "rank_lost_share": shares[o.limited_by][1],
+                "impression_share": round(1 - sum(shares[o.limited_by]), 2),
+            }
+            for o in outcomes
+        ]
+        status = [
+            {
+                "entity_ref": o.entity_ref,
+                "channel_type": "SEARCH",
+                "status_reasons": [reasons[o.limited_by]],
+                "bidding_status": "ENABLED",
+                "learning_status": None,
+                "recommended_budget": None,
+                "raw": {"limited_by": o.limited_by},
+            }
+            for o in outcomes
+        ]
+        self._recorder.record_signals(
+            source="simulator",
+            binding=self.binding,
+            tool_name=f"{self.params.platform.value}__get_campaign_signals",
+            catalog_revision=None,
+            daily=daily,
+            status=status,
+            observed_at=_at(day + timedelta(days=1)),
+        )
 
     def result(self) -> ScenarioRun:
         return ScenarioRun(

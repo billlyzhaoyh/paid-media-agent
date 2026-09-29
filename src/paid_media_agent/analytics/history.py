@@ -12,7 +12,9 @@ from uuid import UUID
 
 from paid_media_agent.store.db import Store
 
-HistoryView = Literal["coverage", "daily", "settings", "changes", "lag", "outcomes", "goals"]
+HistoryView = Literal[
+    "coverage", "daily", "settings", "changes", "lag", "outcomes", "goals", "signals", "constraints"
+]
 HISTORY_VIEWS: tuple[HistoryView, ...] = (
     "coverage",
     "daily",
@@ -21,6 +23,8 @@ HISTORY_VIEWS: tuple[HistoryView, ...] = (
     "lag",
     "outcomes",
     "goals",
+    "signals",
+    "constraints",
 )
 MAX_ROWS = 500
 
@@ -67,6 +71,20 @@ _QUERIES: dict[HistoryView, tuple[str, str, str]] = {
         "current_budget, final_budget AS recommended_budget, budget_in_force, proposal_status, "
         "proposal_id, days_matured, hold_days, spend, conversions_matured, "
         "expected_conversions_window, run_id FROM bandit_outcomes",
+        "decision_day",
+        "ORDER BY decision_day DESC, account_alias, entity_ref",
+    ),
+    "signals": (
+        "SELECT account_alias, platform, entity_ref, day, impression_share, budget_lost_share, "
+        "rank_lost_share FROM entity_daily_signals_latest",
+        "day",
+        "ORDER BY day DESC, account_alias, entity_ref",
+    ),
+    "constraints": (
+        "SELECT * FROM (SELECT r.decision_day, d.account_alias, d.entity_ref, d.entity_name, "
+        "c.kind, c.confidence, c.ceiling, d.current_budget, d.final_budget, d.constrained_by, "
+        "c.evidence, c.run_id FROM bandit_decision_constraints c "
+        "JOIN bandit_decisions d USING (run_id, arm_key) JOIN bandit_runs r USING (run_id)) q",
         "decision_day",
         "ORDER BY decision_day DESC, account_alias, entity_ref",
     ),

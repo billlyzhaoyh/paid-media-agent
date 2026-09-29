@@ -70,16 +70,22 @@ def _reason(run: BanditRun, decision: ArmDecision, new_budget: float) -> str:
     mean = greedy(post) if post is not None else None
     if post is not None and mean is not None:
         curve = post.curve(mean)
-        before = curve.value(arm.pacing * current)
-        after = curve.value(arm.pacing * new_budget)
+        before = curve.value(arm.expected_spend(current))
+        after = curve.value(arm.expected_spend(new_budget))
         parts.append(
             f"Expected conversions {before:.1f} -> {after:.1f} a day; elasticity "
             f"{mean[1]:.2f} ± {post.kappa2_sd:.2f} from {arm.n_history} days of history."
         )
     bounds = [c for c in decision.constrained_by if c not in ("ineligible",)]
     if bounds:
-        parts.append(f"Limited by: {', '.join(bounds)}.")
-    parts.append(f"Account total {run.total_budget:.2f} kept.")
+        parts.append(f"Bounds: {', '.join(bounds)}.")
+    constraint = arm.constraint
+    if constraint.kind != "unknown":
+        parts.append(
+            f"Spend is limited by {constraint.kind} ({constraint.confidence} confidence: "
+            f"{'; '.join(constraint.evidence)})."
+        )
+    parts.append(f"Account total {run.total_budget:.2f} ({run.total_source}).")
     return " ".join(parts)[:2000]
 
 

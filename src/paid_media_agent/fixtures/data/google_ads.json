@@ -2,22 +2,29 @@
  "account_id": "fixture-google-0001",
  "campaigns": [
   {
+   "bid_strategy": "MAXIMIZE_CLICKS",
+   "channel_type": "SEARCH",
    "daily_budget": 180.0,
    "id": "g-101",
    "name": "Brand Search - US",
    "status": "ENABLED"
   },
   {
+   "bid_strategy": "MAXIMIZE_CONVERSIONS",
+   "channel_type": "SEARCH",
    "daily_budget": 420.0,
    "id": "g-102",
    "name": "Non-Brand Search - Pricing",
    "status": "ENABLED"
   },
   {
+   "bid_strategy": "TARGET_CPA",
+   "channel_type": "PERFORMANCE_MAX",
    "daily_budget": 300.0,
    "id": "g-103",
    "name": "Performance Max - Prospecting",
-   "status": "ENABLED"
+   "status": "ENABLED",
+   "target_cpa": 32.0
   }
  ],
  "currency": "USD",
@@ -763,5 +770,32 @@
  ],
  "data_complete_through": "2026-08-28",
  "platform": "google_ads",
+ "signals": {
+  "g-101": {
+   "bidding_status": "ENABLED",
+   "budget_lost_share": 0.0,
+   "impression_share": 0.93,
+   "rank_lost_share": 0.07,
+   "status_reasons": [
+    "SEARCH_VOLUME_LIMITED"
+   ]
+  },
+  "g-102": {
+   "bidding_status": "LIMITED_BY_BUDGET",
+   "budget_lost_share": 0.24,
+   "impression_share": 0.58,
+   "rank_lost_share": 0.18,
+   "recommended_budget": 520.0,
+   "status_reasons": [
+    "BUDGET_CONSTRAINED"
+   ]
+  },
+  "g-103": {
+   "bidding_status": "ENABLED",
+   "status_reasons": [
+    "BIDDING_STRATEGY_CONSTRAINED"
+   ]
+  }
+ },
  "timezone": "America/New_York"
 }

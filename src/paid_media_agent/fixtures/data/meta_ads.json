@@ -2,18 +2,21 @@
  "account_id": "fixture-meta-0001",
  "campaigns": [
   {
+   "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
    "daily_budget": 350.0,
    "id": "m-201",
    "name": "Prospecting - Lookalike 1%",
    "status": "ACTIVE"
   },
   {
+   "bid_strategy": "COST_CAP",
    "daily_budget": 150.0,
    "id": "m-202",
    "name": "Retargeting - Site Visitors 30d",
    "status": "ACTIVE"
   },
   {
+   "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
    "daily_budget": 90.0,
    "id": "m-203",
    "name": "Video Views - Awareness",
@@ -781,5 +784,6 @@
  ],
  "data_complete_through": "2026-08-28",
  "platform": "meta_ads",
+ "signals": {},
  "timezone": "America/New_York"
 }

@@ -135,10 +135,11 @@ async def test_sync_repulls_the_trailing_window_and_backfill_walks_chunks(
     assert store.fetch("SELECT count(*) FROM entity_daily_latest")[0][0] == first.rows
 
     back = await run_backfill(**kwargs, start=date(2026, 8, 1), end=END, chunk_days=10)
-    assert len(back.reads) == 3 * 3 and back.settings == 0
+    # Three accounts by three chunks, each a performance read and a signals read.
+    assert len(back.reads) == 3 * 3 * 2 and back.settings == 0 and back.signals > 0
     windows = store.fetch(
         "SELECT requested_start, requested_end FROM pulls WHERE source = 'backfill' "
-        "AND platform = 'google_ads' ORDER BY 1"
+        "AND platform = 'google_ads' AND NOT list_contains(quality_flags, 'signals') ORDER BY 1"
     )
     assert windows == [
         (date(2026, 8, 1), date(2026, 8, 10)),

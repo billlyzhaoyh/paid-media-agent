@@ -67,6 +67,9 @@ class BanditConfig:
     target_cpa: float | None = None
     """The account's target average CPA (currency). When the model expects the split to cost more
     per conversion than this, the total is cut until it does not."""
+    spend_model: Literal["ceiling", "linear"] = "ceiling"
+    """`ceiling`: spend = min(budget share, what the campaign can win) where demand or a bid target
+    limits it. `linear`: spend always grows with budget (the model before, kept for comparison)."""
     prior_kappa2: float = PRIOR_KAPPA2
     ladder_z: float = LADDER_Z
     guard_z: float = GUARD_Z
@@ -123,7 +126,20 @@ class ArmDecision:
             "expected_conversions": _round(self.expected_conversions),
             "expected_conversions_now": _round(self.expected_conversions_now),
             "propensity": _round(self.propensity),
+            "constraint": constraint_record(arm),
         }
+
+
+def constraint_record(arm: Arm) -> dict[str, Any]:
+    """What limits the campaign's spend, how sure, the evidence, and its spend ceiling."""
+    return {
+        **arm.constraint.as_record(),
+        "ceiling": arm.ceiling.as_record() if arm.capped and arm.ceiling else None,
+        "utilisation": None if arm.utilisation is None else round(arm.utilisation, 3),
+        "bid_strategy": arm.bid_strategy,
+        "channel_type": arm.signals.channel_type,
+        "platform_notes": list(arm.rules.notes) if arm.rules else [],
+    }
 
 
 def _round(value: float | None) -> float | None:
@@ -181,16 +197,31 @@ class BanditRun:
 
 
 def budget_bounds(arm: Arm, config: BanditConfig) -> tuple[float, float, list[str]]:
-    """The budgets this decision may choose from for one eligible campaign."""
+    """The budgets this decision may choose from for one eligible campaign.
+
+    The platform's own rules tighten the step, the spacing between changes, and the minimum
+    budget. A campaign in a learning phase is held. Where demand or a bid target limits spend,
+    the budget stops at what the campaign can spend, so budget it cannot use moves elsewhere.
+    """
+    rules = arm.rules
     current = float(arm.current_budget or 0.0)
-    if arm.days_since_change is not None and arm.days_since_change < config.hold_days:
+    if arm.constraint.kind == "learning":
+        return current, current, ["learning"]
+    hold = max(config.hold_days, (rules.min_days_between_changes or 0) if rules else 0)
+    if arm.days_since_change is not None and arm.days_since_change < hold:
         return current, current, ["hold"]
-    lower = max(config.min_budget, current * (1 - config.max_step))
-    upper = current * (1 + config.max_step)
-    why: list[str] = []
-    ceiling = config.max_spend_multiple * arm.max_spend / arm.pacing
+    step = min(config.max_step, rules.max_step) if rules and rules.max_step else config.max_step
+    floor = max(config.min_budget, (rules.min_daily_budget or 0.0) if rules else 0.0)
+    lower = max(floor, current * (1 - step))
+    upper = current * (1 + step)
+    why: list[str] = ["platform_step"] if step < config.max_step else []
+    ceiling = config.max_spend_multiple * arm.max_spend / arm.spend_slope
     if ceiling < upper:
         upper, why = ceiling, ["spend_history"]
+    if arm.capped and arm.ceiling is not None:
+        can_spend = arm.ceiling.high / arm.spend_slope
+        if can_spend < upper:
+            upper, why = can_spend, [f"{arm.constraint.kind}_ceiling"]
     if config.max_budget is not None and config.max_budget < upper:
         upper, why = config.max_budget, ["max_budget"]
     return lower, max(upper, lower), why
@@ -244,7 +275,7 @@ def _allocation(
 ) -> Allocation:
     return allocate(
         curves,
-        [d.arm.pacing for d in decisions],
+        [d.arm.spend_slope for d in decisions],
         [float(d.lower or 0.0) for d in decisions],
         [float(d.upper or 0.0) for d in decisions],
         total,
@@ -310,7 +341,7 @@ def _expected_cpa(pairs: list[tuple[ArmDecision, float]]) -> float | None:
         mean = greedy(post) if post is not None else None
         if post is None or mean is None:
             continue
-        s = decision.arm.pacing * budget
+        s = decision.arm.expected_spend(budget)
         spend += s
         conversions += post.curve(mean).value(s)
     return spend / conversions if conversions > 0 else None
@@ -336,6 +367,13 @@ async def recommend(
     seed = secrets.randbits(63) if seed is None else seed
     rng = np.random.default_rng(seed)
     arms = load_arms(store, as_of=as_of, train_days=config.train_days, account_alias=account_alias)
+    for arm in arms:
+        # The ceiling decides only where demand or a bid target, not the budget, limits spend.
+        arm.capped = (
+            config.spend_model == "ceiling"
+            and arm.ceiling is not None
+            and arm.constraint.kind in ("demand", "target")
+        )
     accounts = {(a.platform, a.provider_account_id) for a in arms if a.eligible}
     if len(accounts) > 1:
         raise ValueError("budgets are allocated within one account; pass its alias")
@@ -430,7 +468,10 @@ async def recommend(
 
     # 4-5. Draw and allocate.
     if movable:
-        greedy_curves = [post.curve(mean) for post, mean in map(_usable, movable)]
+        greedy_curves = [
+            d.arm.decision_curve(post.curve(mean))
+            for d, (post, mean) in zip(movable, map(_usable, movable), strict=True)
+        ]
         by_greedy = _allocate_curves(movable, greedy_curves, free, config)
         if config.target_cpa is not None:
             free, cut = _cap_to_target_cpa(
@@ -444,7 +485,7 @@ async def recommend(
             decision.sampled, decision.rejected_draws = draw_thompson(
                 post, rng, guard_z=config.guard_z
             )
-            sampled_curves.append(post.curve(decision.sampled))
+            sampled_curves.append(decision.arm.decision_curve(post.curve(decision.sampled)))
         by_thompson_run = _allocation(movable, sampled_curves, free, config)
         by_thompson = list(by_thompson_run.budgets)
         chosen = by_thompson if config.policy == "thompson" else by_greedy
@@ -459,7 +500,8 @@ async def recommend(
             decision.budget_greedy, decision.budget_thompson, decision.final_budget = g, t, c
             if c <= float(decision.lower or 0.0) + 1e-6:
                 decision.constrained_by.append("lower")
-            elif c >= float(decision.upper or 0.0) - 1e-6:
+            elif c >= float(decision.upper or 0.0) - 1e-6 and not decision.constrained_by:
+                # The step limit, unless another bound (history, a ceiling) set the upper end.
                 decision.constrained_by.append("upper")
             elif "cpia" in stops:
                 decision.constrained_by.append("cpia")
@@ -469,8 +511,10 @@ async def recommend(
             hits = np.zeros(len(movable))
             for _ in range(config.propensity_draws):
                 redraw = [
-                    post.curve(draw_thompson(post, rng, guard_z=config.guard_z)[0])
-                    for post, _ in map(_usable, movable)
+                    d.arm.decision_curve(
+                        post.curve(draw_thompson(post, rng, guard_z=config.guard_z)[0])
+                    )
+                    for d, (post, _) in zip(movable, map(_usable, movable), strict=True)
                 ]
                 budgets = _allocate_curves(movable, redraw, free, config)
                 chosen_budgets = np.asarray([float(d.final_budget or 0.0) for d in movable])
@@ -485,14 +529,26 @@ async def recommend(
         centre = greedy(post) if post is not None else None
         if post is not None and centre is not None and decision.final_budget is not None:
             curve = post.curve(centre)
-            decision.expected_conversions = curve.value(decision.arm.pacing * decision.final_budget)
+            decision.expected_conversions = curve.value(
+                decision.arm.expected_spend(decision.final_budget)
+            )
             if decision.arm.current_budget:
                 decision.expected_conversions_now = curve.value(
-                    decision.arm.pacing * decision.arm.current_budget
+                    decision.arm.expected_spend(decision.arm.current_budget)
                 )
     run.expected_cpa = _expected_cpa(
         [(d, float(d.final_budget)) for d in decisions if d.final_budget is not None]
     )
+    freed = sum(
+        max(0.0, float(d.arm.current_budget or 0.0) - float(d.final_budget or 0.0))
+        for d in decisions
+        if any(c.endswith("_ceiling") for c in d.constrained_by)
+    )
+    if freed >= 0.01:
+        run.notes.append(
+            f"{freed:,.2f} a day moved away from campaigns that cannot spend more of their budget "
+            "(limited by demand or a bid target, not budget)"
+        )
     if free < sum(float(d.lower or 0.0) for d in movable) - 1e-6:
         run.notes.append("the total is below the campaigns' minimum budgets; all are at minimum")
     return _finish(store, run, config, mode, scenario_id, account_alias, record, clock)
@@ -573,6 +629,17 @@ def _finish(
                     d.expected_conversions,
                     d.propensity,
                     None,
+                ],
+            )
+            cursor.execute(
+                _insert("bandit_decision_constraints", 6),
+                [
+                    run.run_id,
+                    arm.key,
+                    arm.constraint.kind,
+                    arm.constraint.confidence,
+                    arm.ceiling.high if arm.capped and arm.ceiling else None,
+                    json.dumps(constraint_record(arm)),
                 ],
             )
     return run

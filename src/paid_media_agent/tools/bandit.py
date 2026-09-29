@@ -31,6 +31,12 @@ _LIMITS = {
     "spend_history": "capped at 1.5 times the most it has ever spent",
     "max_budget": "capped at the configured maximum budget",
     "cpia": "stopped where its next conversion would cost more than the CPIA cap",
+    "demand_ceiling": "kept to what it can spend: limited by demand (search volume or audience), "
+    "not budget, so more budget would go unspent",
+    "target_ceiling": "kept to what it can spend at its bid target; to grow it, loosen the target "
+    "rather than the budget",
+    "learning": "held: its bid strategy is in a learning phase",
+    "platform_step": "at the platform's own step limit for this campaign type",
     "target_cpa": "lowered toward the account's target CPA",
 }
 _TOTALS = {
@@ -70,7 +76,15 @@ def budget_reading(row: dict[str, Any], currency: str | None) -> str:
             reading += f" (about {row['expected_conversions_now']:.1f} at the current budget)"
     if limits:
         reading += f"; {'; '.join(limits)}"
-    return reading + "."
+    reading += "."
+    constraint = row.get("constraint") or {}
+    if constraint.get("kind") in ("demand", "target", "budget") and constraint.get("evidence"):
+        what = {"demand": "demand", "target": "its bid target", "budget": "its budget"}
+        reading += (
+            f" Spend is limited by {what[constraint['kind']]} ({constraint['confidence']} "
+            f"confidence: {'; '.join(constraint['evidence'])})."
+        )
+    return reading
 
 
 def build_recommend_budgets_tool(

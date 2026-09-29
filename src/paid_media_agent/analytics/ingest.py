@@ -55,6 +55,22 @@ _SETTINGS_SHAPE = {
     "target_roas": "DECIMAL(18,6)",
     "raw": "VARCHAR",
 }
+_SIGNAL_SHAPE = {
+    "entity_ref": "VARCHAR",
+    "day": "DATE",
+    "impression_share": "DOUBLE",
+    "budget_lost_share": "DOUBLE",
+    "rank_lost_share": "DOUBLE",
+}
+_STATUS_SHAPE = {
+    "entity_ref": "VARCHAR",
+    "channel_type": "VARCHAR",
+    "status_reasons": "VARCHAR[]",
+    "bidding_status": "VARCHAR",
+    "learning_status": "VARCHAR",
+    "recommended_budget": "DECIMAL(18,4)",
+    "raw": "VARCHAR",
+}
 _ID_KEYS = ("id", "campaign_id")
 _NAME_KEYS = ("name", "campaign_name")
 _STATUS_KEYS = ("status", "effective_status", "configured_status")
@@ -362,6 +378,68 @@ class AnalyticsRecorder:
             )
             external = self._external_changes(cursor, binding, entities, previous, at)
         return SettingsRecord(pull_id=pull_id, entities=len(entities), external_changes=external)
+
+    def record_signals(
+        self,
+        *,
+        source: AnalyticsSource,
+        binding: AccountBinding,
+        tool_name: str,
+        catalog_revision: str | None,
+        daily: Sequence[Mapping[str, JsonValue]],
+        status: Sequence[Mapping[str, JsonValue]],
+        artifact_id: str | None = None,
+        observed_at: datetime | None = None,
+    ) -> UUID | None:
+        """Record what the platform says limits spend: daily auction shares and current status."""
+        if not daily and not status:
+            return None
+        pull_id = uuid.uuid4()
+        at = observed_at or self._clock()
+        days = sorted(date.fromisoformat(str(r["day"])) for r in daily)
+        with self._store.transaction() as cursor:
+            self._insert_pull(
+                cursor,
+                pull_id=pull_id,
+                source=source,
+                binding=binding,
+                tool_name=tool_name,
+                catalog_revision=catalog_revision,
+                entity_type=EntityType.CAMPAIGN.value,
+                requested=None,
+                actual=(days[0], days[-1]) if days else None,
+                data_complete_through=None,
+                artifact_id=artifact_id,
+                row_count=len(daily) + len(status),
+                quality_flags=("signals",),
+                pulled_at=at,
+            )
+            key = [binding.platform.value, binding.provider_account_id, EntityType.CAMPAIGN.value]
+            if daily:
+                columns = ", ".join(_SIGNAL_SHAPE)
+                cursor.execute(
+                    f"INSERT INTO entity_daily_signals (platform, provider_account_id, "  # noqa: S608
+                    f"entity_type, pull_id, pulled_at, account_alias, {columns}) "
+                    f"SELECT ?, ?, ?, ?, ?, ?, {columns} FROM ({json_rows(_SIGNAL_SHAPE)}) "
+                    "ON CONFLICT DO NOTHING",
+                    [*key, pull_id, at, binding.alias, json.dumps(list(daily), default=str)],
+                )
+            if status:
+                rows = [
+                    {**{k: item.get(k) for k in _STATUS_SHAPE if k != "raw"},
+                     "status_reasons": list(item.get("status_reasons") or []),
+                     "raw": json.dumps(item.get("raw") or {}, sort_keys=True, default=str)}
+                    for item in status
+                ]  # fmt: skip
+                columns = ", ".join(_STATUS_SHAPE)
+                cursor.execute(
+                    f"INSERT INTO entity_delivery_status (platform, provider_account_id, "  # noqa: S608
+                    f"entity_type, observed_at, pull_id, account_alias, {columns}) "
+                    f"SELECT ?, ?, ?, ?, ?, ?, {columns} FROM ({json_rows(_STATUS_SHAPE)}) "
+                    "ON CONFLICT DO NOTHING",
+                    [*key, at, pull_id, binding.alias, json.dumps(rows, default=str)],
+                )
+        return pull_id
 
     def _previous_settings(
         self, cursor: duckdb.DuckDBPyConnection, binding: AccountBinding, refs: Sequence[str]

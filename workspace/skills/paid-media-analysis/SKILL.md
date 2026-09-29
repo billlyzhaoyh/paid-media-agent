@@ -43,7 +43,9 @@ recommendations.
    end, and CPA or ROAS against target, call `check_pacing`. For
    spikes, drops, or "anything unusual", call `check_anomalies`, which judges recent days against
    their expected range from stored history. For how to split or shift budget between campaigns,
-   call `recommend_budgets` (see the wiki's bidding-and-budget page). For period-over-period change, call
+   call `recommend_budgets` (see the wiki's bidding-and-budget page); read each campaign's
+   `constraint` before advising a budget change, because only a budget-limited campaign can use
+   more budget. For period-over-period change, call
    `compare_periods` with the artifact ids and both windows. List any failed read in
    `unavailable_sources` so it stays visible and suppresses the cross-platform total.
 7. Read the `analysis_summary`. Quote its values verbatim; never recompute from previews or rows.

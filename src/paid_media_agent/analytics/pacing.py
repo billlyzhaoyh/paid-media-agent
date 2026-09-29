@@ -24,6 +24,7 @@ from typing import Any
 
 from paid_media_agent.analytics.goals import Goal, GoalStore, account_today, goal_line
 from paid_media_agent.analytics.panel import PanelRow, completeness, lag_curves, maturity_days
+from paid_media_agent.bandit.platform_rules import rules_for
 from paid_media_agent.config import AccountRegistry
 from paid_media_agent.store.db import Store
 
@@ -305,10 +306,14 @@ def account_pacing(
     if binding is None:
         raise ValueError(f"unknown account alias {alias}; call list_accounts")
     today = account_today(accounts, alias, now)
-    return compute_pacing(
+    report = compute_pacing(
         store,
         account_alias=alias,
         today=today,
         goal=GoalStore(store).current(alias, today),
         currency=binding.currency,
     )
+    note = rules_for(binding.platform).pacing_note()
+    if note:
+        report.notes.append(note)
+    return report

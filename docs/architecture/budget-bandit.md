@@ -134,6 +134,79 @@ proposal's latest status. Each decision is labelled:
 
 Off-policy evaluation later uses followed decisions only.
 
+## What limits spend
+
+A budget only buys more where the budget is what binds. Research across platforms, the literature,
+and practice ([summary](https://claude.ai/artifact/CLEaGDJVVydXFUXDoMBEhB)) finds four things that
+cap a campaign's spend:
+- its budget;
+- demand or inventory (search volume, audience size);
+- its bid target (tCPA, tROAS, a cost or bid cap);
+- delivery mechanics (learning phases, pacing windows).
+
+Three lines of work agree that spend = min(ρ·budget, D), where D is what the campaign can win at
+its target: Karande, Mehta and Srikant (WSDM 2013), autobidding with ROI constraints, and Nuara et
+al. (AAAI 2018).
+
+**Signals** (`tools/contracts.py`, migration 0010). Where the platform says what limits spend, the
+sync reads it in its own call, so a failure never costs the performance read.
+- **Google:** a GAQL query for daily impression share and the share lost to budget or to rank,
+  primary status reasons, bid-strategy system status, and recommended budget. These land in
+  `entity_daily_signals` and `entity_delivery_status`.
+- **Meta:** its bid strategy comes with campaign settings. It reports no impression share, and
+  learning stage lives on ad sets, which aren't read yet.
+
+**Classification** (`bandit/constraints.py`). Each campaign is labelled `budget`, `demand`,
+`target`, `learning`, or `unknown`, with a confidence and its evidence:
+1. **Platform signals decide first:**
+   - `BUDGET_CONSTRAINED` / `LIMITED_BY_BUDGET`, or a median share of impressions lost to budget
+     of at least 10%, means budget;
+   - `SEARCH_VOLUME_LIMITED` / `LIMITED_BY_INVENTORY` means demand;
+   - `BIDDING_STRATEGY_CONSTRAINED`, or at least 30% lost to rank with a target set, means target;
+   - a learning status means learning.
+2. **Otherwise, how much of its budget it spends** (median over 14 days) and the kind of bid
+   strategy it runs:
+   - at least 95% is budget; under a spend-everything strategy the evidence says "by design";
+   - under 85% with a target-type strategy is target;
+   - under 85% otherwise is demand;
+   - in between is unknown and treated as before.
+
+   The strategy families are data per platform (`bandit/platform_rules.py`).
+
+**The spend ceiling** (`bandit/ceiling.py`). D is fitted per campaign as log-normal over days, by
+maximum likelihood with right censoring:
+- a day that spent its budget, or lost more than 2% of impressions to budget, only shows D ≥
+  spend;
+- other days show D.
+
+This is the statistics of demand at a shop that sells out. Fewer than 5 observed days means no
+ceiling.
+
+**The ceiling applies only where demand or a target limits spend.** There:
+- the campaign's decision curve is flat above the ceiling's 90th percentile, so its budget stops
+  at what it can spend;
+- a budget above that moves down, within the step limit, and the freed budget goes to campaigns
+  where the budget binds;
+- expected conversions use min(ρ·budget, mean ceiling), so the model never counts conversions
+  from spend that can't happen.
+
+Budget-limited and unknown campaigns are treated as before, so simulated accounts without
+ceilings give identical results. `BanditConfig.spend_model = "linear"` restores the old model
+for comparison.
+
+**Platform rules** (`bandit/platform_rules.py`). Only rules verified on official pages are
+enforced:
+- Google Demand Gen: step of at most 15%;
+- TikTok: step of at most 30%, 2 days between changes, ad groups of at least $20;
+- Snapchat: at least $5 a day.
+
+Pacing readings state each platform's window, for example "Google Ads can spend up to 2x a daily
+budget on one day and 30.4x in a month".
+
+**A learning phase holds the budget.** Recommendations say what limits each campaign ("kept to
+what it can spend: limited by demand…"; "to grow it, loosen the target rather than the budget").
+`history --view constraints` and `--view signals` show the record.
+
 ## The spend unit
 
 The curve measures spend `x` in units of the campaign's trailing cost per conversion, `u`. At the
@@ -263,6 +336,37 @@ With so little data, a shape-free model's slope over a campaign's ±25% spend ra
 TabPFN may earn its place on real accounts, whose curves need not be power laws; that needs real
 data to judge. Until then the pooled model is the default.
 
+### Campaigns that stop at a ceiling
+
+`paid-media-agent bandit evaluate --scenario constrained --spend-model both --seeds 5` uses the
+same accounts as above, except that half the campaigns stop at a spend ceiling. The ceiling is 50%
+to 90% of their spend at base budget, half from demand and half from a bid target. It varies by
+day (log-normal, sd 0.08).
+- **Regret** is expected conversions over the 60 days.
+- **Unspendable** is budget above what those campaigns could spend, summed over the days.
+
+| Policy | Mean regret | SD | Unspendable | Per seed |
+| --- | --- | --- | --- | --- |
+| Static | 225.2 | 84.5 | 28,020 | 362.3, 279.1, 196.8, 143.6, 144.5 |
+| CPA rule | 294.7 | 239.5 | 37,580 | 304.4, 25.4, 684.9, 392.7, 66.1 |
+| Greedy, linear spend | 49.4 | 136.0 | 19,091 | 78.7, 1.6, 297.8, -40.7, -90.6 |
+| Thompson, linear spend | 68.8 | 117.9 | 21,014 | 67.5, 3.4, 270.7, 88.7, -86.5 |
+| Greedy, spend ceiling | 2.9 | 25.5 | 7,020 | 42.1, 1.7, -0.8, 9.2, -37.7 |
+| Thompson, spend ceiling | 5.7 | 25.6 | 7,151 | 44.4, 3.6, 2.0, 14.1, -35.4 |
+
+- **The ceiling works from spend history alone:**
+  - regret falls by more than 90%;
+  - budget campaigns cannot spend falls by two thirds;
+  - the worst seed goes from 270.7 to 2.0.
+- **With Google-style impression-share signals** (`--signals`), Thompson sampling averages 1.2
+  (sd 36.9) and greedy 4.4. That is within noise of spend history alone: the signals mark a
+  capped campaign as budget-limited on days its ceiling is not reached.
+- **Nothing changes on the default scenario.** Budget-limited and unknown campaigns keep the old
+  model, so `--spend-model both` gives the same regret as the table above.
+- **Negative regret appears on some seeds.** The oracle plans to each campaign's average ceiling,
+  while daily demand varies around it, so a policy that leaves headroom can beat it. The oracle is
+  a strong baseline here, not the exact optimum.
+
 ## Limitations
 
 - **Evaluated in simulation only.** The simulated curves have exactly the shape the local model
@@ -275,6 +379,12 @@ data to judge. Until then the pooled model is the default.
   still came within 9 conversions of the oracle over 60 days.
 - **One account at a time.** Budgets are split within one account and currency. Shared and
   lifetime budgets are not allocated.
+- **Ceilings are learned from spend alone where the platform is silent.** Meta reports no
+  impression share, so a campaign that under-spends because of pacing noise rather than demand
+  sits in the "unknown" band (85–95% of budget) and keeps the old model. A campaign far below
+  its budget is treated as capped even if the cause is a temporary dip.
+- **Target changes are not recommended yet.** A target-limited campaign's reading says to loosen
+  the target, but the bandit only moves budgets.
 - **Target CPA uses mean curves.** The cap judges the expected CPA with each campaign's mean
   curve, so a Thompson draw can land a little above or below it. A campaign without a curve is
   left out of the expected CPA. `max_cpia` (marginal) remains configuration-only.

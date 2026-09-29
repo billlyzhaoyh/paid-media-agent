@@ -216,6 +216,15 @@ changed in the last 7 days is held.
   not appear as Slack cards.
 - **Outcomes.** `history --view outcomes` shows whether each recommendation was followed and how
   many conversions its week brought against what was expected, from matured days only.
+- **What limits spend.** Each recommendation labels every campaign as limited by its budget,
+  by demand, by its bid target, or by a learning phase, and gives the evidence.
+  - Evidence: the platform's own signals where it reports them (Google impression share lost to
+    budget or rank, status reasons), otherwise how much of its budget it spends.
+  - Only budget-limited campaigns can take more budget. Budget a demand- or target-limited
+    campaign can't spend moves to one that can, and a campaign in learning is held.
+  - `history --view constraints` and `--view signals` show the record.
+  - `bandit evaluate --scenario constrained --spend-model both` compares this with the old
+    linear model on simulated accounts where half the campaigns stop at a ceiling.
 - **Goals.** With a target CPA, the total is cut when the model expects the account's average CPA
   to exceed it (the output says whether the step limits let it get there). With a monthly budget
   and no `--total`, the total is today's budgets scaled toward the daily spend that lands on the

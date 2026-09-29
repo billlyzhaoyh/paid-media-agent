@@ -23,6 +23,9 @@ from paid_media_agent.analytics.panel import (
     load_panel,
     maturity_days,
 )
+from paid_media_agent.bandit.ceiling import CappedCurve, Ceiling, budget_limited, fit_ceiling
+from paid_media_agent.bandit.constraints import Constraint, Signals, classify, median_share
+from paid_media_agent.bandit.platform_rules import PlatformRules, rules_for
 from paid_media_agent.store.db import Store
 
 MIN_COMPLETENESS = 0.75
@@ -35,6 +38,9 @@ MIN_COVERAGE = 0.5
 STALE_DAYS = 4
 """No complete day reported for this long means the sync stopped (settling takes longer)."""
 ACTIVE_STATUSES = {"ENABLED", "ACTIVE"}
+DEFAULT_RHO = 0.95
+"""Share of the budget a campaign spends on days its budget binds, before any are seen."""
+SIGNAL_DAYS = 14
 
 
 @dataclass
@@ -59,6 +65,39 @@ class Arm:
     """Newest complete day any pull reported, settled or not (freshness is judged on it)."""
     eligible: bool = True
     reason: str | None = None
+    bid_strategy: str | None = None
+    target_cpa: float | None = None
+    utilisation: float | None = None
+    """Median spend over the budget in force, last 14 days, unclipped."""
+    rho: float = DEFAULT_RHO
+    """Share of its budget the campaign spends when the budget binds."""
+    ceiling: Ceiling | None = None
+    """The most it can spend a day whatever the budget; None when the budget has always bound."""
+    signals: Signals = field(default_factory=Signals)
+    constraint: Constraint = field(
+        default_factory=lambda: Constraint("unknown", "low", ("not classified",))
+    )
+    rules: PlatformRules | None = None
+    capped: bool = False
+    """Whether the spend ceiling applies to this decision (demand or target limits spend)."""
+
+    @property
+    def spend_slope(self) -> float:
+        """Spend per unit of budget below the ceiling."""
+        return self.rho if self.capped else self.pacing
+
+    def expected_spend(self, budget: float) -> float:
+        """What a daily budget is expected to buy: the budget's share, up to the mean ceiling."""
+        spend = self.spend_slope * budget
+        if self.capped and self.ceiling is not None:
+            return min(spend, self.ceiling.mean)
+        return spend
+
+    def decision_curve(self, curve: Any) -> Any:
+        """The curve to allocate on: flat above the ceiling's 90th percentile when capped."""
+        if self.capped and self.ceiling is not None:
+            return CappedCurve(curve, self.ceiling.high)
+        return curve
 
     @property
     def key(self) -> str:
@@ -103,7 +142,8 @@ def _settings(
         f"""
         WITH s AS (
             SELECT platform, provider_account_id, entity_ref, account_alias, entity_name, status,
-                daily_budget::DOUBLE AS daily_budget, currency, observed_at,
+                daily_budget::DOUBLE AS daily_budget, currency, observed_at, bid_strategy,
+                target_cpa::DOUBLE AS target_cpa,
                 lag(daily_budget::DOUBLE) OVER (
                     PARTITION BY platform, provider_account_id, entity_type, entity_ref
                     ORDER BY observed_at
@@ -117,6 +157,8 @@ def _settings(
             arg_max(status, observed_at) AS status,
             arg_max(daily_budget, observed_at) AS daily_budget,
             arg_max(currency, observed_at) AS currency,
+            arg_max(bid_strategy, observed_at) AS bid_strategy,
+            arg_max(target_cpa, observed_at) AS target_cpa,
             max(observed_at) FILTER (
                 WHERE previous IS NOT NULL AND previous IS DISTINCT FROM daily_budget
             ) AS changed_at,
@@ -152,6 +194,84 @@ def _settings(
     return found
 
 
+def _signals(
+    store: Store, as_of: date, account_alias: str | None
+) -> tuple[dict[tuple[str, str, str], dict[str, Any]], dict[tuple[str, str, str], dict[date, Any]]]:
+    """The platform's latest delivery status per campaign, and its daily auction shares."""
+    cutoff = datetime.combine(as_of + timedelta(days=1), time())
+    alias_clause = "AND account_alias = ?" if account_alias else ""
+    params: list[Any] = [cutoff, *([account_alias] if account_alias else [])]
+    status = {
+        (r["platform"], r["provider_account_id"], r["entity_ref"]): r
+        for r in store.fetch_dicts(
+            f"""
+            SELECT platform, provider_account_id, entity_ref, channel_type, status_reasons,
+                bidding_status, learning_status, recommended_budget::DOUBLE AS recommended_budget
+            FROM entity_delivery_status
+            WHERE entity_type = 'campaign' AND observed_at < ? {alias_clause}
+            QUALIFY row_number() OVER (
+                PARTITION BY platform, provider_account_id, entity_ref ORDER BY observed_at DESC
+            ) = 1
+            """,  # noqa: S608 - the only interpolation is a constant clause
+            params,
+        )
+    }
+    daily: dict[tuple[str, str, str], dict[date, Any]] = defaultdict(dict)
+    for platform, account, ref, day, share, budget_lost, rank_lost in store.fetch(
+        f"""
+        SELECT platform, provider_account_id, entity_ref, day, impression_share,
+            budget_lost_share, rank_lost_share
+        FROM entity_daily_signals
+        WHERE entity_type = 'campaign' AND pulled_at < ? AND day < ? {alias_clause}
+        QUALIFY row_number() OVER (
+            PARTITION BY platform, provider_account_id, entity_ref, day
+            ORDER BY pulled_at DESC, pull_id DESC
+        ) = 1
+        """,  # noqa: S608 - the only interpolation is a constant clause
+        [cutoff, as_of, *([account_alias] if account_alias else [])],
+    ):
+        daily[(platform, account, ref)][day] = (share, budget_lost, rank_lost)
+    return status, daily
+
+
+def _campaign_signals(status: dict[str, Any] | None, daily: dict[date, Any]) -> Signals:
+    recent = [daily[d] for d in sorted(daily)[-SIGNAL_DAYS:]]
+    return Signals(
+        status_reasons=tuple(status.get("status_reasons") or ()) if status else (),
+        bidding_status=status.get("bidding_status") if status else None,
+        learning_status=status.get("learning_status") if status else None,
+        channel_type=status.get("channel_type") if status else None,
+        recommended_budget=status.get("recommended_budget") if status else None,
+        impression_share=median_share([r[0] for r in recent]),
+        budget_lost_share=median_share([r[1] for r in recent]),
+        rank_lost_share=median_share([r[2] for r in recent]),
+    )
+
+
+def _spend_limits(arm: Arm, rows: list[PanelRow], daily: dict[date, Any]) -> None:
+    """Utilisation, the share spent when the budget binds, and the spend ceiling.
+
+    Days before settings were first observed have no recorded budget; while the budget has never
+    been seen to change, the current one stands in for them.
+    """
+    unchanged = arm.days_since_change is None and bool(arm.current_budget)
+    budgets = [r.budget or (arm.current_budget if unchanged else None) for r in rows]
+    shares = [r.spend / b for r, b in zip(rows, budgets, strict=True) if b]
+    if shares:
+        arm.utilisation = float(np.median(shares[-PACING_DAYS:]))
+    spent = [(r, b) for r, b in zip(rows, budgets, strict=True) if r.spend > 0]
+    limited = [
+        budget_limited(r.spend, b, (daily.get(r.day) or (None, None, None))[1]) for r, b in spent
+    ]
+    at_budget = [r.spend / b for (r, b), bound in zip(spent, limited, strict=True) if bound and b]
+    if at_budget:
+        arm.rho = float(np.clip(np.median(at_budget[-PACING_DAYS:]), 0.5, 1.0))
+    arm.ceiling = fit_ceiling(
+        np.asarray([r.spend for r, _ in spent], dtype=np.float64),
+        np.asarray(limited, dtype=bool),
+    )
+
+
 def load_arms(
     store: Store, *, as_of: date, train_days: int = 90, account_alias: str | None = None
 ) -> list[Arm]:
@@ -161,6 +281,7 @@ def load_arms(
     )
     maturity, curves = maturity_days(store), lag_curves(store)
     settings = _settings(store, as_of, account_alias)
+    statuses, daily_signals = _signals(store, as_of, account_alias)
     by_key: dict[tuple[str, str, str], list[PanelRow]] = defaultdict(list)
     newest: dict[str, date] = {}
     for row in panel:
@@ -182,6 +303,8 @@ def load_arms(
             currency=setting.get("currency"),
             current_budget=setting.get("daily_budget"),
             status=setting.get("status"),
+            bid_strategy=setting.get("bid_strategy"),
+            target_cpa=setting.get("target_cpa"),
         )
         arm.last_reported = rows[-1].day if rows else None
         days, spend, conversions, pacing = [], [], [], []
@@ -206,6 +329,17 @@ def load_arms(
         changed_at = setting.get("changed_at")
         if changed_at is not None:
             arm.days_since_change = (as_of - changed_at.date()).days
+        daily = daily_signals.get(key, {})
+        arm.signals = _campaign_signals(statuses.get(key), daily)
+        arm.rules = rules_for(key[0], arm.signals.channel_type)
+        _spend_limits(arm, rows, daily)
+        arm.constraint = classify(
+            rules=arm.rules,
+            signals=arm.signals,
+            bid_strategy=arm.bid_strategy,
+            utilisation=arm.utilisation,
+            days=len(rows) if arm.utilisation is not None else 0,
+        )
         latest = newest.get(key[1])
         recent = [
             r for r in rows if latest is not None and (latest - r.day).days < RECENT_SPEND_DAYS

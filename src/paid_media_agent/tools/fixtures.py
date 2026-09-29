@@ -104,6 +104,18 @@ def fixture_raw_tools() -> list[RawTool]:
                 ),
                 RawTool(
                     platform=platform.value,
+                    name="get_campaign_signals",
+                    description=(
+                        "What limits each campaign's spend: daily impression share and the share "
+                        "lost to budget or to rank where the platform reports them, plus status "
+                        "reasons and bid-strategy status."
+                    ),
+                    input_schema=_schema(account_arg, date_props, ["start_date", "end_date"]),
+                    annotations={"readOnlyHint": True, "destructiveHint": False},
+                    source_endpoint=endpoint,
+                ),
+                RawTool(
+                    platform=platform.value,
                     name="get_campaign",
                     description="Current configuration of one campaign: status and daily budget.",
                     input_schema=_schema(
@@ -374,6 +386,34 @@ class FixtureReadProvider:
             if campaign is None:
                 raise ProviderError("campaign not found in this account")
             return ProviderResult(payload={"campaign": dict(campaign)}, **meta)
+        if entry.name == "get_campaign_signals":
+            start = date.fromisoformat(str(arguments["start_date"]))
+            end = date.fromisoformat(str(arguments["end_date"]))
+            signals = dataset.get("signals")
+            known = signals if isinstance(signals, dict) else {}
+            shares = ("impression_share", "budget_lost_share", "rank_lost_share")
+            daily = [
+                {
+                    "campaign_id": r["campaign_id"],
+                    "date": r["date"],
+                    **{k: known[r["campaign_id"]].get(k) for k in shares},
+                }
+                for r in dataset["daily"]
+                if r["campaign_id"] in known
+                and start <= date.fromisoformat(str(r["date"])) <= end
+                and any(known[r["campaign_id"]].get(k) is not None for k in shares)
+            ]
+            status = [
+                {
+                    "campaign_id": ref,
+                    "channel_type": next(
+                        (c.get("channel_type") for c in campaigns if c["id"] == ref), None
+                    ),
+                    **{k: v for k, v in values.items() if k not in shares},
+                }
+                for ref, values in known.items()
+            ]
+            return ProviderResult(payload={"signals": daily, "status": status}, **meta)
         if entry.name in ("get_campaign_performance", "get_ad_group_performance"):
             start = date.fromisoformat(str(arguments["start_date"]))
             end = date.fromisoformat(str(arguments["end_date"]))

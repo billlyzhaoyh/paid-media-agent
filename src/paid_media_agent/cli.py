@@ -10,6 +10,8 @@ import asyncio
 import json
 import logging
 import sys
+from collections import defaultdict
+from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -1197,6 +1199,25 @@ def bandit_simulate(
 @click.option("--warmup", type=click.IntRange(28, 365), default=42, show_default=True)
 @click.option("--days", type=click.IntRange(7, 365), default=60, show_default=True)
 @click.option("--pseudo-samples", type=click.IntRange(0, 4096), default=512, show_default=True)
+@click.option(
+    "--scenario",
+    type=click.Choice(["default", "constrained"]),
+    default="default",
+    show_default=True,
+    help="constrained: half the campaigns stop at a spend ceiling (demand or a bid target).",
+)
+@click.option(
+    "--signals",
+    is_flag=True,
+    help="With --scenario constrained: also report Google-style impression-share signals.",
+)
+@click.option(
+    "--spend-model",
+    type=click.Choice(["ceiling", "linear", "both"]),
+    default="ceiling",
+    show_default=True,
+    help="How the bandit models spend; both compares them on the same accounts.",
+)
 @_PREDICTOR
 @click.option("--json", "as_json", is_flag=True)
 def bandit_evaluate(
@@ -1205,6 +1226,9 @@ def bandit_evaluate(
     warmup: int,
     days: int,
     pseudo_samples: int,
+    scenario: str,
+    signals: bool,
+    spend_model: str,
     predictor: str | None,
     as_json: bool,
 ) -> None:
@@ -1230,8 +1254,16 @@ def bandit_evaluate(
     config = _bandit_config(pseudo_samples)
     start = date(2026, 1, 5)
 
+    models = ("linear", "ceiling") if spend_model == "both" else (spend_model,)
+    preset: dict[str, Any] = (
+        {"ceiling_share": 0.5, "target_share": 0.5, "emit_signals": signals}
+        if scenario == "constrained"
+        else {}
+    )
+
     async def run() -> dict[str, Any]:
-        regret: dict[str, list[float]] = {p: [] for p in POLICIES if p != "oracle"}
+        regret: dict[str, list[float]] = defaultdict(list)
+        unspendable: dict[str, list[float]] = defaultdict(list)
         contraction: list[dict[str, float]] = []
         violations = 0
         payout: list[dict[str, Any]] = []
@@ -1243,16 +1275,33 @@ def bandit_evaluate(
                 start=start,
                 cold_starts=0,
                 shock_rate=0.0,
+                **preset,
             )
-            results = await compare_policies(
-                params, warmup_days=warmup, days=days, config=config, predictor=global_model
-            )
-            oracle = results["oracle"].expected_conversions
-            for policy, result in results.items():
-                violations += len(result.violations)
-                if policy != "oracle":
-                    regret[policy].append(oracle - result.expected_conversions)
-            contraction.append(kappa_contraction(results["thompson"]))
+            for i, model in enumerate(models):
+                # Baselines don't depend on the spend model; run them once.
+                policies = POLICIES if i == 0 else ("oracle", "greedy", "thompson")
+                results = await compare_policies(
+                    params,
+                    warmup_days=warmup,
+                    days=days,
+                    config=replace(config, spend_model=model),
+                    predictor=global_model,
+                    policies=policies,
+                )
+                oracle = results["oracle"].expected_conversions
+                for policy, result in results.items():
+                    violations += len(result.violations)
+                    if policy == "oracle":
+                        continue
+                    key = (
+                        policy
+                        if len(models) == 1 or policy in ("static", "cpa_rule")
+                        else f"{policy}/{model}"
+                    )
+                    regret[key].append(oracle - result.expected_conversions)
+                    unspendable[key].append(result.unspendable)
+                if model == models[-1]:
+                    contraction.append(kappa_contraction(results["thompson"]))
             payout.append(
                 await payout_error(
                     ScenarioParams(
@@ -1268,7 +1317,10 @@ def bandit_evaluate(
                 )
             )
         return {
-            "regret": regret,
+            "scenario": scenario,
+            "spend_models": list(models),
+            "regret": dict(regret),
+            "unspendable": dict(unspendable),
             "contraction": contraction,
             "violations": violations,
             "payout": payout,
@@ -1286,11 +1338,18 @@ def bandit_evaluate(
         f"Closed loop: {seeds} seed(s), {campaigns} campaigns, {warmup} warm-up days, "
         f"{days} bandit days. Regret = oracle's expected conversions minus the policy's."
     )
-    click.echo(f"  {'policy':<10} {'mean':>8} {'sd':>7}  per seed")
-    for policy, values in out["regret"].items():
+    if scenario == "constrained":
         click.echo(
-            f"  {policy:<10} {float(np.mean(values)):>8.1f} {float(np.std(values)):>7.1f}  "
-            + " ".join(f"{v:.1f}" for v in values)
+            "Scenario: half the campaigns stop at a spend ceiling (demand or a bid target)"
+            + (", with impression-share signals." if signals else ", from spend history only.")
+            + " Unspendable = budget they could not spend, summed over the bandit days."
+        )
+    click.echo(f"  {'policy':<18} {'mean':>8} {'sd':>7} {'unspendable':>12}  per seed")
+    for policy, values in out["regret"].items():
+        wasted = float(np.mean(out["unspendable"].get(policy, [0.0])))
+        click.echo(
+            f"  {policy:<18} {float(np.mean(values)):>8.1f} {float(np.std(values)):>7.1f} "
+            f"{wasted:>12,.0f}  " + " ".join(f"{v:.1f}" for v in values)
         )
     keys = ("error_first", "error_last", "sd_first", "sd_last")
     means = {k: float(np.mean([c[k] for c in out["contraction"] if k in c])) for k in keys}

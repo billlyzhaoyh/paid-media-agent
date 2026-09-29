@@ -74,6 +74,33 @@ def _dicts(value: JsonValue) -> list[dict[str, JsonValue]]:
     return [v for v in value if isinstance(v, dict)] if isinstance(value, list) else []
 
 
+@dataclass(frozen=True)
+class ContractSignals:
+    """What limits spend, as the platform reports it, in canonical shape.
+
+    `daily`: {entity_ref, day, impression_share, budget_lost_share, rank_lost_share}, shares 0-1.
+    `status`: {entity_ref, channel_type, status_reasons, bidding_status, learning_status,
+    recommended_budget (account currency), raw}.
+    """
+
+    daily: list[dict[str, JsonValue]] = field(default_factory=list)
+    status: list[dict[str, JsonValue]] = field(default_factory=list)
+
+    def __bool__(self) -> bool:
+        return bool(self.daily or self.status)
+
+
+_SHARE_KEYS = ("impression_share", "budget_lost_share", "rank_lost_share")
+
+
+def _share(value: JsonValue) -> float | None:
+    number = _decimal(value)
+    if number is None:
+        return None
+    share = float(number)
+    return share / 100 if share > 1.0 else share  # a percentage where a share was expected
+
+
 class ReadContract:
     """The host-side `rows` shape: fixtures and direct adapters. Other contracts override."""
 
@@ -81,6 +108,8 @@ class ReadContract:
     verification: Verification = "host"
     performance_tool = "get_campaign_performance"
     settings_tool: str | None = "list_campaigns"
+    signals_tool: str | None = "get_campaign_signals"
+    """Where the platform says what limits spend (impression share, status reasons)."""
     extra_tools: tuple[str, ...] = ()
     """Other tools whose payloads this contract understands (e.g. a single-campaign read)."""
     reviewed_reads: tuple[str, ...] = ()
@@ -94,8 +123,7 @@ class ReadContract:
 
     def tools(self) -> tuple[str, ...]:
         names = [self.performance_tool, *self.extra_tools]
-        if self.settings_tool:
-            names.append(self.settings_tool)
+        names += [t for t in (self.settings_tool, self.signals_tool) if t]
         return tuple(dict.fromkeys(names))
 
     def per_day(self, schema: Mapping[str, JsonValue]) -> bool:  # noqa: ARG002
@@ -115,6 +143,48 @@ class ReadContract:
 
     def settings_call(self) -> ReadCall | None:
         return ReadCall(self.settings_tool, {}) if self.settings_tool else None
+
+    def signals_call(self, start: date, end: date) -> ReadCall | None:
+        if not self.signals_tool:
+            return None
+        return ReadCall(
+            self.signals_tool,
+            {"start_date": start.isoformat(), "end_date": end.isoformat()},
+            (start, end),
+        )
+
+    def signals(
+        self, tool: str, payload: Mapping[str, JsonValue], binding: AccountBinding
+    ) -> ContractSignals:
+        """The host shape: `{"signals": [daily rows], "status": [latest status per campaign]}`."""
+        del binding
+        if tool != self.signals_tool:
+            return ContractSignals()
+        daily = [
+            {
+                "entity_ref": str(r.get("campaign_id")),
+                "day": r.get("date"),
+                **{k: _share(r.get(k)) for k in _SHARE_KEYS},
+            }
+            for r in _dicts(payload.get("signals"))
+            if r.get("campaign_id") is not None and isinstance(r.get("date"), str)
+        ]
+        status = [
+            {
+                "entity_ref": str(r.get("campaign_id")),
+                "channel_type": r.get("channel_type"),
+                "status_reasons": [str(x) for x in r.get("status_reasons") or []]
+                if isinstance(r.get("status_reasons"), list)
+                else [],
+                "bidding_status": r.get("bidding_status"),
+                "learning_status": r.get("learning_status"),
+                "recommended_budget": r.get("recommended_budget"),
+                "raw": dict(r),
+            }
+            for r in _dicts(payload.get("status"))
+            if r.get("campaign_id") is not None
+        ]
+        return ContractSignals(daily=daily, status=status)
 
     def requested_window(self, arguments: Mapping[str, JsonValue]) -> tuple[date, date] | None:
         return _window(arguments.get("start_date"), arguments.get("end_date"))
@@ -168,6 +238,8 @@ class MetaInsightsContract(ReadContract):
     performance_tool = "get_insights"
     settings_tool = "get_campaigns"
     extra_tools = ("get_campaign_details",)
+    signals_tool = None
+    """Meta reports no impression share; learning stage lives on ad sets (not read yet)."""
     reviewed_reads = ("get_insights", "get_campaigns")
     required_args = {
         "get_insights": ("account_id", "time_range", "level", "limit", "after"),
@@ -317,6 +389,14 @@ _GAQL_SETTINGS = (
     "campaign.target_roas.target_roas, campaign.maximize_conversion_value.target_roas "
     "FROM campaign WHERE campaign.status != 'REMOVED'"
 )
+_GAQL_SIGNALS = (
+    "SELECT campaign.id, segments.date, campaign.advertising_channel_type, "
+    "campaign.primary_status_reasons, campaign.bidding_strategy_system_status, "
+    "campaign_budget.recommended_budget_amount_micros, metrics.search_impression_share, "
+    "metrics.search_budget_lost_impression_share, metrics.search_rank_lost_impression_share "
+    "FROM campaign WHERE segments.date BETWEEN '{start}' AND '{end}'"
+)
+"""A query of its own, so a field the account cannot report never breaks the performance read."""
 _GOOGLE_STATUS = {2: "ENABLED", 3: "PAUSED", 4: "REMOVED"}
 _GOOGLE_PERIOD = {2: "daily", 5: "custom_period"}
 """Enum numbers, for a server that passes protobuf values through instead of names."""
@@ -325,6 +405,13 @@ _GAQL_BETWEEN = re.compile(
 )
 _RESULT_KEYS = ("results", "rows", "data", "items", "result")
 _CAMEL = re.compile(r"(?<!^)(?=[A-Z])")
+
+
+def _enum(value: JsonValue) -> JsonValue:
+    """Enum names as strings; a server passing protobuf numbers keeps them as `#<n>`."""
+    if isinstance(value, bool) or value is None:
+        return value
+    return f"#{value}" if isinstance(value, int) else str(value)
 
 
 def _snake(key: str) -> str:
@@ -360,6 +447,7 @@ class GoogleGaqlContract(ReadContract):
     verification: Verification = "unverified"
     performance_tool = "execute_google_ads_gaql_query"
     settings_tool = "execute_google_ads_gaql_query"
+    signals_tool = "execute_google_ads_gaql_query"
     reviewed_reads = ("execute_google_ads_gaql_query",)
     required_args = {"execute_google_ads_gaql_query": ("customer_id", "query")}
     budget_unit: MoneyUnit = "micros"
@@ -373,6 +461,66 @@ class GoogleGaqlContract(ReadContract):
 
     def settings_call(self) -> ReadCall | None:
         return ReadCall(self.settings_tool, {"query": _GAQL_SETTINGS})
+
+    def signals_call(self, start: date, end: date) -> ReadCall | None:
+        query = _GAQL_SIGNALS.format(start=start.isoformat(), end=end.isoformat())
+        return ReadCall(self.performance_tool, {"query": query}, (start, end))
+
+    def signals(
+        self, tool: str, payload: Mapping[str, JsonValue], binding: AccountBinding
+    ) -> ContractSignals:
+        if tool != self.performance_tool:
+            return ContractSignals()
+        flat = [
+            r
+            for r in _gaql_rows(payload)
+            if "campaign.id" in r
+            and "segments.date" in r
+            and "metrics.cost_micros" not in r
+            and any(
+                k in r
+                for k in (
+                    "metrics.search_budget_lost_impression_share",
+                    "campaign.primary_status_reasons",
+                    "campaign.bidding_strategy_system_status",
+                )
+            )
+        ]
+        if not flat:
+            return ContractSignals()
+        daily = [
+            {
+                "entity_ref": str(r["campaign.id"]),
+                "day": r["segments.date"],
+                "impression_share": _share(r.get("metrics.search_impression_share")),
+                "budget_lost_share": _share(r.get("metrics.search_budget_lost_impression_share")),
+                "rank_lost_share": _share(r.get("metrics.search_rank_lost_impression_share")),
+            }
+            for r in flat
+        ]
+        latest: dict[str, dict[str, JsonValue]] = {}
+        for r in sorted(flat, key=lambda r: str(r["segments.date"])):
+            latest[str(r["campaign.id"])] = r
+        status: list[dict[str, JsonValue]] = []
+        for ref, r in latest.items():
+            reasons = r.get("campaign.primary_status_reasons")
+            micros = _decimal(r.get("campaign_budget.recommended_budget_amount_micros"))
+            status.append(
+                {
+                    "entity_ref": ref,
+                    "channel_type": _enum(r.get("campaign.advertising_channel_type")),
+                    "status_reasons": [str(_enum(x)) for x in reasons]
+                    if isinstance(reasons, list)
+                    else [],
+                    "bidding_status": _enum(r.get("campaign.bidding_strategy_system_status")),
+                    "learning_status": None,
+                    "recommended_budget": None
+                    if micros is None
+                    else str(to_currency(micros, "micros", binding.currency)),
+                    "raw": dict(r),
+                }
+            )
+        return ContractSignals(daily=daily, status=status)
 
     def requested_window(self, arguments: Mapping[str, JsonValue]) -> tuple[date, date] | None:
         query = arguments.get("query")

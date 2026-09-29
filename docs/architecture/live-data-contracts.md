@@ -52,6 +52,23 @@ contract matches", and their tools are still available to the agent for question
     meter calls. A sync that reaches it stops and names what it skipped.
   - Each account ends on its own yesterday, in its timezone.
 
+## Signals: what limits spend
+
+A contract may name a signals call, made after performance and settings in its own call, so a
+field the account can't report never costs the performance read. It records:
+- daily impression share and the share lost to budget or to rank, in `entity_daily_signals`;
+- the latest status, in `entity_delivery_status`: channel type, status reasons, bid-strategy
+  status, and recommended budget.
+
+**Per platform:**
+- **Google:** one GAQL query. It is unverified like the rest of the contract; `doctor --live`
+  checks it per account.
+- **Meta:** no signals call. It reports no impression share, and learning stage lives on ad sets.
+- **Fixtures:** a `get_campaign_signals` tool.
+
+The budget bandit uses these signals to tell budget-limited campaigns from demand- or
+target-limited ones ([Budget bandit](budget-bandit.md#what-limits-spend)).
+
 ## Pipeboard responses
 
 Pipeboard's Meta tools return `json.dumps(graph_response)`, which arrives as structured content

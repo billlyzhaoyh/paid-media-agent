@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from typing import Literal
 
 from paid_media_agent.analytics.ingest import AnalyticsSource, local_date
 from paid_media_agent.config import AccountBinding, AccountRegistry
@@ -37,6 +38,7 @@ class SyncRun:
     end: date
     rows: int = 0
     settings: int = 0
+    signals: int = 0
     calls: int = 0
     reads: list[str] = field(default_factory=list)
     unavailable: list[str] = field(default_factory=list)
@@ -49,6 +51,7 @@ class SyncRun:
             "end": self.end.isoformat(),
             "rows": self.rows,
             "settings": self.settings,
+            "signals": self.signals,
             "calls": self.calls,
             "reads": list(self.reads),
             "unavailable": list(self.unavailable),
@@ -82,12 +85,12 @@ async def _call(
     call: ReadCall,
     *,
     max_calls: int,
-    settings: bool = False,
+    kind: Literal["rows", "settings", "signals"] = "rows",
 ) -> None:
     """One contract call, following its pages. Failures are recorded, not raised."""
     label = (
-        "settings"
-        if settings
+        kind
+        if kind != "rows"
         else f"{call.window[0]}..{call.window[1]}"
         if call.window and call.window[0] != call.window[1]
         else str(call.window[0])
@@ -117,8 +120,10 @@ async def _call(
             run.unavailable.append(f"{binding.alias} {label}: {type(exc).__name__}")
             return
         run.reads.append(result.artifact_id)
-        if settings:
+        if kind == "settings":
             run.settings += result.row_count or 0
+        elif kind == "signals":
+            run.signals += result.row_count or 0
         elif result.artifact_kind == "performance_rows":
             run.rows += result.row_count or 0
         pages += 1
@@ -155,12 +160,23 @@ async def _pull(
             run.contracts[alias] = f"{contract.name} ({contract.verification})"
             entry = catalog.get(qualified_name(binding.platform, contract.performance_tool))
             schema = entry.input_schema if entry is not None else {}
-            for start, end in windows(binding, contract, contract.per_day(schema)):
+            spans = windows(binding, contract, contract.per_day(schema))
+            for start, end in spans:
                 for call in contract.performance_calls(start, end, schema):
                     await _call(run, dispatcher, binding, call, max_calls=max_calls)
             listing = contract.settings_call() if settings else None
             if listing is not None and catalog.get(qualified_name(binding.platform, listing.tool)):
-                await _call(run, dispatcher, binding, listing, max_calls=max_calls, settings=True)
+                await _call(run, dispatcher, binding, listing, max_calls=max_calls, kind="settings")
+            # What limits spend (impression share, status reasons), where the platform says.
+            # Its own call, so a field an account cannot report never costs the performance read.
+            for start, end in spans:
+                signal_call = contract.signals_call(start, end)
+                if signal_call is not None and catalog.get(
+                    qualified_name(binding.platform, signal_call.tool)
+                ):
+                    await _call(
+                        run, dispatcher, binding, signal_call, max_calls=max_calls, kind="signals"
+                    )
     except _CallCapReached:
         pass
     return run

@@ -32,7 +32,10 @@ class QueryHistoryArgs(BaseModel):
             "final conversions reported N days after the day. outcomes: each budget "
             "recommendation, whether it was followed, and matured conversions over the week "
             "after it against what was expected. goals: versions of each account's target CPA, "
-            "target ROAS, and monthly budget, and who set them."
+            "target ROAS, and monthly budget, and who set them. signals: the platform's daily "
+            "impression share and the share lost to budget or to rank. constraints: what each "
+            "budget recommendation took to limit each campaign's spend (budget, demand, target, "
+            "learning), its spend ceiling, and the evidence."
         )
     )
     account_alias: str | None = Field(default=None, description="Alias from list_accounts.")

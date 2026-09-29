@@ -157,10 +157,51 @@ async def _check_account(
         else:
             checks.append(_budget_check(name, runtime, binding))
 
+    signal_call = contract.signals_call(start, end)
+    if signal_call is not None and catalog.get(qualified_name(platform, signal_call.tool)):
+        try:
+            found = await runtime.components.read_dispatcher.execute(
+                qualified_name(platform, signal_call.tool),
+                {ACCOUNT_ALIAS_ARG: binding.alias, **signal_call.arguments},
+                source="doctor",
+            )
+        except Exception as exc:
+            reason = exc.reason if isinstance(exc, ReadDenied) else type(exc).__name__
+            checks.append(
+                Check(
+                    f"{name}:signals",
+                    "warn",
+                    f"what limits spend could not be read ({reason}); budget recommendations "
+                    "fall back to spend against budget",
+                )
+            )
+        else:
+            recorded = (
+                runtime.store.fetch(
+                    "SELECT count(*) FROM entity_daily_signals WHERE account_alias = ?",
+                    [binding.alias],
+                )[0][0]
+                + runtime.store.fetch(
+                    "SELECT count(*) FROM entity_delivery_status WHERE account_alias = ?",
+                    [binding.alias],
+                )[0][0]
+            )
+            checks.append(
+                Check(
+                    f"{name}:signals",
+                    "ok" if recorded else "warn",
+                    f"{found.row_count or 0} signal rows read; impression share and status "
+                    "reasons recorded"
+                    if recorded
+                    else "the signals read returned nothing usable; recommendations fall back to "
+                    "spend against budget",
+                )
+            )
+
     per_day = contract.per_day(schema)
     days = runtime.settings.paid_media_sync_days
     span = min(days, contract.resync_days) if per_day and contract.resync_days else days
-    calls = (span if per_day else 1) + (1 if listing is not None else 0)
+    calls = (span if per_day else 1) + (1 if listing is not None else 0) + (1 if signal_call else 0)
     checks.append(
         Check(
             f"{name}:calls",

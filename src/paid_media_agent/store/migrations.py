@@ -458,6 +458,59 @@ CREATE TABLE account_goals (
 );
 """
 
+DELIVERY_SIGNALS = f"""
+-- What limits each entity's spend, as the platform reports it. Daily auction shares (Google
+-- impression share and the share lost to budget or to rank; 0-1, NULL where not reported) and
+-- the latest delivery status (channel type, status reasons, bid-strategy status, learning,
+-- recommended budget in account currency). Append-only, like the other snapshots.
+CREATE TABLE entity_daily_signals (
+    platform VARCHAR NOT NULL,
+    provider_account_id VARCHAR NOT NULL,
+    entity_type VARCHAR NOT NULL,
+    entity_ref VARCHAR NOT NULL,
+    day DATE NOT NULL,
+    pull_id UUID NOT NULL,
+    pulled_at TIMESTAMP NOT NULL,
+    account_alias VARCHAR NOT NULL,
+    impression_share DOUBLE,
+    budget_lost_share DOUBLE,
+    rank_lost_share DOUBLE,
+    PRIMARY KEY (platform, provider_account_id, entity_type, entity_ref, day, pull_id)
+);
+CREATE VIEW entity_daily_signals_latest AS
+SELECT * FROM entity_daily_signals
+QUALIFY row_number() OVER (
+    PARTITION BY {ENTITY_KEY}, day ORDER BY pulled_at DESC, pull_id DESC
+) = 1;
+CREATE TABLE entity_delivery_status (
+    platform VARCHAR NOT NULL,
+    provider_account_id VARCHAR NOT NULL,
+    entity_type VARCHAR NOT NULL,
+    entity_ref VARCHAR NOT NULL,
+    observed_at TIMESTAMP NOT NULL,
+    pull_id UUID NOT NULL,
+    account_alias VARCHAR NOT NULL,
+    channel_type VARCHAR,
+    status_reasons VARCHAR[] NOT NULL,
+    bidding_status VARCHAR,
+    learning_status VARCHAR,
+    recommended_budget DECIMAL(18,4),
+    raw JSON NOT NULL,
+    PRIMARY KEY (platform, provider_account_id, entity_type, entity_ref, observed_at)
+);
+-- Why each budget decision treated a campaign as it did: what limits its spend, how sure, the
+-- spend ceiling it could not exceed (account currency per day), and the evidence.
+CREATE TABLE bandit_decision_constraints (
+    run_id UUID NOT NULL,
+    arm_key VARCHAR NOT NULL,
+    kind VARCHAR NOT NULL,
+    confidence VARCHAR NOT NULL,
+    ceiling DOUBLE,
+    evidence JSON NOT NULL,
+    PRIMARY KEY (run_id, arm_key)
+);
+"""  # noqa: S608 - schema text built from constants
+
 MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("0001_operational", OPERATIONAL),
     ("0002_conversations", CONVERSATIONS),
@@ -468,6 +521,7 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("0007_bandit", BANDIT),
     ("0008_bandit_outcomes", BANDIT_OUTCOMES),
     ("0009_account_goals", ACCOUNT_GOALS),
+    ("0010_delivery_signals", DELIVERY_SIGNALS),
 )
 
 

@@ -90,6 +90,25 @@
 - **Company context.** `context init` creates the company-context skill from its template.
 - **Fix.** Rewriting `accounts.toml` from the console keeps `conversion_action`.
 
+- **Budget recommendations know what limits each campaign's spend.**
+  - **Classification.** Each campaign is labelled budget, demand, bid target, or learning, with
+    evidence:
+    - platform signals where reported: Google impression share lost to budget or rank, status
+      reasons, and bid-strategy status, read by a new signals call;
+    - otherwise its spend against budget and its bid strategy.
+  - **Spend ceilings.** For demand- or target-limited campaigns, a spend ceiling fitted from
+    censored history (spend = min(ρ·budget, D)) stops the budget at what the campaign can spend.
+    Budget it can't use moves to campaigns where the budget binds, and expected conversions no
+    longer count spend that can't happen.
+  - **Holds and platform rules.** Learning phases hold the budget. Verified platform rules
+    tighten steps and minimums: Demand Gen ±15%; TikTok ±30%, 2 days apart, and $20 minimum;
+    Snapchat $5 minimum.
+  - **Pacing readings** state each platform's window.
+  - **Records.** New tables `entity_daily_signals`, `entity_delivery_status`, and
+    `bandit_decision_constraints`, with `signals` and `constraints` history views.
+  - **Evaluation.** `bandit evaluate --scenario constrained --spend-model both` compares the new
+    model with the old on simulated accounts where campaigns stop at a ceiling.
+
 Live provider writes remain disabled by default and require the documented release gates.
 
 ### Changed

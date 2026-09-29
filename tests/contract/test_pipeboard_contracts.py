@@ -59,6 +59,7 @@ class FakePipeboard:
         drop_args: dict[str, str] | None = None,
         budget_scale: int = 1,
         fail_platform: Platform | None = None,
+        fail_signals: bool = False,
     ) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.queued: dict[str, list[dict[str, Any]]] = {}
@@ -66,6 +67,7 @@ class FakePipeboard:
         self.drop_args = drop_args or {}
         self.budget_scale = budget_scale
         self.fail_platform = fail_platform
+        self.fail_signals = fail_signals
 
     async def list_tools(self, platform: Platform, url: str) -> list[McpTool]:
         if platform is self.fail_platform:
@@ -96,6 +98,12 @@ class FakePipeboard:
                 for key in ("daily_budget", "lifetime_budget"):
                     if key in item:
                         item[key] = str(int(item[key]) * self.budget_scale)
+        elif name == "execute_google_ads_gaql_query" and "lost_impression_share" in str(
+            arguments["query"]
+        ):
+            if self.fail_signals:
+                return McpResult(is_error=True, structured=None, text="unrecognized field")
+            payload = _load("google/gaql_signals.json")
         elif name == "execute_google_ads_gaql_query":
             payload = (
                 _load(f"google/gaql_performance_{self.google_shape}.json")
@@ -401,3 +409,31 @@ async def test_doctor_live_confirms_the_path_and_names_what_to_fix(
     assert down.loader.failures == {Platform.META_ADS: "RuntimeError: 401 invalid_token"}
     failed = await run_live_checks(down, aliases=("meta-us",), clock=clock)
     assert failed[0].status == "fail" and "catalog did not load" in failed[0].detail
+
+
+async def test_google_signals_say_what_limits_spend_and_never_block_the_sync(
+    settings: Settings, tmp_path: Path
+) -> None:
+    wired = await _wire(settings, tmp_path, FakePipeboard())
+    run = await run_sync(**_sync_kwargs(wired), end=date(2026, 9, 1), days=1, aliases=("google",))
+    assert run.unavailable == [] and run.signals == 2 and run.rows == 2
+    query = [a["query"] for n, a in wired.client.calls if "lost_impression_share" in a["query"]]
+    assert len(query) == 1 and "BETWEEN '2026-09-01' AND '2026-09-01'" in query[0]
+    shares = wired.store.fetch(
+        "SELECT entity_ref, impression_share, budget_lost_share, rank_lost_share "
+        "FROM entity_daily_signals ORDER BY entity_ref"
+    )
+    assert shares == [("111", 0.61, 0.27, 0.12), ("222", None, None, None)]
+    status = wired.store.fetch(
+        "SELECT entity_ref, channel_type, status_reasons, bidding_status, "
+        "recommended_budget::DOUBLE FROM entity_delivery_status ORDER BY entity_ref"
+    )
+    assert status == [
+        ("111", "SEARCH", ["BUDGET_CONSTRAINED"], "LIMITED_BY_BUDGET", 45.0),
+        ("222", "PERFORMANCE_MAX", ["BIDDING_STRATEGY_CONSTRAINED"], "ENABLED", None),
+    ]
+
+    failing = await _wire(settings, tmp_path, FakePipeboard(fail_signals=True))
+    run = await run_sync(**_sync_kwargs(failing), end=date(2026, 9, 1), days=1, aliases=("google",))
+    assert run.rows == 2 and run.settings == 3, "performance and settings still land"
+    assert run.unavailable == ["google signals: ProviderError"]

@@ -57,6 +57,8 @@ class LoopResult:
     kappa: list[dict[str, Any]] = field(default_factory=list)
     """Per decision and campaign: posterior kappa2 mean and sd next to the true kappa2."""
     violations: list[str] = field(default_factory=list)
+    unspendable: float = 0.0
+    """Budget the campaigns could not spend because demand or a bid target limited them."""
 
 
 def _cpa_rule(
@@ -128,6 +130,9 @@ async def run_closed_loop(
         if index >= warmup_days:
             result.expected_conversions += sum(o.expected_conversions for o in outcomes)
             result.spend += sum(o.spend for o in outcomes)
+            result.unspendable += sum(
+                o.budget - o.spend for o in outcomes if o.limited_by != "budget"
+            )
     return result
 
 

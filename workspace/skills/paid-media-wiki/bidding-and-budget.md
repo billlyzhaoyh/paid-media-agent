@@ -27,6 +27,30 @@ reading. It counts days not yet synced as still to come, never as zero spend.
   efficiency falls across two windows, not one day.
 - Every budget change is a proposal with a before value, an after value, a reason, and a reversal.
 
+## What limits a campaign's spend
+
+More budget only buys more where the budget is what binds. Four things can cap spend:
+- the budget;
+- demand or inventory (search volume, audience size);
+- the bid target (target CPA or ROAS, a cost or bid cap);
+- delivery (a learning phase, the platform's pacing window).
+
+`recommend_budgets` says which one binds for each campaign, with its evidence (`constraint`).
+Use it before advising any budget change:
+- **Budget:** raising the budget can add volume; the curve says at what marginal cost.
+- **Demand:** extra budget goes unspent. Growth comes from more keywords, audiences, or
+  placements.
+- **Target:** the target is the lever. Loosening a target CPA (or lowering a ROAS target) buys
+  volume at a worse cost; say so, and don't suggest a bigger budget.
+- **Learning:** leave the budget alone until the phase ends.
+
+Spending the full budget under Maximize conversions (Google), Highest volume (Meta), or Maximum
+delivery (TikTok, LinkedIn) is by design, not proof that the budget binds. Platforms average
+spend over a window, so one day above budget is noise:
+- Google, Microsoft, Amazon, and Apple: a month; Google allows up to 2x on a day and 30.4x a
+  month.
+- Meta, TikTok, and LinkedIn: a week.
+
 ## Splitting a budget across campaigns
 
 `recommend_budgets` answers "how should I split the budget" for one account. It fits each

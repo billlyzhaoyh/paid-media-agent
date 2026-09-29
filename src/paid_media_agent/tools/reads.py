@@ -257,9 +257,9 @@ class ReadDispatcher:
         next_page = reader.next_page(
             entry.name, result.payload, {k: v for k, v in scoped.items() if k != entry.account_arg}
         )
-        extracted = reader.rows(entry.name, result.payload, binding) or (
-            HOST_CONTRACT.rows(entry.name, result.payload, binding) if contract else None
-        )
+        # A contract's own tools are read only its way: a Google signals query must never be
+        # mistaken for performance rows just because its list happens to be called `rows`.
+        extracted = reader.rows(entry.name, result.payload, binding)
         if entry.platform in PERFORMANCE_PLATFORMS and extracted is not None:
             entity_type = extracted.entity_type or entity_type_for(entry.name)
             try:
@@ -361,6 +361,22 @@ class ReadDispatcher:
                 )
             except Exception:
                 log.warning("settings history failed for %s", entry.qualified_name, exc_info=True)
+            signals = reader.signals(entry.name, result.payload, binding)
+            if signals:
+                try:
+                    self._recorder.record_signals(
+                        source=source,
+                        binding=binding,
+                        tool_name=entry.qualified_name,
+                        catalog_revision=catalog.revision,
+                        daily=signals.daily,
+                        status=signals.status,
+                        artifact_id=metadata.artifact_id,
+                    )
+                except Exception:
+                    log.warning(
+                        "signals history failed for %s", entry.qualified_name, exc_info=True
+                    )
         preview = _bounded_preview(result.payload)
         return ReadResult(
             tool=entry.qualified_name,
