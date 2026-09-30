@@ -97,6 +97,14 @@ the baseline:
 - cache hit rate;
 - p50 and maximum seconds.
 
+`eval run --repeat N` asks each question N times, stored as `q01_wow_spend#1`, `#2`, and so on.
+- A question passes when a majority of its attempts pass.
+- Reports show each question as k/N.
+- A regression or fix is a flip of that majority, not of one attempt.
+
+A single run moves by a few questions from the model's own variance, so compare repeated runs
+before trusting a small change.
+
 `eval regrade RUN` re-runs the deterministic checks on a stored run's transcripts, keeping its
 judge verdicts, and calls no model. It is how a baseline is compared fairly after the checks
 change. `eval baseline RUN` marks a baseline. Comparisons across a different question set or
@@ -167,3 +175,38 @@ Five questions (q12, q16, q17, q22, q28) were run with `--no-judge` and caching 
 
 Latency was unchanged. The report question (q12), with the longest tool loop, fell from $0.13
 to $0.06.
+
+## After S15 (2026-09-29, commit `236ca58`)
+
+The corrected checks first re-graded the old baseline (`eval regrade`, run `399bf412`), which
+scores 10 of 30. Both new runs used the same questions and the same judge (Sonnet 5.5):
+
+| Agent model | Run | Passed | Judge passed | Mean correct / grounded / complete / clear | Agent cost | p50 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Haiku 4.5, before the fixes (regraded) | `399bf412` | 10/30 | 12/30 | 3.27 / 3.10 / 2.90 / 3.87 | $0.83 | 16.2 s |
+| Haiku 4.5, after the fixes | `6f6c6384` | 13/30 | 15/30 | 3.53 / 3.17 / 3.03 / 3.70 | $0.92 | 15.6 s |
+| Sonnet 5.5 | `5e4f7dcc` | 25/30 | 25/30 | 4.30 / 4.00 / 4.10 / 4.07 | $3.06 | 23.3 s |
+
+**Haiku, compared with the regraded baseline**
+- **Fixed:**
+  - q01 and q09 (the calendar windows);
+  - q06 and q21 (the anomaly fields);
+  - q11 (deletion is refused);
+  - q22 (ROAS).
+- **Regressed:** q16, q28 and q29. The judge's reasons are the model's own reading errors, and
+  each question is one sample, so one run moves by a few questions.
+- **What is left is mostly the model:**
+  - arithmetic in prose ("86% lower");
+  - misreading which campaign is dearer;
+  - not fetching data it could have.
+
+**Sonnet 5.5** passes 25 of 30 at about 3.3 times the cost.
+- Four of its five failures share one pattern (q09, q10, q25, q26): it proposes the change and
+  pauses for approval with no text alongside. The judge wants the summary in the message.
+- The product still shows the review card, but the conversation says nothing. The runtime could
+  write that summary itself from the proposal, whatever the model does.
+
+**After the pause summary.** The loop now writes the approval summary when a model pauses without
+text. Sonnet 5.5 passed each of those four write questions on both attempts
+(`--ids q09,q10,q25,q26 --repeat 2`, run `ee698b0a`), where it failed all four before. Adding
+those four to the full run's 25 suggests 29/30, which a full run with repeats should confirm.

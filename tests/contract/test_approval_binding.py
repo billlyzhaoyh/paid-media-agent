@@ -145,3 +145,33 @@ async def test_only_the_requester_or_an_approver_can_edit_or_reject(
         headers={"Authorization": "Bearer tok-rev"},
     )
     assert rejected.status_code == 200
+
+
+async def test_a_silent_pause_still_gives_the_reviewer_the_summary(
+    settings: Settings, project_root: Path
+) -> None:
+    from paid_media_agent.harness.messages import AssistantMessage
+
+    runtime, _ = build_runtime(
+        settings, project_root, [propose_step(), execute_step, final_step],
+        fixture_state=FixtureState(),
+    )  # fmt: skip
+    conversation = await runtime.agent.send("t", "local-user", "cut the PMax budget to 240")
+    assert conversation.awaiting_approval
+    paused = [m for m in conversation.messages if isinstance(m, AssistantMessage)][-1]
+    assert paused.tool_calls and paused.tool_calls[0].name == "execute_change"
+    text = paused.content
+    assert text.startswith("Proposed change for review") and "daily_budget:" in text
+    assert "-> 240" in text and "Risk:" in text and "Nothing changes until" in text
+
+    def narrated(messages: Any) -> Any:
+        call = execute_step(messages)
+        return AssistantMessage("My own summary of the change.", tool_calls=call.tool_calls)
+
+    runtime, _ = build_runtime(
+        settings, project_root, [propose_step(), narrated, final_step],
+        fixture_state=FixtureState(),
+    )  # fmt: skip
+    conversation = await runtime.agent.send("t", "local-user", "cut the PMax budget to 240")
+    last = [m for m in conversation.messages if isinstance(m, AssistantMessage)][-1]
+    assert last.content == "My own summary of the change.", "a model's own text is kept"

@@ -6,6 +6,24 @@ import statistics
 from typing import Any
 
 
+def base_id(question_id: str) -> str:
+    """`q01_wow_spend#2` is the second attempt at q01_wow_spend."""
+    return question_id.split("#", 1)[0]
+
+
+def by_question(results: list[dict[str, Any]]) -> dict[str, tuple[int, int]]:
+    """Question to (attempts passed, attempts)."""
+    counts: dict[str, list[int]] = {}
+    for r in results:
+        passed, total = counts.setdefault(base_id(r["question_id"]), [0, 0])
+        counts[base_id(r["question_id"])] = [passed + int(bool(r["passed"])), total + 1]
+    return {q: (p, n) for q, (p, n) in counts.items()}
+
+
+def _majority(passed: int, attempts: int) -> bool:
+    return passed * 2 > attempts
+
+
 def totals(results: list[dict[str, Any]]) -> dict[str, Any]:
     n = len(results)
     passed = sum(1 for r in results if r["passed"])
@@ -20,10 +38,13 @@ def totals(results: list[dict[str, Any]]) -> dict[str, Any]:
         for c in r["checks"]:
             if not c["passed"]:
                 checks[c["name"]] = checks.get(c["name"], 0) + 1
+    per_question = by_question(results)
     return {
-        "questions": n,
+        "questions": len(per_question),
+        "attempts": n,
         "passed": passed,
         "pass_rate": round(passed / n, 3) if n else None,
+        "questions_passed": sum(1 for p, a in per_question.values() if _majority(p, a)),
         "errors": sum(1 for r in results if r.get("error") or _failed(r, "no_error")),
         "check_failures": checks,
         "judge_passed": sum(1 for r in judged if r["judge"]["passed"]),
@@ -66,10 +87,10 @@ def compare(
                 f"judged differently ({against_run.get('judge_model') or 'no judge'} vs "
                 f"{current_run.get('judge_model') or 'no judge'})"
             )
-    before = {r["question_id"]: r for r in against}
-    now = {r["question_id"]: r for r in current}
-    common = sorted(set(before) & set(now))
-    a, b = totals([before[q] for q in common]), totals([now[q] for q in common])
+    before_q, now_q = by_question(against), by_question(current)
+    common = sorted(set(before_q) & set(now_q))
+    a = totals([r for r in against if base_id(r["question_id"]) in common])
+    b = totals([r for r in current if base_id(r["question_id"]) in common])
 
     def delta(key: str) -> float | None:
         if a.get(key) is None or b.get(key) is None:
@@ -80,8 +101,10 @@ def compare(
         "comparable": not warnings,
         "warnings": warnings,
         "questions": len(common),
-        "regressions": [q for q in common if before[q]["passed"] and not now[q]["passed"]],
-        "fixes": [q for q in common if not before[q]["passed"] and now[q]["passed"]],
+        # With repeats, a question passes on a majority of its attempts; a single pass or fail
+        # of one attempt is not a regression.
+        "regressions": [q for q in common if _majority(*before_q[q]) and not _majority(*now_q[q])],
+        "fixes": [q for q in common if not _majority(*before_q[q]) and _majority(*now_q[q])],
         "pass_rate": (a["pass_rate"], b["pass_rate"]),
         "cost_delta_usd": delta("cost_usd"),
         "p50_seconds_delta": delta("p50_seconds"),

@@ -20,4 +20,4 @@ doctor:
 	uv run paid-media-agent doctor
 
 eval:         ## opt-in: the 30-question eval on sample data (bills the model; not in CI)
-	uv run paid-media-agent eval run $(if $(MODEL),--model $(MODEL)) $(if $(IDS),--ids $(IDS))
+	uv run paid-media-agent eval run $(if $(MODEL),--model $(MODEL)) $(if $(IDS),--ids $(IDS)) $(if $(REPEAT),--repeat $(REPEAT))

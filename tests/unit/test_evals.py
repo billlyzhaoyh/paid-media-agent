@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -228,3 +228,56 @@ async def test_a_run_stops_when_the_provider_refuses_the_account(
     assert "out of credits (HTTP 402)" in store.run(run_id)["totals"]["aborted"]
     assert provider_refusal("HTTP 401 unauthorized") == "the key was refused (HTTP 401)"
     assert provider_refusal("HTTP 429 slow down") is None, "rate limits are retried, not fatal"
+
+
+async def test_repeats_are_stored_per_attempt_and_compared_by_majority(
+    settings: Settings, project_root: Path
+) -> None:
+    store = EvalStore(store=Store())
+    run_id, results = await run_suite(
+        settings,
+        project_root=project_root,
+        model=Analyst(),
+        model_spec="scripted:analyst",
+        judge_model=None,
+        judge_spec=None,
+        store=store,
+        ids=["q08"],
+        repeat=3,
+    )
+    assert [r["question_id"] for r in results] == [f"q08_pipeline#{n}" for n in (1, 2, 3)]
+    summary = store.run(run_id)["totals"]
+    assert (summary["questions"], summary["attempts"], summary["questions_passed"]) == (1, 3, 1)
+
+    def attempts(*passed: bool) -> list[dict[str, Any]]:
+        return [
+            {"question_id": f"q1#{n}", "passed": p, "checks": []}
+            for n, p in enumerate(passed, start=1)
+        ]
+
+    assert compare(attempts(True, False, True), attempts(True, True, True))["regressions"] == []
+    assert compare(attempts(False, False, True), attempts(True, True, False))["regressions"] == [
+        "q1"
+    ], "a majority flipping is a regression; one attempt is not"
+
+
+async def test_an_eval_agent_never_writes_into_the_repository(
+    settings: Settings, project_root: Path, tmp_path: Path
+) -> None:
+    from paid_media_agent.evals.runner import prepare
+
+    runtime, _ = await prepare(
+        settings, project_root=project_root, model=Analyst(), workdir=tmp_path,
+        today=date.today(),
+    )  # fmt: skip
+    root = runtime.profile.skills_root
+    assert root is not None and root.resolve() != project_root.resolve()
+    assert (root / "instructions.md").exists() and (root / "skills").is_dir()
+    tools = {t.name: t for t in runtime.components.tools}
+    from paid_media_agent.harness.tools import ToolContext
+
+    tools["write_file"].handler(
+        {"file_path": "/workspace/report.md", "content": "x"}, ToolContext("t", "eval")
+    )
+    assert (root / "workspace" / "report.md").exists()
+    assert not (project_root / "workspace" / "report.md").exists()

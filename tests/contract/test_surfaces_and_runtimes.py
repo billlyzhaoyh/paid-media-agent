@@ -100,6 +100,10 @@ async def test_slack_review_and_button_approval_resume_the_same_agent(
         }
     )
     assert own is not None and "refused" in own.message.text and provider.mutation_calls == []
+    assert any(
+        e.kind == "text" and e.text.startswith("Proposed change for review") for e in events
+    ), "the pause streamed the code-written summary"
+    events.clear()
     approved = await slack.handle_action(
         {
             "actions": [{"action_id": ACTION_APPROVE, "value": routing_id}],

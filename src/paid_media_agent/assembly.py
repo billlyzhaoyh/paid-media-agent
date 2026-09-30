@@ -2,22 +2,25 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from paid_media_agent.analytics.changes import ChangeRecorder
 from paid_media_agent.analytics.goals import GoalStore, account_today
 from paid_media_agent.analytics.ingest import AnalyticsRecorder
 from paid_media_agent.bandit.live import live_config
 from paid_media_agent.config import Settings
+from paid_media_agent.domain.presentation import ProposalView, proposal_summary
 from paid_media_agent.harness.files import build_file_tools
-from paid_media_agent.harness.loop import Agent, ApprovalGate
+from paid_media_agent.harness.loop import Agent, ApprovalGate, PauseSummary
+from paid_media_agent.harness.messages import ToolCall
 from paid_media_agent.harness.models import ChatModel, resolve_model
 from paid_media_agent.harness.skills import discover_skills, skills_prompt
-from paid_media_agent.harness.tools import ToolDispatcher, ToolSpec
+from paid_media_agent.harness.tools import ToolContext, ToolDispatcher, ToolSpec
 from paid_media_agent.harness.usage import LlmCallRecorder
 from paid_media_agent.predict.factory import build_predictor
 from paid_media_agent.runtime.profiles import RuntimeProfile
@@ -282,7 +285,23 @@ def build_agent(
         max_active_reads=components.metadata.max_active_reads,
         call_log=LlmCallRecorder(store),
         context_budget_tokens=components.context_budget_tokens,
+        pause_summary=_pause_summary(components.proposal_service),
     )
+
+
+def _pause_summary(service: ProposalService) -> PauseSummary:
+    def summarize(calls: Sequence[ToolCall], context: ToolContext) -> str:
+        parts = []
+        for call in calls:
+            try:
+                record = service.get(UUID(str(call.args.get("proposal_id"))))
+            except ValueError:
+                continue
+            if record is not None and record.changeset.thread_id == context.thread_id:
+                parts.append(proposal_summary(ProposalView.from_record(record)))
+        return "\n\n".join(parts)
+
+    return summarize
 
 
 def _provider_id_forms(ids: frozenset[str]) -> tuple[str, ...]:

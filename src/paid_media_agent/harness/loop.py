@@ -13,7 +13,7 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable, Collection, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
@@ -50,6 +50,8 @@ class RunEvent:
 
 EventHandler = Callable[[RunEvent], Awaitable[None]]
 ApprovalGate = Callable[[ToolCall, ToolContext], bool]
+PauseSummary = Callable[[Sequence[ToolCall], ToolContext], str]
+"""What a reviewer needs to read beside a pause, written by code from the proposals."""
 
 
 async def _emit(handler: EventHandler | None, event: RunEvent) -> None:
@@ -116,6 +118,7 @@ class Agent:
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         call_log: CallLog | None = None,
         context_budget_tokens: int = 0,
+        pause_summary: PauseSummary | None = None,
     ) -> None:
         self.model = model
         self.system_prompt = system_prompt
@@ -129,6 +132,7 @@ class Agent:
         self._clock = clock
         self._call_log = call_log
         self._context_budget = context_budget_tokens
+        self._pause_summary = pause_summary
         self._turns: dict[str, asyncio.Lock] = {}
         """One turn at a time per thread: two at once would give a call two results."""
 
@@ -341,6 +345,29 @@ class Agent:
             content=f"Model call failed after {attempts} attempts with {detail}"
         )
 
+    def _with_pause_summary(
+        self, reply: AssistantMessage, context: ToolContext
+    ) -> AssistantMessage:
+        """A reply that pauses for approval with no text of its own gets the code-written
+        summary, so every model leaves the reviewer the before, after, risk, and reversal."""
+        if reply.content.strip() or self._pause_summary is None:
+            return reply
+        paused = [
+            call
+            for call in reply.tool_calls
+            if (spec := self.dispatcher.tools.get(call.name)) is not None
+            and spec.gated
+            and self._gate(call, context)
+        ]
+        if not paused:
+            return reply
+        try:
+            summary = self._pause_summary(paused, context)
+        except Exception:
+            logger.warning("could not write the pause summary", exc_info=True)
+            return reply
+        return replace(reply, content=summary) if summary else reply
+
     async def _run_tool(
         self, thread_id: str, call: ToolCall, context: ToolContext, on_event: EventHandler | None
     ) -> None:
@@ -356,6 +383,7 @@ class Agent:
         context = self._context(thread_id, caller_ref)
         for _ in range(self._max_model_calls):
             reply = await self._complete(thread_id, caller_ref)
+            reply = self._with_pause_summary(reply, context)
             self.conversations.append(thread_id, reply)
             if reply.content:
                 await _emit(on_event, RunEvent("text", text=reply.content))

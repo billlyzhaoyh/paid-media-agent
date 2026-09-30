@@ -10,6 +10,7 @@ keys and bills them.
 ```bash
 uv run paid-media-agent eval run --model openrouter:anthropic/claude-haiku-4.5   # all 30
 uv run paid-media-agent eval run --ids q16,q17 --no-judge                         # a few, checks only
+uv run paid-media-agent eval run --repeat 3                                       # each question 3 times
 uv run paid-media-agent eval baseline latest                                      # mark the baseline
 uv run paid-media-agent eval report                                               # latest vs baseline
 make eval MODEL=openrouter:openai/gpt-5.4-mini

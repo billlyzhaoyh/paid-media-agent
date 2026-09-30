@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as clock_time
 from pathlib import Path
@@ -101,6 +102,8 @@ async def prepare(
         workspace_root=workdir,
         store=Store(),
     )
+    # The agent's file tools write under /workspace; in an eval that must never be the repo.
+    profile = replace(profile, skills_root=sandbox(project_root, workdir / "root"))
     runtime = build_local_runtime(
         anchored,
         project_root=project_root,
@@ -124,6 +127,21 @@ async def prepare(
                 alias, dict(values), effective_from=anchor - timedelta(days=60), source="eval"
             )
     return runtime, writes
+
+
+def sandbox(project_root: Path, root: Path) -> Path:
+    """A throwaway project root with the instructions and skills, for the eval's file tools."""
+    (root / "workspace").mkdir(parents=True, exist_ok=True)
+    instructions = project_root / "instructions.md"
+    if instructions.exists():
+        shutil.copy2(instructions, root / "instructions.md")
+    skills = (project_root / "workspace" / "skills").resolve()
+    if skills.is_dir():
+        shutil.copytree(skills, root / "workspace" / "skills", dirs_exist_ok=True)
+        link = root / "skills"
+        if not link.exists():
+            link.symlink_to("workspace/skills", target_is_directory=True)
+    return root
 
 
 def _artifact_sources(runtime: LocalRuntime, calls: list[CallRecord]) -> list[str]:

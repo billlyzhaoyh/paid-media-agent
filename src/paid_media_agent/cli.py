@@ -2097,7 +2097,7 @@ def _eval_model(spec: str, settings: Settings, *, rpm: int) -> Any:
 
 
 def _echo_eval(run: dict[str, Any], results: list[dict[str, Any]], against: Any) -> None:
-    from paid_media_agent.evals.report import compare, totals, why
+    from paid_media_agent.evals.report import base_id, by_question, compare, totals, why
 
     t = totals(results)
     aborted = (run.get("totals") or {}).get("aborted")
@@ -2107,7 +2107,17 @@ def _echo_eval(run: dict[str, Any], results: list[dict[str, Any]], against: Any)
         f"run {str(run['run_id'])[:8]} · {run['model']} · judge {run['judge_model'] or 'none'} · "
         f"anchor {run['anchor']} · git {run['git_sha'] or '?'}"
     )
-    for r in results:
+    repeated = any("#" in r["question_id"] for r in results)
+    if repeated:
+        for question, (passed, attempts) in sorted(by_question(results).items()):
+            failures = [
+                r for r in results if base_id(r["question_id"]) == question and not r["passed"]
+            ]
+            line = f"  {passed}/{attempts} {question:22}"
+            if failures:
+                line += f"  {why(failures[0])}"
+            click.echo(line)
+    for r in [] if repeated else results:
         mark = "PASS" if r["passed"] else "FAIL"
         cost = f"${r['cost_usd']:.4f}" if r.get("cost_usd") is not None else "cost n/a"
         line = f"  {mark} {r['question_id']:22} {r.get('seconds') or 0:6.1f}s {cost}"
@@ -2117,8 +2127,12 @@ def _echo_eval(run: dict[str, Any], results: list[dict[str, Any]], against: Any)
     cost = "n/a" if t["cost_usd"] is None else f"${t['cost_usd']:.2f}"
     judge_cost = "" if t["judge_cost_usd"] is None else f" + judge ${t['judge_cost_usd']:.2f}"
     hit = "n/a" if t["cache_hit_rate"] is None else f"{t['cache_hit_rate']:.0%}"
+    if repeated:
+        click.echo(
+            f"questions passed on a majority of attempts: {t['questions_passed']}/{t['questions']}"
+        )
     click.echo(
-        f"passed {t['passed']}/{t['questions']} ({(t['pass_rate'] or 0):.0%}); judge passed "
+        f"passed {t['passed']}/{t['attempts']} attempts ({(t['pass_rate'] or 0):.0%}); judge passed "
         f"{t['judge_passed']}/{t['judged']}; cost {cost}{judge_cost}; {t['model_calls']} model "
         f"calls, {hit} of input from cache; p50 {t['p50_seconds']}s, max {t['max_seconds']}s"
     )
@@ -2150,6 +2164,13 @@ def _echo_eval(run: dict[str, Any], results: list[dict[str, Any]], against: Any)
 @click.option("--no-judge", is_flag=True, help="Deterministic checks only.")
 @click.option("--ids", default=None, help="Comma-separated question ids or prefixes (q01,q16).")
 @click.option(
+    "--repeat",
+    type=click.IntRange(1, 10),
+    default=1,
+    show_default=True,
+    help="Ask each question this many times; a question passes on a majority of attempts.",
+)
+@click.option(
     "--rpm",
     type=click.IntRange(0, 600),
     default=15,
@@ -2163,6 +2184,7 @@ def eval_run(
     judge_spec: str | None,
     no_judge: bool,
     ids: str | None,
+    repeat: int,
     rpm: int,
     store_path: str | None,
     as_json: bool,
@@ -2196,6 +2218,7 @@ def eval_run(
                 store=store,
                 ids=ids.split(",") if ids else None,
                 on_result=progress,
+                repeat=repeat,
             )
         )
         run = store.run(run_id)

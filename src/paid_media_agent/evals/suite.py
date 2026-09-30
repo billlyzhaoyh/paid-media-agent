@@ -86,7 +86,9 @@ async def run_suite(
     ids: Sequence[str] | None = None,
     today: date | None = None,
     on_result: ResultHandler | None = None,
+    repeat: int = 1,
 ) -> tuple[uuid.UUID, list[dict[str, Any]]]:
+    """Ask every question `repeat` times; with repeats, attempts are stored as `q01...#2`."""
     questions = load_questions(ids)
     current, anchor = eval_dates(today)
     run_id = store.start_run(
@@ -100,12 +102,14 @@ async def run_suite(
             "prompt_cache": settings.paid_media_prompt_cache,
             "context_budget_tokens": settings.paid_media_context_budget_tokens,
             "max_model_calls": settings.paid_media_max_model_calls,
+            "repeat": repeat,
         },
     )
     recorder = LlmCallRecorder(store.store)
     results: list[dict[str, Any]] = []
     aborted: str | None = None
-    for question in questions:
+    attempts = [(q, n) for q in questions for n in range(1, max(repeat, 1) + 1)]
+    for question, attempt in attempts:
         with tempfile.TemporaryDirectory(prefix="pma-eval-") as workdir:
             run = await run_question(
                 settings,
@@ -138,7 +142,7 @@ async def run_suite(
         passed = all(c.passed for c in checks) and (verdict is None or verdict.passed)
         usage = transcript.usage
         row = {
-            "question_id": question["id"],
+            "question_id": question["id"] if repeat <= 1 else f"{question['id']}#{attempt}",
             "category": question["category"],
             "passed": passed,
             "checks": [c.__dict__ for c in checks],
@@ -199,7 +203,7 @@ def regrade(store: EvalStore, run_id: uuid.UUID, *, project_root: Path) -> uuid.
     )
     rows = []
     for old in results:
-        question = questions.get(old["question_id"])
+        question = questions.get(old["question_id"].split("#", 1)[0])
         if question is None:
             continue
         writes = next((c for c in old["checks"] if c["name"] == "writes"), None)

@@ -60,6 +60,9 @@ attempts to bypass the dispatcher.
     button can never execute a newer proposal.
   - The review card shows the proposal the paused call would execute, not merely the thread's
     newest one.
+- **The reviewer always gets a summary.** When a turn pauses for approval and the model wrote
+  nothing alongside the call, the loop writes the summary from the proposal: before and after,
+  risk and flags, reason, measurement and reversal. Some models otherwise pause silently.
 - **Who may decide.** Only the requester or an approver may edit or reject (`not_permitted`,
   HTTP 403), and only an approver may approve.
 - **One turn at a time per thread.** `Agent.send` and `Agent.resume` hold a per-thread lock, so

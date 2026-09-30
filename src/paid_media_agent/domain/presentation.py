@@ -115,3 +115,32 @@ class ReportSummary(BaseModel):
     artifact_paths: tuple[str, ...]
     reconciled: bool
     generated_at: datetime
+
+
+def _value(item: FieldValue | None) -> str:
+    if item is None or item.value is None:
+        return "not set"
+    unit = f" {item.unit}" if item.unit else ""
+    return f"{item.value}{unit}"
+
+
+def proposal_summary(view: ProposalView) -> str:
+    """The reviewer's summary, written by code from the proposal: never left to the model."""
+    before = {item.field: item for item in view.before}
+    lines = [
+        f"Proposed change for review ({view.account_ref}, {view.platform.value}, "
+        f"{view.target_ref}):"
+    ]
+    for item in view.after:
+        lines.append(f"- {item.field}: {_value(before.get(item.field))} -> {_value(item)}")
+    lines.append(
+        f"- Risk: {view.risk.value}"
+        + (f" ({', '.join(view.risk_flags)})" if view.risk_flags else "")
+    )
+    lines.append(f"- Reason: {view.reason}")
+    if view.measurement_plan:
+        lines.append(f"- Measurement: {view.measurement_plan}")
+    if view.reversal_plan:
+        lines.append(f"- Reversal: {view.reversal_plan}")
+    lines.append("Nothing changes until a reviewer approves it.")
+    return "\n".join(lines)

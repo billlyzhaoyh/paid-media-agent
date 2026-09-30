@@ -275,6 +275,12 @@ Both read stored history, so `sync` first. Neither changes anything.
 
 ## Model usage and evals
 
+- **Which model.** Use a Sonnet-class model for the agent: on the 30-question eval, Sonnet 5.5
+  (`openrouter:anthropic/claude-sonnet-5.5`) passed 25 and Haiku 4.5 passed 13, at about
+  $0.10 and $0.03 a question. Scheduled jobs (sync, reports, anomalies, allocation) do not call a
+  model, so there is nothing to save with a cheaper one there yet. Re-run `eval run --model X`
+  before switching.
+
 - **Usage.** Every model call attempt is recorded in `llm_calls`, with its tokens, cache reads,
   the provider's reported cost (OpenRouter reports one), status, and latency.
   - `paid-media-agent usage [--days 7] [--by model|day|thread|purpose]` summarises it.
