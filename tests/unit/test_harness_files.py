@@ -53,6 +53,8 @@ def _run(root: Path, name: str, **args: Any) -> str:
         ("read", "/workspace/State/pma.duckdb"),
         ("write", "/workspace/SKILLS/x.md"),
         ("write", "/workspace/State/pma.duckdb"),
+        # ...nor case-sensitive ones (Linux, Docker), where /Workspace is outside the workspace.
+        ("write", "/Workspace/notes.md"),
         # Artifacts and reports are written by code; the model may not forge them.
         ("write", "/workspace/analysis/art_0123456789abcdef.json"),
         ("write", "/workspace/out/rpt_0123.html"),

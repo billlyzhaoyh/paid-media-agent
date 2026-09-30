@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from paid_media_agent.harness.files import build_file_tools
 from paid_media_agent.harness.loop import Agent
@@ -20,7 +21,7 @@ from paid_media_agent.tools.catalog import StaticCatalogProvider
 from paid_media_agent.tools.fixtures import build_fixture_catalog
 
 
-def _dispatcher(tmp_path: Path, tools: Sequence[ToolSpec] = (), **kwargs: int) -> ToolDispatcher:
+def _dispatcher(tmp_path: Path, tools: Sequence[ToolSpec] = (), **kwargs: Any) -> ToolDispatcher:
     return ToolDispatcher(
         tools={t.name: t for t in tools},
         catalog_provider=StaticCatalogProvider(build_fixture_catalog()),
@@ -174,3 +175,42 @@ async def test_an_offloaded_result_keeps_its_meaning_and_can_be_read_in_pages(
         ).content
     )
     assert bad["error"] is True
+
+
+async def test_a_secret_cut_by_a_page_or_preview_edge_is_still_redacted(tmp_path: Path) -> None:
+    import json
+
+    from paid_media_agent.tools.artifact_read import PAGE_CHARS, build_read_artifact_tool
+
+    secret = "act_9876543210"
+    # The secret straddles the preview's edge (400) in an offloaded result, and a page's edge in a
+    # stored read: redacting each slice alone would let both halves through.
+    body = json.dumps({"rows": ["y" * 381 + secret] + ["x" * 50] * 200})
+    assert body.index(secret) < 400 < body.index(secret) + len(secret)
+    big = ToolSpec(
+        name="big",
+        description="big",
+        parameters={"type": "object", "properties": {}},
+        handler=lambda _args, _ctx: body,
+    )
+    dispatcher = _dispatcher(tmp_path, [big], offload_chars=1000, secrets=(secret,))
+    reader = build_read_artifact_tool(dispatcher.artifacts, (secret,))
+    dispatcher.tools[reader.name] = reader
+    context = ToolContext("t-1", "local-user")
+    stub = (await dispatcher.dispatch(ToolCall("c1", "big", {}), context)).content
+    assert secret[:6] not in stub and secret[-6:] not in stub
+    stored = dispatcher.artifacts.read(json.loads(stub)["artifact_id"]).payload["content"]
+    assert secret not in str(stored), "the stored result is redacted too"
+
+    rows = "z" * (PAGE_CHARS - 5) + secret + "z" * 100
+    record = dispatcher.artifacts.write_json(
+        "performance_rows", {"rows": rows}, schema_version="t/1"
+    )
+    for offset in (0, PAGE_CHARS - 20):
+        page = json.loads(
+            (await dispatcher.dispatch(
+                ToolCall("c2", "read_artifact", {"artifact_id": record.artifact_id, "offset": offset}),
+                context,
+            )).content
+        )  # fmt: skip
+        assert "9876" not in page["text"] and "act_98" not in page["text"], offset

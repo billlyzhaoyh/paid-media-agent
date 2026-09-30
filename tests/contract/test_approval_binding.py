@@ -175,3 +175,155 @@ async def test_a_silent_pause_still_gives_the_reviewer_the_summary(
     conversation = await runtime.agent.send("t", "local-user", "cut the PMax budget to 240")
     last = [m for m in conversation.messages if isinstance(m, AssistantMessage)][-1]
     assert last.content == "My own summary of the change.", "a model's own text is kept"
+
+
+def _proposals(messages: Any) -> list[dict[str, Any]]:
+    import json
+
+    return [
+        json.loads(m.content)["proposal"]
+        for m in messages
+        if getattr(m, "name", "") == "propose_change" and '"proposal"' in m.content
+    ]
+
+
+def _execute_both(messages: Any) -> Any:
+    """Both proposals executed in one message, the first with its id upper-cased."""
+    from paid_media_agent.harness.messages import AssistantMessage, ToolCall
+
+    first, second = _proposals(messages)[-2:]
+    return AssistantMessage(
+        "",
+        tool_calls=(
+            ToolCall("call_a", "execute_change",
+                     {"proposal_id": first["proposal_id"].upper(), "revision": 1}),
+            ToolCall("call_b", "execute_change",
+                     {"proposal_id": second["proposal_id"], "revision": 1}),
+        ),
+    )  # fmt: skip
+
+
+def _two_paused(settings: Settings, project_root: Path, steps: list[Any]) -> tuple[Any, Any]:
+    state = FixtureState()
+    provider = FakeWriteProvider(state)
+    policy = ApprovalPolicy(approver_refs=frozenset({"reviewer-1"}), allow_self_approval=False)
+    runtime, _ = build_runtime(
+        settings, project_root,
+        [propose_step(), propose_step(target_ref="g-101", changes={"daily_budget": 150}),
+         _execute_both, *steps],
+        fixture_state=state, write_provider=provider, approval_policy=policy,
+    )  # fmt: skip
+    return runtime, provider
+
+
+async def test_approving_one_of_two_paused_changes_returns_its_receipt(
+    settings: Settings, project_root: Path
+) -> None:
+    runtime, provider = _two_paused(settings, project_root, [final_step])
+    runner = _runner(runtime)
+    await runner.send(thread_id="t", caller_ref="local-user", text="cut both")
+    first, second = (
+        UUID(p["proposal_id"]) for p in _proposals(runtime.agent.conversation("t").messages)
+    )
+    assert len(runtime.agent.conversation("t").pending) == 2
+    outcome = await runner.approve(proposal_id=first, approver_ref="reviewer-1")
+    assert outcome.receipt is not None and outcome.receipt.proposal_id == first, (
+        "an upper-cased id still names the paused call, and its receipt comes back"
+    )
+    assert outcome.receipt.status == "verified" and len(provider.mutation_calls) == 1
+    assert outcome.interrupted and outcome.proposal.proposal_id == second, "the next card"
+    assert outcome.text.startswith("Approved; the change is verified.")
+
+
+async def test_a_call_paused_on_a_decided_proposal_never_holds_the_thread(
+    settings: Settings, project_root: Path
+) -> None:
+    import json
+
+    runtime, provider = _two_paused(settings, project_root, [final_step])
+    runner = _runner(runtime)
+    await runner.send(thread_id="t", caller_ref="local-user", text="cut both")
+    first, second = (
+        UUID(p["proposal_id"]) for p in _proposals(runtime.agent.conversation("t").messages)
+    )
+    service = runtime.components.proposal_service
+    service.reject(first, actor_ref="reviewer-1", message="decided elsewhere")
+    assert runner.paused_proposal("t").proposal_id == second, "a decided proposal is no card"
+    with pytest.raises(WriteDenied, match="not_awaiting_approval"):
+        await runner.reject(proposal_id=first, actor_ref="reviewer-1")
+    outcome = await runner.approve(proposal_id=second, approver_ref="reviewer-1")
+    assert not outcome.interrupted and outcome.text.startswith("done:"), "the model ran on"
+    results = {
+        m.tool_call_id: json.loads(m.content)
+        for m in runtime.agent.conversation("t").messages
+        if getattr(m, "name", "") == "execute_change"
+    }
+    assert results["call_a"]["reason"] == "already_decided"
+    assert results["call_b"]["receipt"]["status"] == "verified"
+    assert len(provider.mutation_calls) == 1
+
+
+async def test_executing_a_decided_proposal_is_refused_without_a_pause(
+    settings: Settings, project_root: Path
+) -> None:
+    import json
+
+    remembered: dict[str, Any] = {}
+
+    def remember(messages: Any) -> Any:
+        remembered["p"] = last_tool_results(messages)[0]["proposal"]
+        return execute_step(messages)
+
+    def execute_again(_messages: Any) -> Any:
+        view = remembered["p"]
+        return tool_call_message(
+            "execute_change", {"proposal_id": view["proposal_id"], "revision": view["revision"]}
+        )
+
+    policy = ApprovalPolicy(approver_refs=frozenset({"reviewer-1"}), allow_self_approval=False)
+    runtime, _ = build_runtime(
+        settings, project_root, [propose_step(), remember, final_step, execute_again, final_step],
+        fixture_state=FixtureState(), approval_policy=policy,
+    )  # fmt: skip
+    runner = _runner(runtime)
+    await runner.send(thread_id="t", caller_ref="local-user", text="cut it")
+    await runner.reject(proposal_id=remembered["p"]["proposal_id"], actor_ref="reviewer-1")
+    again = await runner.send(thread_id="t", caller_ref="local-user", text="do it anyway")
+    assert not again.interrupted, "a rejected proposal never pauses again"
+    last = [
+        m
+        for m in runtime.agent.conversation("t").messages
+        if getattr(m, "name", "") == "execute_change"
+    ][-1]
+    assert json.loads(last.content)["denied"] is True
+
+
+async def test_an_approval_racing_a_new_message_leaves_no_unused_claim(
+    settings: Settings, project_root: Path
+) -> None:
+    import asyncio
+
+    policy = ApprovalPolicy(approver_refs=frozenset({"reviewer-1"}), allow_self_approval=False)
+    runtime, _ = build_runtime(
+        settings, project_root, [propose_step(), execute_step, final_step, final_step],
+        fixture_state=FixtureState(), approval_policy=policy,
+    )  # fmt: skip
+    runner = _runner(runtime)
+    paused = await runner.send(thread_id="t", caller_ref="local-user", text="cut it")
+    pid = paused.proposal.proposal_id
+    # A turn is still running; a new message and an approval queue behind it, in that order.
+    turn = runtime.agent._turn("t")
+    await turn.acquire()
+    moving_on = asyncio.create_task(
+        runner.send(thread_id="t", caller_ref="local-user", text="never mind")
+    )
+    await asyncio.sleep(0)
+    approving = asyncio.create_task(runner.approve(proposal_id=pid, approver_ref="reviewer-1"))
+    await asyncio.sleep(0)
+    turn.release()
+    moved_on, approved = await asyncio.gather(moving_on, approving, return_exceptions=True)
+    assert not isinstance(moved_on, BaseException)
+    assert isinstance(approved, WriteDenied) and approved.reason == "conversation_expired"
+    service = runtime.components.proposal_service
+    assert service.approvals.latest_unused(pid, 1) is None, "no claim was left for later"
+    assert service.get(pid).state is ProposalState.AWAITING_APPROVAL

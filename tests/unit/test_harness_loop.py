@@ -317,3 +317,17 @@ def test_the_calendar_resolves_windows_across_month_and_year_boundaries() -> Non
     tuesday = calendar_lines(date(2026, 9, 29))
     assert "last week (Monday to Sunday): 2026-09-21 to 2026-09-27" in tuesday
     assert "the week before: 2026-09-14 to 2026-09-20" in tuesday
+    assert "7 and 28 calendar days to yesterday: 2026-09-22 to 2026-09-28" in tuesday
+    assert "'The last N days' is different" in tuesday and "never on yesterday" in tuesday, (
+        "agrees with instructions.md: the last N days end where the platform's data does"
+    )
+
+
+async def test_turn_locks_are_released_with_their_threads(tmp_path: Path) -> None:
+    import gc
+
+    agent, _ = _agent(Store(), tmp_path, ScriptedChatModel([lambda _m: AssistantMessage("hi")] * 3))
+    for thread in ("a", "b", "c"):
+        await agent.send(thread, "local-user", "hello")
+    gc.collect()
+    assert len(agent._turns) == 0, "an idle thread keeps no lock"

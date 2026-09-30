@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from paid_media_agent.domain.common import JsonValue
 from paid_media_agent.domain.presentation import ProposalView, ReceiptView
+from paid_media_agent.domain.proposals import ProposalState
 from paid_media_agent.harness.messages import ToolCall
 from paid_media_agent.harness.tools import ToolContext, ToolSpec, parameters_for
 from paid_media_agent.tools.discovery import _NoArgs
@@ -70,16 +71,19 @@ def _proposal_id(args: dict[str, Any]) -> UUID | None:
 
 
 def build_execute_gate(service: ProposalService) -> Callable[[ToolCall, ToolContext], bool]:
-    """Pause only for a proposal that exists on this thread; anything else runs and is denied.
+    """Pause only for a proposal on this thread that is still awaiting approval.
 
-    The gate is evaluated again on resume, so it must not depend on state that the reviewer's
-    decision changes (a rejection is persisted before the resume). Existence on the thread is
-    stable; the executor still refuses anything that is not awaiting approval.
+    Anything else runs at once and is refused, or replays its stored receipt: a call paused on a
+    proposal that is already decided could never be approved, and would hold the thread. The
+    gate runs only when the model makes the call, never again on resume.
     """
 
     def gate(call: ToolCall, context: ToolContext) -> bool:
         proposal_id = _proposal_id(call.args)
-        return proposal_id is not None and service.belongs_to(proposal_id, context.thread_id)
+        if proposal_id is None or not service.belongs_to(proposal_id, context.thread_id):
+            return False
+        record = service.get(proposal_id)
+        return record is not None and record.state is ProposalState.AWAITING_APPROVAL
 
     return gate
 

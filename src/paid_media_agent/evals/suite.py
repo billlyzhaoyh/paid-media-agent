@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Any
 
 from paid_media_agent.config import Settings
+from paid_media_agent.evals.checks import FAILED_REPLIES, Transcript, run_checks
 from paid_media_agent.evals.checks import CallRecord as ToolCallRecord
-from paid_media_agent.evals.checks import Transcript, run_checks
 from paid_media_agent.evals.judge import judge
 from paid_media_agent.evals.report import totals
 from paid_media_agent.evals.runner import eval_dates, run_question
@@ -27,9 +27,10 @@ from paid_media_agent.harness.models import ChatModel
 from paid_media_agent.harness.usage import CallRecord, LlmCallRecorder
 
 ResultHandler = Callable[[dict[str, Any]], Awaitable[None] | None]
-_REFUSED = re.compile(r"HTTP (401|402|403)\b")
-"""The provider refused the key (auth) or the account (credits): later questions would only
-measure that, so the run stops."""
+_REFUSED = re.compile(r"model returned HTTP (401|402|403)\b")
+"""The model provider refused the key (auth) or the account (credits): later questions would only
+measure that, so the run stops. Anchored on the model client's own error, so an answer quoting a
+platform's HTTP 403 never stops a run."""
 
 
 def provider_refusal(*texts: str | None) -> str | None:
@@ -160,7 +161,7 @@ async def run_suite(
         }
         refused = provider_refusal(
             transcript.error,
-            transcript.answer,
+            transcript.answer if transcript.answer.startswith(FAILED_REPLIES) else None,
             verdict.error if verdict is not None else None,
         )
         if refused:
@@ -227,5 +228,9 @@ def regrade(store: EvalStore, run_id: uuid.UUID, *, project_root: Path) -> uuid.
         }
         store.add_result(new_id, row)
         rows.append(row)
-    store.finish_run(new_id, totals(rows))
+    summary = totals(rows)
+    aborted = (run.get("totals") or {}).get("aborted")
+    if aborted:
+        summary["aborted"] = aborted  # a regraded incomplete run is still incomplete
+    store.finish_run(new_id, summary)
     return new_id

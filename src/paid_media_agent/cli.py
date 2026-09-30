@@ -1556,10 +1556,14 @@ def allocate(
             click.echo(f"{run['account_alias']}: {run['error']}")
             continue
         currency = run["currency"]
+        unit = f" {currency}" if currency else ""
+        # What the budgets add up to; the aim can be larger than step limits and ceilings allow.
+        placed = sum(float(d["final_budget"] or 0) for d in run["decisions"] if d["eligible"])
+        aimed = float(run["total_budget"])
+        aim = "" if abs(aimed - placed) <= 0.005 * max(aimed, 1.0) else f" (aimed for {aimed:.2f})"
         click.echo(
-            f"{run['account_alias']} on {run['decision_day']}: total {run['total_budget']:.2f}"
-            + (f" {currency}" if currency else "")
-            + f" a day, {run['policy']}, global model {run['prior_source']}"
+            f"{run['account_alias']} on {run['decision_day']}: budgets total {placed:.2f}{unit}"
+            + f" a day{aim}, {run['policy']}, global model {run['prior_source']}"
             + (", LAST GOOD CURVES (data checks failed)" if run["fallback_used"] else "")
         )
         if run.get("expected_cpa") is not None:

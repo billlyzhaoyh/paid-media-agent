@@ -359,6 +359,8 @@ async def test_a_target_cpa_cuts_the_total_until_the_expected_cpa_meets_it(accou
         seed=5,
     )
     assert impossible.capped_by_target_cpa and impossible.target_cpa_reached is False
+    assert not any("explores" in n for n in impossible.notes), "a greedy split never explores"
+    assert sum("target" in n for n in impossible.notes) == 1, "the unreachable target, once"
     movable = [d for d in impossible.decisions if d.lower != d.upper and d.arm.eligible]
     assert all(d.final_budget == pytest.approx(d.lower) for d in movable)
     floor_cpa = impossible.expected_cpa

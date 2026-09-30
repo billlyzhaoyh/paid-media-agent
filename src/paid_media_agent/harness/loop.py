@@ -12,8 +12,10 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable, Collection, Sequence
+import weakref
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
+from dataclasses import field as dataclass_field
 from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
@@ -33,6 +35,18 @@ from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.store.conversations import ConversationStore
 
 Decision = Literal["approve", "reject"]
+
+
+@dataclass(frozen=True)
+class ResumePlan:
+    """Which paused calls a resume decides, and which it denies unrun with a reason."""
+
+    decide: Collection[str]
+    deny: Mapping[str, str] = dataclass_field(default_factory=dict)
+
+
+PlanResume = Callable[[Sequence[ToolCall]], ResumePlan]
+"""Chooses a resume's calls from the paused ones, inside the thread's turn. Raising aborts it."""
 BACKOFF_SECONDS = (1.0, 2.0)
 INTERRUPTED = "No result was recorded: the run stopped before this tool finished."
 logger = logging.getLogger(__name__)
@@ -80,13 +94,14 @@ def calendar_lines(today: date) -> str:
         f"- yesterday: {yesterday.isoformat()} ({yesterday:%A})",
         f"- last week (Monday to Sunday): {_span(last_monday, last_monday + timedelta(days=6))}",
         f"- the week before: {_span(last_monday - timedelta(days=7), last_monday - timedelta(days=1))}",
-        f"- the 7 days to yesterday: {_span(today - timedelta(days=7), yesterday)}",
-        f"- the 28 days to yesterday: {_span(today - timedelta(days=28), yesterday)}",
         f"- this month to date: {_span(month_start, today)}",
         f"- last month: {_span(last_month_end.replace(day=1), last_month_end)}",
-        "Use these windows. Platforms report a day or two late, so each read says the date its "
-        "data runs through: 'the last N days of data' ends there, and any days of a window "
-        "without data are named, never compared as if complete.",
+        f"- 7 and 28 calendar days to yesterday: {_span(today - timedelta(days=7), yesterday)} "
+        f"and {_span(today - timedelta(days=28), yesterday)}",
+        "Use these for calendar windows. 'The last N days' is different: platforms report a "
+        "day or two late, so it ends on the date each platform's data runs through (every read "
+        "says it), never on yesterday or today. Any days of a window without data are named, "
+        "never compared as if complete.",
     ]
     return "\n".join(lines)
 
@@ -133,11 +148,16 @@ class Agent:
         self._call_log = call_log
         self._context_budget = context_budget_tokens
         self._pause_summary = pause_summary
-        self._turns: dict[str, asyncio.Lock] = {}
-        """One turn at a time per thread: two at once would give a call two results."""
+        self._turns: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+        """One turn at a time per thread: two at once would give a call two results. A lock
+        lives while a turn holds or awaits it, so idle threads leave nothing behind."""
 
     def _turn(self, thread_id: str) -> asyncio.Lock:
-        return self._turns.setdefault(thread_id, asyncio.Lock())
+        lock = self._turns.get(thread_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._turns[thread_id] = lock
+        return lock
 
     # ------------------------------------------------------------------ public
 
@@ -185,12 +205,20 @@ class Agent:
         on_event: EventHandler | None = None,
         *,
         call_ids: Collection[str] | None = None,
+        plan: PlanResume | None = None,
     ) -> Conversation:
         """Decide paused calls, then continue the run. `call_ids` limits the decision to those
         calls (a reviewer approves one proposal, never whatever else is paused); the rest stay
-        paused."""
+        paused. `plan`, when given, picks them instead, inside the thread's turn, so the calls it
+        sees are still paused when they are decided; it can also deny stale calls unrun."""
         async with self._turn(thread_id):
-            return await self._resume(thread_id, caller_ref, decision, message, on_event, call_ids)
+            deny: Mapping[str, str] = {}
+            if plan is not None:
+                chosen = plan(self.conversations.pending(thread_id))
+                call_ids, deny = chosen.decide, chosen.deny
+            return await self._resume(
+                thread_id, caller_ref, decision, message, on_event, call_ids, deny
+            )
 
     async def _resume(
         self,
@@ -200,14 +228,21 @@ class Agent:
         message: str,
         on_event: EventHandler | None,
         call_ids: Collection[str] | None,
+        deny: Mapping[str, str],
     ) -> Conversation:
-        pending = [
-            c for c in self.conversations.pending(thread_id) if call_ids is None or c.id in call_ids
-        ]
-        if not pending:
+        paused = self.conversations.pending(thread_id)
+        stale = [c for c in paused if c.id in deny]
+        pending = [c for c in paused if (call_ids is None or c.id in call_ids) and c.id not in deny]
+        if not pending and not stale:
             return self.conversations.load(thread_id)
         await _emit(on_event, RunEvent("start"))
         context = self._context(thread_id, caller_ref)
+        for call in stale:
+            if self.conversations.clear_pending(thread_id, call.id):
+                denial = {"denied": True, "reason": "already_decided", "detail": deny[call.id]}
+                self.conversations.append(
+                    thread_id, ToolMessage(call.id, call.name, json.dumps(denial), status="error")
+                )
         for call in pending:
             if not self.conversations.clear_pending(thread_id, call.id):
                 continue  # another resume took this call

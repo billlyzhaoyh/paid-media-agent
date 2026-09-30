@@ -179,3 +179,33 @@ def test_operation_digest_changes_with_policy(catalog: AuthorizedToolCatalog) ->
     changed = WriteOperation(**{**op.model_dump(), "risk": RiskLevel.HIGH})
     assert op.digest() != changed.digest()
     assert StaticCatalogProvider(catalog).current().revision
+
+
+@pytest.mark.parametrize(
+    ("status", "name", "unknown"),
+    [(401, "HTTPStatusError", False), (400, "HTTPStatusError", False),
+     (502, "HTTPStatusError", True), (None, "ReadError", True), (None, "ConnectError", False)],
+)  # fmt: skip
+async def test_only_an_answer_that_never_came_leaves_a_mutation_unknown(
+    status: int | None, name: str, unknown: bool
+) -> None:
+    from paid_media_agent.tools.providers import ProviderUnknownOutcome
+
+    class Response:
+        status_code = status
+
+    error = type(name, (Exception,), {})("failed")
+    if status is not None:
+        error.response = Response()  # type: ignore[attr-defined]
+
+    class Client:
+        async def list_tools(self, platform: object, url: str) -> list[object]:
+            return []
+
+        async def call_tool(self, url: str, name: str, arguments: dict[str, Any]) -> McpResult:
+            raise error
+
+    address = ToolAddress("https://mcp.example/google", "update_campaign_budget")
+    with pytest.raises(ProviderError) as info:
+        await invoke_mcp_tool(Client(), address, {}, timeout=5)  # type: ignore[arg-type]
+    assert isinstance(info.value, ProviderUnknownOutcome) is unknown, (status, name)

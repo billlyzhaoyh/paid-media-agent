@@ -40,7 +40,9 @@ def build_check_pacing_tool(store: Store, accounts: AccountRegistry) -> ToolSpec
                 "note": (
                     "Month to date in each account's own timezone, from stored history (sync "
                     "first if data_through is old). Present the readings; do not recompute. "
-                    "conversions_expected adds conversions still arriving; cpa uses it. "
+                    "conversions_expected and conversion_value_expected add conversions and "
+                    "value still arriving; cpa and roas use them. conversions and "
+                    "conversion_value are as reported: divide like with like. "
                     "Without a monthly budget or targets, say they are not set; the user can set "
                     "them with `paid-media-agent goals set` or ask you to propose a change "
                     "(host__set_account_goals)."

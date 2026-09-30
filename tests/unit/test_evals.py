@@ -226,8 +226,19 @@ async def test_a_run_stops_when_the_provider_refuses_the_account(
     run_id, results = await _run(settings, project_root, store, Broke(), None)
     assert results == [], "nothing after the refusal is graded"
     assert "out of credits (HTTP 402)" in store.run(run_id)["totals"]["aborted"]
-    assert provider_refusal("HTTP 401 unauthorized") == "the key was refused (HTTP 401)"
-    assert provider_refusal("HTTP 429 slow down") is None, "rate limits are retried, not fatal"
+    assert (
+        provider_refusal("model returned HTTP 401: unauthorized")
+        == "the key was refused (HTTP 401)"
+    )
+    assert provider_refusal("model returned HTTP 429: slow down") is None, "rate limits retry"
+    assert provider_refusal("the Graph API returned HTTP 403 for act_123") is None, (
+        "a platform's error quoted in an answer is not the model provider refusing"
+    )
+
+    from paid_media_agent.evals.suite import regrade
+
+    again = store.run(regrade(store, run_id, project_root=project_root))
+    assert "out of credits" in again["totals"]["aborted"], "a regrade stays incomplete"
 
 
 async def test_repeats_are_stored_per_attempt_and_compared_by_majority(
@@ -281,3 +292,67 @@ async def test_an_eval_agent_never_writes_into_the_repository(
     )
     assert (root / "workspace" / "report.md").exists()
     assert not (project_root / "workspace" / "report.md").exists()
+
+
+def test_grounding_reads_real_tool_shapes_and_every_way_figures_are_written() -> None:
+    from paid_media_agent.evals.checks import (
+        CallRecord,
+        Transcript,
+        check_grounded,
+        numbers_in,
+        sources_from,
+        verdict,
+    )
+
+    def found(answer: str, *results: Any) -> list[str]:
+        sources = sources_from([r if isinstance(r, str) else json.dumps(r) for r in results])
+        return [verdict(n, sources) for n in numbers_in(answer)]
+
+    proposal = {
+        "proposal": {
+            "target_ref": "g-101",
+            "before": [{"field": "daily_budget", "value": 180.0}],
+            "after": [{"field": "daily_budget", "value": 216.0}],
+        }
+    }
+    assert found("+$36.00 a day", proposal) == ["found"], "before and after are siblings"
+    whatif = {"baseline": {"spend": 900.0}, "forecast": {"spend": 990.0}}
+    assert found("$90 more", whatif) == ["found"]
+    assert found("$126 more", proposal) == ["missing"], "only the same field is paired"
+
+    assert found("within the expected 95% band", {"method": "local_band95"}) != ["missing"]
+    assert found("CPA was 189.84", {"cpa": 189.84207311683258}) == ["found"]
+    assert found("$3.46", {"x": 3.4567890123456}) == ["found"], "long floats keep their digits"
+    csv = "day,spend,clicks\n2026-09-21,162.64,183\n"
+    assert found("$162.64 on 183 clicks", csv) == ["found", "found"]
+    assert found("162.64183", csv) == ["missing"], "cells are never merged"
+    assert found("1,234.50 spent", "total 1,234.50") == ["found"]
+
+    rows = {"rows": [{"clicks": 23, "spend": 410.0}], "change": 0.118, "share": 12.5}
+    assert found("spend rose 11.8%", rows) == ["found"], "a change fraction times 100"
+    assert found("impression share 12.5%", rows) == ["found"], "a share key, in points"
+    assert found("spend rose 23.0%", rows) == ["missing"], "clicks are not a percentage"
+    assert found("spend rose 23%", rows) == ["unchecked"], "a whole percent is not confirmed"
+    assert found("CPA rose 12.3% (reading)", {"reading": "CPA rose 12.3% week on week"}) == [
+        "found"
+    ]
+
+    daily = {"days": [{"spend": 657.3}, {"spend": 834.1}, {"spend": 880.86}]}
+    assert found("about 660 USD, roughly 830-880 USD", daily) == ["found", "found", "found"], (
+        "a round number said to be approximate is checked at the precision it implies"
+    )
+    assert found("660 USD", daily) == ["missing"], "without 'about', 660 means 660"
+    assert found("~$1,080/month", {"change": 36.0}) == ["missing"], "36 x 30 is prose arithmetic"
+    stated = {
+        n.raw: n for n in numbers_in("$190/day, ROAS 6.17x, a 2.4-3.9 range, g-101 on 2026-09-21")
+    }
+    assert set(stated) == {"$190", "6.17", "2.4", "3.9"}, stated
+    money = {n.raw: n.money for n in numbers_in("save 7,400 USD, or €7,400, or 7,400 clicks")}
+    assert money == {"7,400 USD": True, "€7,400": True, "7,400": False}
+
+    answer = "You would save 7,400 USD."
+    transcript = Transcript("q", answer, calls=[CallRecord("x", {}, json.dumps({"n": 1}))])
+    check = check_grounded(transcript, {"grounded_min": 0.0}, "question")
+    assert check.passed, "a zero minimum never fails"
+    check = check_grounded(transcript, {}, "question")
+    assert not check.passed and "money" in check.detail, "a currency code is money"

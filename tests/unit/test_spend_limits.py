@@ -143,6 +143,9 @@ def test_bounds_follow_the_ceiling_the_platform_and_learning() -> None:
     tiny = _arm(platform="tiktok_ads", rules=rules_for("tiktok_ads"), current_budget=10.0)
     assert budget_bounds(tiny, config) == (10.0, 10.0, ["platform_minimum"]), "never a silent +100%"
     capped_max = budget_bounds(_arm(), BanditConfig(max_budget=50.0))
-    assert capped_max[0] <= capped_max[1] == 50.0, "max_budget below the step floor still caps"
+    assert capped_max == (75.0, 75.0, ["max_budget"]), "one step toward a cap below the step"
+    tiktok_cap = budget_bounds(tiktok, BanditConfig(max_budget=15.0))
+    assert tiktok_cap[:2] == (20.0, 20.0), "never below the platform's minimum"
+    assert budget_bounds(_arm(), BanditConfig(max_budget=90.0))[:2] == (75.0, 90.0)
     held = _arm(rules=rules_for("tiktok_ads"), days_since_change=1)
     assert budget_bounds(held, BanditConfig(hold_days=0))[2] == ["hold"], "two days between changes"

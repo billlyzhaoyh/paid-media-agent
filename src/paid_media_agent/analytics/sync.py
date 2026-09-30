@@ -133,6 +133,57 @@ async def _call(
             return
 
 
+@dataclass(frozen=True)
+class _Plan:
+    binding: AccountBinding
+    contract: ReadContract
+    performance: list[ReadCall]
+    listing: ReadCall | None
+    signals: list[ReadCall]
+
+    @property
+    def calls(self) -> int:
+        """Calls this account needs, before any extra pages."""
+        return len(self.performance) + (self.listing is not None) + len(self.signals)
+
+
+def _plan(
+    binding: AccountBinding,
+    contract: ReadContract,
+    catalog: AuthorizedToolCatalog,
+    windows: Callable[[AccountBinding, ReadContract, bool], list[tuple[date, date]]],
+    *,
+    settings: bool,
+) -> _Plan:
+    platform = binding.platform
+    entry = catalog.get(qualified_name(platform, contract.performance_tool))
+    schema = entry.input_schema if entry is not None else {}
+    spans = windows(binding, contract, contract.per_day(schema))
+    calls = [c for start, end in spans for c in contract.performance_calls(start, end, schema)]
+    newest_first = sorted(calls, key=lambda c: c.window[1] if c.window else date.min, reverse=True)
+    listing = contract.settings_call() if settings else None
+    if listing is not None and catalog.get(qualified_name(platform, listing.tool)) is None:
+        listing = None
+    signals = [
+        call
+        for start, end in reversed(spans)
+        if (call := contract.signals_call(start, end)) is not None
+        and catalog.get(qualified_name(platform, call.tool)) is not None
+    ]
+    return _Plan(binding, contract, newest_first, listing, signals)
+
+
+def _water_fill(budget: int, needs: list[int]) -> list[int]:
+    """Split `budget` so each gets what it needs up to an equal share of what is left."""
+    given = [0] * len(needs)
+    left = budget
+    for count, index in enumerate(sorted(range(len(needs)), key=lambda i: needs[i])):
+        fair = left // (len(needs) - count)
+        given[index] = min(needs[index], fair)
+        left -= given[index]
+    return given
+
+
 async def _pull(
     run: SyncRun,
     *,
@@ -144,7 +195,8 @@ async def _pull(
     settings: bool,
     max_calls: int,
 ) -> SyncRun:
-    for position, alias in enumerate(aliases):
+    plans: list[_Plan] = []
+    for alias in aliases:
         binding = accounts.resolve(alias)
         if binding is None:
             run.unavailable.append(f"{alias}: unknown alias")
@@ -156,35 +208,37 @@ async def _pull(
                 "run `paid-media-agent doctor --live`"
             )
             continue
-        run.contracts[alias] = f"{contract.name} ({contract.verification})"
-        entry = catalog.get(qualified_name(binding.platform, contract.performance_tool))
-        schema = entry.input_schema if entry is not None else {}
-        spans = windows(binding, contract, contract.per_day(schema))
-        # Each account gets its share of the calls left, so one account that costs a call per
-        # day never starves the ones after it; within it, the newest days come first.
-        share = max(1, (max_calls - run.calls) // (len(aliases) - position))
+        plans.append(_plan(binding, contract, catalog, windows, settings=settings))
+    for position, plan in enumerate(plans):
+        binding = plan.binding
+        run.contracts[binding.alias] = f"{plan.contract.name} ({plan.contract.verification})"
+        # Calls are shared so that one account that costs a call per day never starves the
+        # ones after it: each later account keeps what it needs up to an equal share, and this
+        # one may use the rest, including what earlier accounts left unused. Within an account
+        # the newest days come first, and one call is kept back for the settings listing, the
+        # only view of the campaigns as they are now.
+        remaining = max_calls - run.calls
+        later = _water_fill(remaining, [p.calls for p in plans[position:]])[1:]
+        share = max(1, remaining - sum(later))
         limit = min(max_calls, run.calls + share)
+        reserve = 1 if plan.listing is not None and share > 1 else 0
+        capped = False
         try:
-            calls = [
-                c for start, end in spans for c in contract.performance_calls(start, end, schema)
-            ]
-            for call in sorted(
-                calls, key=lambda c: c.window[1] if c.window else date.min, reverse=True
-            ):
-                await _call(run, dispatcher, binding, call, max_calls=limit)
-            listing = contract.settings_call() if settings else None
-            if listing is not None and catalog.get(qualified_name(binding.platform, listing.tool)):
-                await _call(run, dispatcher, binding, listing, max_calls=limit, kind="settings")
+            for call in plan.performance:
+                await _call(run, dispatcher, binding, call, max_calls=limit - reserve)
+        except _CallCapReached:
+            capped = True
+        try:
+            if plan.listing is not None:
+                await _call(
+                    run, dispatcher, binding, plan.listing, max_calls=limit, kind="settings"
+                )
+            if capped:
+                continue
             # What limits spend (impression share, status reasons), where the platform says.
             # Its own call, so a field an account cannot report never costs the performance read.
-            for start, end in reversed(spans):
-                signal_call = contract.signals_call(start, end)
-                if signal_call is not None and catalog.get(
-                    qualified_name(binding.platform, signal_call.tool)
-                ):
-                    await _call(
-                        run, dispatcher, binding, signal_call, max_calls=limit, kind="signals"
-                    )
+            for signal_call in plan.signals:
+                await _call(run, dispatcher, binding, signal_call, max_calls=limit, kind="signals")
         except _CallCapReached:
             continue
     return run

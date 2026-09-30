@@ -47,10 +47,13 @@ LINE_CHARS = 2000
 MAX_MATCHES = 200
 
 
-def _matches(path: str, patterns: Sequence[str]) -> bool:
-    """Case-insensitive: macOS and Windows file systems are, so `/.ENV` is `/.env`."""
-    path = path.casefold()
-    for pattern in (p.casefold() for p in patterns):
+def _matches(path: str, patterns: Sequence[str], *, fold: bool = True) -> bool:
+    """Case-insensitive by default, for deny rules: macOS and Windows file systems are, so
+    `/.ENV` is `/.env`. Allow rules pass `fold=False`: on a case-sensitive file system
+    `/Workspace` is another directory, outside the workspace."""
+    if fold:
+        path = path.casefold()
+    for pattern in (p.casefold() if fold else p for p in patterns):
         if pattern.endswith("/**"):
             base = pattern[:-3]
             if path == base or path.startswith(base + "/"):
@@ -79,7 +82,7 @@ class PathPolicy:
             if _matches(path, DENY_ALL):
                 raise PermissionDenied(virtual)
             if operation == "write" and (
-                _matches(path, DENY_WRITE) or not _matches(path, ALLOW_WRITE)
+                _matches(path, DENY_WRITE) or not _matches(path, ALLOW_WRITE, fold=False)
             ):
                 raise PermissionDenied(virtual)
         return target

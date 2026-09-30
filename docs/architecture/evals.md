@@ -24,6 +24,9 @@ The code is in `src/paid_media_agent/evals/`.
   approval, any provider mutation, and the thread's `llm_calls` totals.
 - **Rate limits.** Calls to the model under test and to the judge are throttled (`--rpm`, 15 a
   minute by default), for keys with low limits.
+- **Refusals stop a run.** If the model provider refuses the key or the account (HTTP 401, 402,
+  403 in the model client's own error), the run stops and is marked incomplete. An answer that
+  quotes a platform's HTTP error does not stop it.
 
 ## Question fields
 
@@ -50,15 +53,27 @@ The code is in `src/paid_media_agent/evals/`.
   days ending on each platform's latest complete day.
 - **grounded**: the numbers the answer states are looked for in the tool results and the
   artifacts they name.
-  - Numbers include amounts, decimals, percentages, and 12.4k / 1.2M / 3B.
-  - Each number is matched at the answer's own precision, rounded half up. A percentage may match
-    a fraction.
-  - The difference or sum of two numbers **from the same record** also counts, for example a
-    budget's before and after.
-  - Dates, ids, hashes, years, small whole counts, and durations ("90 days") are skipped. Their
-    digits are stripped from the sources too, so "3,862.42 + 14" is not grounded by a date.
-  - The check fails when too few numbers are found, or when any money figure (a `$` sign or two
-    decimals) is not found: it was either invented or computed in prose.
+  - Numbers include amounts, decimals, percentages, 12.4k / 1.2M / 3B, rates such as
+    "$190/day", multiples such as "6.17x", and both ends of a range such as "2.4-3.9".
+  - Each number is matched at the answer's own precision, rounded half up.
+  - JSON results are read as numbers, not as text, so long floats keep their digits.
+  - **Related pairs.** The difference or sum of two related figures also counts:
+    - two in one record (a budget now and next);
+    - or the same field in two sibling records (a proposal's `before` and `after`, a what-if's
+      `baseline` and `forecast`).
+  - **Percentages.** A percentage matches only:
+    - a share times 100;
+    - a value under a rate, share, change or ratio key;
+    - or a percentage written in a result.
+    A whole percentage that matches only some other figure (a count, `local_band95`) is
+    unchecked, neither found nor missing.
+  - **Skipped figures.** Dates, ids (`g-101`, `art_…`), hashes, years, small whole counts, and
+    durations ("90 days") are skipped. Their digits are stripped from source text too, so
+    "3,862.42 + 14" is not grounded by a date. Commas are removed only as thousands separators,
+    so CSV cells never merge.
+  - **When it fails.** The check fails when too few checked numbers are found, or when any
+    money figure is not found: it was either invented or computed in prose. A money figure has a
+    currency symbol (`$ € £ ¥`), an ISO code ("7,400 USD"), or two decimals.
 - **writes**: no provider mutation, and `expect_pause` questions are left waiting for approval.
 
 ## Judge
@@ -106,7 +121,7 @@ A single run moves by a few questions from the model's own variance, so compare 
 before trusting a small change.
 
 `eval regrade RUN` re-runs the deterministic checks on a stored run's transcripts, keeping its
-judge verdicts, and calls no model. It is how a baseline is compared fairly after the checks
+judge verdicts and any "incomplete" marker, and calls no model. It is how a baseline is compared fairly after the checks
 change. `eval baseline RUN` marks a baseline. Comparisons across a different question set or
 judge are shown, with a warning that they are not like for like. `eval report [RUN] --against baseline` lists regressions
 (passed before, failing now), fixes, and cost and latency deltas.
@@ -210,3 +225,25 @@ scores 10 of 30. Both new runs used the same questions and the same judge (Sonne
 text. Sonnet 5.5 passed each of those four write questions on both attempts
 (`--ids q09,q10,q25,q26 --repeat 2`, run `ee698b0a`), where it failed all four before. Adding
 those four to the full run's 25 suggests 29/30, which a full run with repeats should confirm.
+
+## After the second review (2026-09-30)
+
+The second review found that grounding still had false failures and blind spots:
+- a proposal's before and after were never paired;
+- the digits of `local_band95` and of long floats were stripped;
+- CSV cells were merged;
+- any number could ground a percentage;
+- rates, multiples, ranges, and currency codes went unchecked.
+
+Re-grading the stored runs with the corrected checks called no model:
+
+| Run | Before | After | Change |
+| --- | --- | --- | --- |
+| Haiku baseline (`399bf412` → `ba201d2b`) | 10/30 | 12/30 | q06 (the 95% band) and q09 (+$36 from before and after) were false failures |
+| Haiku after S15 (`6f6c6384` → `0de6c6a8`) | 13/30 | 12/30 | q09 now fails: "~$1,080/month" is 36 × 30 worked out in prose |
+| Sonnet 5.5 (`5e4f7dcc` → `9d8cce31`) | 25/30 | 25/30 | none; "about 660 USD" is checked to the nearest ten |
+| Sonnet 5.5, write questions (`ee698b0a` → `7b79004d`) | 8/8 | 8/8 | none |
+
+A targeted live run of the changed paths passed 6 of 6 (`05c97e31`, Sonnet 5.5, $0.58 + $0.20
+for the judge): pacing (q04), the approval questions (q09, q10, q25, q26), and the recommended
+total (q20).

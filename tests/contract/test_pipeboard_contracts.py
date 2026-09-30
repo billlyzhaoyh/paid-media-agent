@@ -331,19 +331,44 @@ async def test_sync_stops_at_the_call_limit_and_says_what_it_skipped(
     settings: Settings, tmp_path: Path
 ) -> None:
     wired = await _wire(settings, tmp_path, FakePipeboard())
+    # One chunk, whatever today is: Meta costs a call per day, Google one per chunk.
     run = await run_backfill(
         **_sync_kwargs(wired),
-        start=date(2026, 9, 1),
+        start=END - timedelta(days=20),
         end=END,
-        aliases=("meta-us", "google"),
+        aliases=("ghost", "meta-us", "google"),
         max_calls=5,
     )
     assert run.calls <= 5 and len(wired.client.calls) == run.calls
-    (stopped,) = run.unavailable
-    assert stopped.startswith("meta-us 2026-09-2") and "share of the call limit" in stopped
+    unknown, stopped = run.unavailable
+    assert unknown == "ghost: unknown alias", "an alias that cannot be read takes no share"
+    skipped = (END - timedelta(days=3)).isoformat()
+    assert stopped.startswith(f"meta-us {skipped}") and "share of the call limit" in stopped
     assert "google" in run.contracts, "one account's per-day calls never starve the next"
     meta_days = [a["time_range"]["since"] for n, a in wired.client.calls if n == "get_insights"]
     assert meta_days == sorted(meta_days, reverse=True), "newest days first"
+    assert len(meta_days) == 3 and run.calls == 5, "Google needs 2, so Meta may use the rest"
+
+
+async def test_a_capped_sync_still_reads_current_settings(
+    settings: Settings, tmp_path: Path
+) -> None:
+    wired = await _wire(settings, tmp_path, FakePipeboard())
+    run = await run_sync(**_sync_kwargs(wired), end=END, aliases=("meta-us",), max_calls=3)
+    assert run.calls == 3 and run.settings > 0, "one call is kept back for the settings listing"
+    meta_days = [a["time_range"]["since"] for n, a in wired.client.calls if n == "get_insights"]
+    assert meta_days == [END.isoformat(), (END - timedelta(days=1)).isoformat()]
+
+    wired = await _wire(settings, tmp_path / "both", FakePipeboard())
+    both = await run_sync(**_sync_kwargs(wired), end=END, aliases=("meta-us", "google"))
+    needed = both.calls
+    wired = await _wire(settings, tmp_path / "tight", FakePipeboard())
+    tight = await run_sync(
+        **_sync_kwargs(wired), end=END, aliases=("meta-us", "nobody", "google"), max_calls=needed
+    )
+    assert tight.calls == needed and tight.unavailable == ["nobody: unknown alias"], (
+        "a limit that fits every call reads every call, whatever order the accounts are in"
+    )
 
 
 @pytest.mark.parametrize("shape", ["nested", "dotted"])

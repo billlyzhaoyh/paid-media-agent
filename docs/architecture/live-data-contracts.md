@@ -50,6 +50,11 @@ contract matches", and their tools are still available to the agent for question
   - Pages are followed, up to 20 per call.
   - Each provider call counts against `PAID_MEDIA_SYNC_MAX_CALLS` (200), because hosted MCP plans
     meter calls. A sync that reaches it stops and names what it skipped.
+  - The calls are shared between the accounts that can be read (unknown aliases take none):
+    - each later account keeps what it needs, up to an equal share;
+    - the account being read may use the rest, including what earlier accounts left unused;
+    - within an account the newest days come first, and one call is kept back for the settings
+      listing, the only view of today's budgets.
   - Each account ends on its own yesterday, in its timezone.
 
 ## Signals: what limits spend

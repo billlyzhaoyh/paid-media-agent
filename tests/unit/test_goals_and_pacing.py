@@ -41,8 +41,20 @@ ACCOUNTS = AccountRegistry(
 )
 
 
-def _spend(store: Store, days: dict[date, float], *, conversions: float = 2.0) -> None:
+def _spend(
+    store: Store,
+    days: dict[date, float],
+    *,
+    conversions: float = 2.0,
+    requested: tuple[date, date] | None = None,
+) -> None:
     pull, pulled_at = uuid.uuid4(), datetime(2026, 9, 21, 6)
+    if requested is not None:
+        store.write(
+            "INSERT INTO pulls VALUES (?, 'sync', 'get_campaign_performance', NULL, 'google_ads', "
+            "'1234567890', 'acme', 'campaign', ?, ?, NULL, NULL, NULL, NULL, ?, [], ?, ?)",
+            [pull, *requested, len(days), pulled_at, pulled_at.date()],
+        )
     for day, spend in days.items():
         store.write(
             "INSERT INTO entity_daily_snapshots VALUES "
@@ -164,7 +176,40 @@ def test_days_with_no_rows_inside_the_synced_range_count_as_zero_spend() -> None
     store = Store()
     # Weekdays only: platforms send no rows for days nothing spent.
     days = [date(2026, 9, 1) + timedelta(days=i) for i in range(20)]
-    _spend(store, {d: 100.0 for d in days if d.weekday() < 5})
+    _spend(store, {d: 100.0 for d in days if d.weekday() < 5}, requested=(days[0], days[-1]))
     report = compute_pacing(store, account_alias="acme", today=TODAY, goal=None, currency="USD")
     # The last seven days (14-20) hold five weekdays at 100 and a weekend at 0.
     assert report.run_rate == pytest.approx(500 / 7)
+
+
+def test_days_no_pull_asked_for_are_unknown_not_zero() -> None:
+    store = Store()
+    # Pulled on their own days, with 15-18 never read (a failed call): not zero spend.
+    for day in (date(2026, 9, d) for d in (13, 14, 19, 20)):
+        _spend(store, {day: 100.0}, requested=(day, day))
+    report = compute_pacing(store, account_alias="acme", today=TODAY, goal=None, currency="USD")
+    assert report.run_rate == pytest.approx(100.0)
+
+
+def test_value_is_reported_as_is_and_with_value_still_arriving() -> None:
+    store = Store()
+    pull, pulled_at = uuid.uuid4(), datetime(2026, 9, 21, 6)
+    rows = [
+        # (day, entity, conversions, value): a recent day still maturing, an old one complete,
+        # and a row with value but no reported conversions.
+        (date(2026, 9, 20), "c1", 2.0, 100.0),
+        (date(2026, 9, 5), "c1", 4.0, 200.0),
+        (date(2026, 9, 5), "c2", None, 50.0),
+    ]
+    for day, entity, conversions, value in rows:
+        store.write(
+            "INSERT INTO entity_daily_snapshots VALUES "
+            "('google_ads', '1234567890', 'campaign', ?, ?, ?, ?, ?, 'acme', 'Search', 'USD', "
+            "100, NULL, NULL, ?, ?, true, [])",
+            [entity, day, pull, pulled_at, pulled_at.date(), conversions, value],
+        )
+    report = compute_pacing(store, account_alias="acme", today=TODAY, goal=None, currency="USD")
+    assert report.conversion_value == pytest.approx(350.0), "as reported, every row"
+    assert report.conversion_value_expected is not None
+    assert report.conversion_value_expected >= 350.0, "the row without conversions still counts"
+    assert report.roas == pytest.approx(report.conversion_value_expected / 300.0)

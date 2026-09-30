@@ -179,9 +179,10 @@ async def propose_run(
             continue
         proposal_id = record.changeset.proposal_id
         result.proposals[arm.entity_ref] = proposal_id
-        result.superseded += _supersede(store, service, run, {arm.entity_ref}, keep=proposal_id)
+        # Linked first: if superseding fails, a later run still finds this proposal to replace.
         store.write(
             "UPDATE bandit_decisions SET proposal_id = ? WHERE run_id = ? AND arm_key = ?",
             [proposal_id, run.run_id, arm.key],
         )
+        result.superseded += _supersede(store, service, run, {arm.entity_ref}, keep=proposal_id)
     return result

@@ -124,13 +124,23 @@ def build_recommend_budgets_tool(
         failed = [k for k, v in result["data_checks"].items() if not v["ok"]]
         unit = f" {result['currency']}" if result["currency"] else ""
         current_total = sum(float(r["current_budget"] or 0) for r in rows if r["eligible"])
-        recommended = float(result["total_budget"])
+        # What the budgets add up to, not the total the allocator aimed at: step limits, spend
+        # ceilings, and the target CPA can leave part of the aim unplaced.
+        recommended = sum(float(r["final_budget"] or 0) for r in rows if r["eligible"])
+        aimed = float(result["total_budget"])
         change = f" ({recommended / current_total - 1:+.1%})" if current_total else ""
+        source = _TOTALS.get(result["total_source"], result["total_source"])
+        placed = abs(aimed - recommended) <= 0.005 * max(aimed, 1.0)
         summary = (
             f"{len(moved)} of {sum(r['eligible'] for r in rows)} allocated campaigns would move. "
-            f"Current budgets total {current_total:.2f}{unit} a day; the recommended total is "
-            f"{recommended:.2f}{unit}{change}, "
-            f"{_TOTALS.get(result['total_source'], result['total_source'])}"
+            f"Current budgets total {current_total:.2f}{unit} a day; the recommended budgets "
+            f"total {recommended:.2f}{unit}{change}"
+            + (
+                f", {source}"
+                if placed
+                else f". The allocator aimed for {aimed:.2f}{unit}, {source}; step limits, spend "
+                "ceilings, and the target CPA left the rest unplaced"
+            )
             + (
                 (
                     ", cut to meet the target CPA"

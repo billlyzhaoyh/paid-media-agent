@@ -12,8 +12,8 @@ from __future__ import annotations
 import fnmatch
 import json
 import re
-from collections.abc import Sequence
-from dataclasses import asdict, dataclass, field
+from collections.abc import Collection, Sequence
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
@@ -21,23 +21,46 @@ from typing import Any
 from paid_media_agent.evals import figures
 
 FAILED_REPLIES = ("Model call failed", "Stopped after")
+CURRENCIES = (
+    "USD|EUR|GBP|JPY|CAD|AUD|NZD|CHF|SEK|NOK|DKK|PLN|CZK|HUF|INR|BRL|MXN|COP|CLP|ARS|CRC|"
+    "SGD|HKD|TWD|KRW|CNY|IDR|THB|MYR|PHP|ZAR|TRY|AED|SAR|ILS"
+)
 _NUMBER = re.compile(
-    r"(?<![\w.\-/:])[-\u2212+]?(\$)?(\d[\d,]*(?:\.\d+)?)(?:\s?([kKmMbB])(?![A-Za-z]))?(%)?"
-    r"(?:\s?[A-Z]{3}\b)?(?![\w\-/:]|\.\d)"
+    # Not inside a word, a decimal, a path, or a time; a hyphen counts only after a digit (a
+    # range such as 2.4-3.9), never after a letter (an id such as g-101).
+    r"(?<![\w.:/])(?<![^\d\s$€£¥]-)"
+    r"[-−+]?([$€£¥])?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
+    r"(?:\s?([kKmMbB])(?![A-Za-z]))?(%)?"
+    rf"(?:\s?(?:({CURRENCIES})|[A-Z]{{3}})\b)?"
+    # Not followed by more digits or a word, except a multiple (6.17x), a rate ($190/day), or
+    # the second half of a range.
+    r"(?!\.\d|:|-(?![\d$])|/(?![A-Za-z])|(?!x\b)\w)"
 )
 _SCALES = {"k": 1e3, "m": 1e6, "b": 1e9}
+_APPROX = re.compile(
+    r"(?:\b(?:about|around|roughly|approximately|approx\.?|nearly|almost|some)|~|\u2248)\s*"
+    r"(?:[$€£¥]?\d[\d,.]*\s*(?:-|\u2013|to)\s*)?[-\u2212+]?[$€£¥]?$",
+    re.I,
+)
+"""'about 660' or 'roughly 830-880': a round number said to be approximate."""
 _DURATION = re.compile(
-    r"\s*(?:-|\u2013|\bto\s+)?\s*(?:\d+\s*)?(?:hours?|days?|weeks?|months?|minutes?)\b", re.I
+    r"\s*(?:-|–|\bto\s+)?\s*(?:\d+\s*)?(?:hours?|days?|weeks?|months?|minutes?)\b", re.I
 )
 """A whole number followed by a duration word ("90 days", "24-48 hours") is not a figure."""
 _ANY_NUMBER = re.compile(r"-?\d+(?:\.\d+)?(?:[eE]-?\d+)?")
+_PERCENT_IN_TEXT = re.compile(r"(-?\d+(?:\.\d+)?)\s?%")
+_THOUSANDS = re.compile(r"(?<![\d.,])\d{1,3}(?:,\d{3})+(?![\d,])")
 _NOT_FIGURES = re.compile(
     r"\d{4}-\d{2}-\d{2}(?:[T ][\d:.]+Z?)?"  # dates and timestamps
     r"|\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"  # UUIDs
-    r"|\b[A-Za-z]+[-_][A-Za-z0-9]+\b"  # ids like g-101, art_1f3a, sim-003
-    r"|\b[0-9a-f]{12,}\b"  # hashes
+    r"|\b(?:[A-Za-z]{1,4}-\d+|art_[0-9a-f]+|act_\d+)\b"  # ids like g-101, sim-003, art_1f3a
+    r"|\b(?=[0-9a-f]*[a-f])[0-9a-f]{12,}\b"  # hashes (a long run of digits is a figure)
 )
-"""Dates, ids, and hashes are stripped from sources: their digits are not figures."""
+"""Dates, ids, and hashes are stripped from source text: their digits are not figures."""
+_PERCENT_KEYS = re.compile(r"pct|percent|share|rate|change|ratio|ctr|cvr|roas", re.I)
+"""Keys whose values may already be in points, so they can match a percentage as they are."""
+MAX_FRACTION = 10.0
+"""A value this size or smaller can be a share, stated as up to 1,000%."""
 MAX_RECORD_NUMBERS = 60
 
 
@@ -81,13 +104,17 @@ class Number:
     raw: str
     scale: float = 1.0
     """1e3, 1e6, or 1e9 for a figure written as 12.4k, 1.2M, or 3B."""
+    money: bool = False
+    """Written with a currency symbol or code, or with exactly two decimals."""
+    places: int | None = None
+    """The precision it is checked at, when not `decimals`: 'about 660' is to the nearest ten."""
 
 
 def numbers_in(text: str) -> list[Number]:
     """Numbers an answer states, skipping dates, ids, years, and small whole counts."""
     found = []
     for match in _NUMBER.finditer(text):
-        dollar, digits, suffix, percent = match.groups()
+        symbol, digits, suffix, percent, currency = match.groups()
         clean = digits.replace(",", "")
         try:
             value = float(clean)
@@ -95,28 +122,86 @@ def numbers_in(text: str) -> list[Number]:
             continue
         decimals = len(clean.split(".")[1]) if "." in clean else 0
         scale = _SCALES[suffix.lower()] if suffix else 1.0
-        whole = decimals == 0 and not dollar and not percent and not suffix
+        money = bool(symbol or currency) or (decimals == 2 and not percent)
+        whole = decimals == 0 and not money and not percent and not suffix
         if whole and (value < 32 or 1990 <= value <= 2100):
             continue
         if whole and _DURATION.match(text, match.end()):
             continue
-        found.append(Number(value * scale, decimals, bool(percent), match.group(0).strip(), scale))
+        raw = match.group(0).strip()
+        places = None
+        if decimals == 0 and _APPROX.search(text[max(0, match.start() - 40) : match.start()]):
+            significant = clean.rstrip("0")
+            places = -(len(clean) - len(significant)) if significant else None
+        found.append(Number(value * scale, decimals, bool(percent), raw, scale, money, places))
     return found
 
 
-def _numbers(text: str) -> list[float]:
-    values = []
-    for token in _ANY_NUMBER.findall(_NOT_FIGURES.sub(" ", text).replace(",", "")):
+@dataclass
+class Sources:
+    """What the tools returned, as numbers: every value, the values a percentage may match, and
+    the differences and sums of related pairs."""
+
+    values: list[float] = field(default_factory=list)
+    percents: list[float] = field(default_factory=list)
+    derived: set[float] = field(default_factory=set)
+
+
+def _text_numbers(text: str, into: Sources) -> None:
+    """Figures in free text, without the digits of dates, ids, and hashes."""
+    stripped = _NOT_FIGURES.sub(" ", text)
+    stripped = _THOUSANDS.sub(lambda m: m.group(0).replace(",", ""), stripped)
+    for token in _ANY_NUMBER.findall(stripped):
         try:
-            values.append(float(token))
+            value = float(token)
         except ValueError:
             continue
-    return values
+        into.values.append(value)
+        if abs(value) <= MAX_FRACTION:
+            into.percents.append(value * 100)
+    for token in _PERCENT_IN_TEXT.findall(stripped):
+        into.percents.append(float(token))
+
+
+def _json_numbers(value: Any, into: Sources, key: str = "", depth: int = 0) -> None:
+    """Figures in a parsed result, read as numbers rather than as text."""
+    if depth > 12:
+        return
+    if isinstance(value, bool) or value is None:
+        return
+    if isinstance(value, int | float):
+        number = float(value)
+        into.values.append(number)
+        if abs(number) <= MAX_FRACTION:
+            into.percents.append(number * 100)
+        if _PERCENT_KEYS.search(key):
+            into.percents.append(number)
+    elif isinstance(value, str):
+        _text_numbers(value, into)
+    elif isinstance(value, dict):
+        for name, item in value.items():
+            _json_numbers(item, into, str(name), depth + 1)
+    elif isinstance(value, list):
+        for item in value[:2000]:
+            _json_numbers(item, into, key, depth + 1)
+
+
+def sources_from(texts: Sequence[str]) -> Sources:
+    found = Sources()
+    for text in texts:
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            _text_numbers(text, found)
+            continue
+        _json_numbers(parsed, found)
+    found.derived = derived_values(texts)
+    return found
 
 
 def _source_values(sources: Sequence[str]) -> list[float]:
     """Every figure the tools returned, without the digits of dates, ids, and hashes."""
-    return [v for text in sources for v in _numbers(text)]
+    return sources_from(sources).values
 
 
 def _record_numbers(record: dict[str, Any]) -> list[float]:
@@ -127,8 +212,42 @@ def _record_numbers(record: dict[str, Any]) -> list[float]:
         if isinstance(item, int | float):
             values.append(float(item))
         elif isinstance(item, str) and len(item) <= 40:
-            values += _numbers(item)[:1]
+            found = Sources()
+            _text_numbers(item, found)
+            values += found.values[:1]
     return values[:MAX_RECORD_NUMBERS]
+
+
+def _keyed(item: Any) -> dict[str, float]:
+    """A child's numbers by name: a dict's numeric fields, or a list of {field, value} items."""
+    if isinstance(item, dict):
+        return {
+            str(k): float(v)
+            for k, v in item.items()
+            if isinstance(v, int | float) and not isinstance(v, bool)
+        }
+    if isinstance(item, list):
+        return {
+            str(i["field"]): float(i["value"])
+            for i in item[:50]
+            if isinstance(i, dict)
+            and "field" in i
+            and isinstance(i.get("value"), int | float)
+            and not isinstance(i.get("value"), bool)
+        }
+    return {}
+
+
+def _sibling_pairs(record: dict[str, Any]) -> list[tuple[float, float]]:
+    """The same field under two children of one record: a proposal's `before` and `after`, or a
+    forecast's `baseline` and `forecast`."""
+    children = {name: keyed for name, item in record.items() if (keyed := _keyed(item))}
+    names = list(children)
+    pairs: list[tuple[float, float]] = []
+    for i, a in enumerate(names):
+        for b in names[i + 1 :]:
+            pairs += [(children[a][k], children[b][k]) for k in children[a].keys() & children[b]]
+    return pairs
 
 
 def _walk(value: Any, out: list[dict[str, Any]], depth: int = 0) -> None:
@@ -144,9 +263,10 @@ def _walk(value: Any, out: list[dict[str, Any]], depth: int = 0) -> None:
 
 
 def derived_values(sources: Sequence[str]) -> set[float]:
-    """Differences and sums of two figures from the same record (a budget's before and after).
+    """Differences and sums of two related figures: two in the same record (a budget's now and
+    next), or the same field in two sibling records (a proposal's before and after).
 
-    Only pairs within one record: any two numbers anywhere would ground almost anything.
+    Only related pairs: any two numbers anywhere would ground almost anything.
     """
     found: set[float] = set()
     for text in sources:
@@ -158,29 +278,50 @@ def derived_values(sources: Sequence[str]) -> set[float]:
         _walk(parsed, records)
         for record in records:
             numbers = _record_numbers(record)
-            for i, a in enumerate(numbers):
-                for b in numbers[i + 1 :]:
-                    found.add(abs(a - b))
-                    found.add(abs(a + b))
+            pairs = [(a, b) for i, a in enumerate(numbers) for b in numbers[i + 1 :]]
+            for a, b in pairs + _sibling_pairs(record):
+                found.add(abs(a - b))
+                found.add(abs(a + b))
     return found
 
 
+def _matches(target: float, candidates: Collection[float], number: Number) -> bool:
+    places = number.decimals if number.places is None else number.places
+    return any(abs(_half_up(abs(v) / number.scale, places) - target) < 1e-9 for v in candidates)
+
+
 def grounded(
-    number: Number, values: Sequence[float], derived: set[float] | frozenset[float] = frozenset()
+    number: Number,
+    values: Sequence[float],
+    derived: set[float] | frozenset[float] = frozenset(),
+    percents: Sequence[float] | None = None,
 ) -> bool:
-    """Whether a tool returned this number at the answer's precision (a percent may be a share),
-    or it is the difference or sum of two numbers in one returned record. No slack."""
+    """Whether a tool returned this number at the answer's precision, or it is the difference or
+    sum of two related returned figures. A percentage matches only a share times 100, a value
+    under a rate or share key, or a percentage written in a result. No slack."""
     target = abs(number.value) / number.scale
-    places = number.decimals
-    for value in values:
-        magnitude = abs(value) / number.scale
-        if abs(_half_up(magnitude, places) - target) < 1e-9:
-            return True
-        if number.percent and abs(_half_up(magnitude * 100, places) - target) < 1e-9:
-            return True
     if number.percent:
-        return False
-    return any(abs(_half_up(v / number.scale, places) - target) < 1e-9 for v in derived)
+        shares = (
+            percents
+            if percents is not None
+            else [v * 100 for v in values if abs(v) <= MAX_FRACTION]
+        )
+        return _matches(target, shares, number)
+    return _matches(target, values, number) or _matches(target, derived, number)
+
+
+def verdict(number: Number, sources: Sources) -> str:
+    """found, missing, or unchecked: a whole percentage that matches only some unrelated figure
+    (a count, a method named local_band95) can be neither confirmed nor ruled out."""
+    if grounded(number, sources.values, sources.derived, sources.percents):
+        return "found"
+    if (
+        number.percent
+        and number.decimals == 0
+        and grounded(replace(number, percent=False), sources.values)
+    ):
+        return "unchecked"
+    return "missing"
 
 
 def _half_up(value: float, places: int) -> float:
@@ -232,14 +373,21 @@ def check_grounded(transcript: Transcript, question: dict[str, Any], text: str) 
     stated = numbers_in(transcript.answer)
     if not stated:
         return Check("grounded", True, "no figures stated")
-    sources = [c.result for c in transcript.calls] + transcript.extra_sources
-    values = _source_values([*sources, text])
-    derived = derived_values(sources)
-    missing = [n for n in stated if not grounded(n, values, derived)]
-    share = 1 - len(missing) / len(stated)
+    sources = sources_from([*(c.result for c in transcript.calls), *transcript.extra_sources])
+    asked = sources_from([text])
+    sources.values += asked.values
+    sources.percents += asked.percents
+    verdicts = [(n, verdict(n, sources)) for n in stated]
+    checked = [(n, v) for n, v in verdicts if v != "unchecked"]
+    missing = [n for n, v in checked if v == "missing"]
+    if not checked:
+        return Check("grounded", True, f"{len(stated)} figures, none checkable")
+    share = 1 - len(missing) / len(checked)
     # Money no tool returned is invented or computed in prose; either fails on its own.
-    money = [n.raw for n in missing if n.raw.lstrip("-\u2212+").startswith("$") or n.decimals == 2]
-    detail = f"{share:.0%} of {len(stated)} figures found in tool results"
+    money = [n.raw for n in missing if n.money]
+    detail = f"{share:.0%} of {len(checked)} figures found in tool results"
+    if len(checked) < len(stated):
+        detail += f" ({len(stated) - len(checked)} whole percentages unchecked)"
     if missing:
         detail += f"; not found: {[n.raw for n in missing][:8]}"
     if money and minimum > 0:

@@ -189,13 +189,22 @@ def build_agent_components(
     goals = GoalStore(runtime.store)
     predictor = build_predictor(settings, runtime.store)
     bandit_config = live_config(settings.paid_media_bandit_policy)
+    secrets = tuple(
+        s
+        for s in (
+            *_secret_values(settings),
+            *runtime.extra_secrets,
+            *_provider_id_forms(runtime.accounts.provider_ids()),
+        )
+        if s
+    )
     core = [
         build_list_accounts_tool(runtime.accounts, goals),
         build_discover_tools_tool(runtime.catalog_provider),
         build_compare_periods_tool(runtime.artifacts, goals.current),
         build_summarize_window_tool(runtime.artifacts, goals.current),
         build_render_report_tool(runtime.artifacts),
-        build_read_artifact_tool(runtime.artifacts),
+        build_read_artifact_tool(runtime.artifacts, secrets),
         build_query_history_tool(runtime.store, runtime.accounts),
         build_check_pacing_tool(runtime.store, runtime.accounts),
         build_check_anomalies_tool(
@@ -225,15 +234,7 @@ def build_agent_components(
         tools={t.name: t for t in tools},
         catalog_provider=runtime.catalog_provider,
         artifacts=runtime.artifacts,
-        secrets=tuple(
-            s
-            for s in (
-                *_secret_values(settings),
-                *runtime.extra_secrets,
-                *_provider_id_forms(runtime.accounts.provider_ids()),
-            )
-            if s
-        ),
+        secrets=secrets,
         offload_chars=settings.paid_media_result_offload_chars,
     )
     metadata = AssemblyMetadata(

@@ -182,27 +182,54 @@ async def test_host_threads_are_reserved_and_rejects_need_no_conversation(
     assert set(held["proposals"]["superseded"]) == set(third["proposals"]["proposals"].values())
     assert runner.pending_proposals() == []
 
+    # Superseding fails once (a store error): the new proposal is still linked to its decision,
+    # so the run after replaces it rather than leaving two live proposals for one campaign.
+    service = runtime.components.proposal_service
+    fourth = await _propose(runtime)
+    original = service.reject
+
+    def broken(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("store unavailable")
+
+    service.reject = broken  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        await _propose(runtime)
+    service.reject = original  # type: ignore[method-assign]
+    sixth = await _propose(runtime)
+    live = {str(v.proposal_id) for v in runner.pending_proposals()}
+    assert live == set(sixth["proposals"]["proposals"].values()), "one live proposal per campaign"
+    assert set(fourth["proposals"]["proposals"].values()) <= set(sixth["proposals"]["superseded"])
+
 
 async def test_the_agent_recommends_budgets_without_changing_anything(
-    settings: Settings, project_root: Path
+    settings: Settings, project_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import secrets
+
+    # A fixed Thompson seed: about one draw in 20 leaves no budget freed from the campaigns
+    # that cannot spend more, so the note this test reads back would be missing.
+    monkeypatch.setattr(secrets, "randbits", lambda _bits: 7)
     steps = [
         lambda _m: tool_call_message("recommend_budgets", {"account_alias": "demo-google"}),
         lambda _m: tool_call_message("recommend_budgets", {"account_alias": "nobody"}),
+        lambda _m: tool_call_message(
+            "recommend_budgets", {"account_alias": "demo-google", "total_budget": 5000}
+        ),
         lambda messages: AssistantMessage(json.dumps(last_tool_results(messages))),
     ]
     runtime, _, provider = await _synced(settings, project_root, steps)
     conversation = await runtime.agent.send("a-1", "local-user", "How should I split the budget?")
-    known, unknown = [
+    known, unknown, wide = [
         json.loads(m.content)
         for m in conversation.messages
         if getattr(m, "name", "") == "recommend_budgets"
     ]
     assert known["total_budget"] == pytest.approx(900.0)
+    placed = sum(c["final_budget"] for c in known["campaigns"] if c["eligible"])
     assert (
-        "Current budgets total 900.00 USD a day; the recommended total is 900.00 USD"
+        f"Current budgets total 900.00 USD a day; the recommended budgets total {placed:.2f} USD"
         in (known["summary"])
-    ), "never leaves the model to guess which total is today's"
+    ), "never leaves the model to guess which total is today's, or what the budgets add up to"
     readings = [c["reading"] for c in known["campaigns"]]
     assert len(readings) == 3 and all(r.startswith("g-10") for r in readings)
     assert "nothing has changed" in known["note"]
@@ -226,9 +253,13 @@ async def test_the_agent_recommends_budgets_without_changing_anything(
     assert shares[0]["budget_lost_share"] == 0.24
     assert "fixture-" not in json.dumps(known), "provider ids stay host-side"
     assert unknown["error"] is True and "unknown account alias" in unknown["detail"]
+    placed = sum(c["final_budget"] for c in wide["campaigns"] if c["eligible"])
+    assert placed < 4000, "the step limits cannot place a total this far above today's"
+    assert f"the recommended budgets total {placed:.2f} USD" in wide["summary"]
+    assert "The allocator aimed for 5000.00 USD, the total you asked for" in wide["summary"]
     assert provider.mutation_calls == []
     assert runtime.profile.store.fetch("SELECT count(*), any_value(mode) FROM bandit_runs") == [
-        (1, "recommend")
+        (2, "recommend")
     ]
 
 
@@ -281,6 +312,12 @@ def test_the_cli_allocates_proposes_and_lists(
     assert shown.exit_code == 0, shown.output
     assert "m-203 Video Views - Awareness: not allocated (status PAUSED)." in shown.output
     assert "proposed" not in shown.output
+    wide = runner.invoke(main, ["allocate", "--alias", "demo-google", "--total", "5000"])
+    assert wide.exit_code == 0, wide.output
+    header = wide.output.splitlines()[0]
+    assert "budgets total" in header and "(aimed for 5000.00)" in header, (
+        "the header says what the budgets add up to, not only the total aimed for"
+    )
     assert runner.invoke(main, ["proposals", "list"]).output.strip() == (
         "No proposals awaiting approval."
     )

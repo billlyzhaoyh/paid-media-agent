@@ -198,5 +198,7 @@ class ToolDispatcher:
                     f"Tool failed: {sanitize_exception(exc, self.secrets)}",
                     status="error",
                 )
-        content = await asyncio.to_thread(self._offload, spec, content)
+        # Redact before offloading: the stored artifact and the preview sliced from it must never
+        # hold a secret, or half of one cut at the preview's edge.
+        content = await asyncio.to_thread(self._offload, spec, redact(content, self.secrets))
         return ToolMessage(call.id, call.name, redact(content, self.secrets))

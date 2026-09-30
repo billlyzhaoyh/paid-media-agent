@@ -46,9 +46,9 @@ Mode = Literal["recommend", "simulate", "backtest"]
 POLICY_VERSION = "cbs-v1"
 OBJECTIVE = "max_conversions"
 PROPENSITY_BAND = 0.05
+"""A redraw counts toward the propensity when its budget is within 5% of the chosen one."""
 TARGET_TOLERANCE = 0.005
 """A recommended split within 0.5% of the target CPA counts as meeting it."""
-"""A redraw counts toward the propensity when its budget is within 5% of the chosen one."""
 
 
 @dataclass(frozen=True)
@@ -227,8 +227,9 @@ def budget_bounds(arm: Arm, config: BanditConfig) -> tuple[float, float, list[st
         if can_spend < upper:
             upper, why = can_spend, [f"{arm.constraint.kind}_ceiling"]
     if config.max_budget is not None and config.max_budget < upper:
-        upper, why = config.max_budget, ["max_budget"]
-        lower = min(lower, upper)
+        # A cap below the lower bound moves the budget one step toward it, never past the step
+        # limit or below the platform's minimum in one decision.
+        upper, why = max(config.max_budget, lower), ["max_budget"]
     return lower, max(upper, lower), why
 
 
@@ -485,8 +486,9 @@ async def recommend(
         # Judge the target on the budgets recommended, not on the mean-curve split used to cut:
         # an exploring (Thompson) split can land a little above it.
         target = float(config.target_cpa)
+        unreachable = run.target_cpa_reached is False  # already noted by the cap
         run.target_cpa_reached = run.expected_cpa <= target * (1 + TARGET_TOLERANCE)
-        if not run.target_cpa_reached and (run.capped_by_target_cpa or config.policy != "greedy"):
+        if not run.target_cpa_reached and config.policy != "greedy" and not unreachable:
             run.notes.append(
                 f"the recommended budgets' expected CPA is {run.expected_cpa:,.2f}, "
                 f"{run.expected_cpa / target - 1:+.1%} against the {target:,.2f} target "

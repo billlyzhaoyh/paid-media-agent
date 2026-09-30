@@ -60,18 +60,30 @@ attempts to bypass the dispatcher.
     button can never execute a newer proposal.
   - The review card shows the proposal the paused call would execute, not merely the thread's
     newest one.
+  - Ids are compared as parsed UUIDs, as the gate parses them, so an upper-cased id still names
+    its call.
+  - Approving one of two paused changes returns the approved change's receipt, with the other
+    as the next card.
+  - The paused calls are chosen inside the thread's turn, after any queued message, so a claim
+    is only created for a call that is still paused.
+- **A decided proposal never holds a thread.** Only a proposal still awaiting approval pauses;
+  `execute_change` on a rejected or executed one runs at once and is refused. A call paused on a
+  proposal decided elsewhere is denied (`already_decided`) when the thread next resumes, and
+  rejecting a decided proposal is refused (`not_awaiting_approval`) rather than failing.
 - **The reviewer always gets a summary.** When a turn pauses for approval and the model wrote
   nothing alongside the call, the loop writes the summary from the proposal: before and after,
   risk and flags, reason, measurement and reversal. Some models otherwise pause silently.
 - **Who may decide.** Only the requester or an approver may edit or reject (`not_permitted`,
   HTTP 403), and only an approver may approve.
 - **One turn at a time per thread.** `Agent.send` and `Agent.resume` hold a per-thread lock, so
-  two quick messages or an approval arriving mid-turn never give a call two results.
+  two quick messages or an approval arriving mid-turn never give a call two results. A lock
+  lives only while a turn holds or awaits it.
 - Only `ProposalService.approve` creates claims. Surfaces call it with an opaque routing id or
   proposal id; Slack button values carry no payload.
 - Readback runs through the authorized read path with bounded attempts and wall time. A timeout
-  after submission, or a connection that fails without an answer (`ProviderUnknownOutcome`), is
-  reconciled by readback: matched after-state is `verified`, matched before-state
+  after submission, or a connection that fails without an answer or with a 5xx
+  (`ProviderUnknownOutcome`), is reconciled by readback. A 4xx, or a connection never made, is
+  a plain failure: the provider refused or never saw it. Readback outcomes: matched after-state is `verified`, matched before-state
   is `failed`, anything else is `unknown`. No mutation is ever retried.
 - `WriteGate` admits fakes unconditionally and refuses live providers while
   `PAID_MEDIA_WRITES_ENABLED` is false or the live-write release gates are not met (see

@@ -51,6 +51,9 @@ class PacingReport:
     conversions: float | None
     conversions_expected: float | None
     conversion_value: float | None
+    """As reported, like `conversions`."""
+    conversion_value_expected: float | None
+    """With value still arriving, like `conversions_expected`; roas uses it."""
     cpa: float | None
     roas: float | None
     run_rate: float | None
@@ -95,6 +98,22 @@ def _daily(store: Store, alias: str, since: date, until: date) -> list[dict[str,
         """,
         [alias, since, until],
     )
+
+
+def _pulled_days(store: Store, alias: str, since: date, until: date) -> set[date]:
+    """Days some recorded campaign pull asked for: a day in one with no rows spent nothing."""
+    spans = store.fetch(
+        """
+        SELECT greatest(requested_start, ?::DATE), least(requested_end, ?::DATE) FROM pulls
+        WHERE account_alias = ? AND entity_type = 'campaign' AND requested_start IS NOT NULL
+            AND requested_end IS NOT NULL AND requested_end >= ? AND requested_start <= ?
+        """,
+        [since, until, alias, since, until],
+    )
+    days: set[date] = set()
+    for start, end in spans:
+        days.update(start + timedelta(days=i) for i in range((end - start).days + 1))
+    return days
 
 
 def _active_budgets(store: Store, alias: str) -> float | None:
@@ -146,14 +165,11 @@ def compute_pacing(
     by_day: dict[date, float] = defaultdict(float)
     for row in rows:
         by_day[row["day"]] += row["spend"] or 0.0
-    if by_day:
-        # Platforms return no rows for a day nothing spent; within the synced range that day
-        # spent zero, and skipping it would lift the run rate.
-        newest = max(by_day)
-        day = min(by_day)
-        while day < newest:
-            by_day.setdefault(day, 0.0)
-            day += timedelta(days=1)
+    # Platforms return no rows for a day nothing spent: a day a pull asked for with no rows
+    # spent zero, and skipping it would lift the run rate. A day no pull asked for (a failed
+    # call, a gap in the resync) is unknown, not zero, and is left out.
+    for day in _pulled_days(store, account_alias, history_start, today - timedelta(days=1)):
+        by_day.setdefault(day, 0.0)
     month_rows = [r for r in rows if r["day"] >= month_start]
     data_through = max((r["day"] for r in month_rows), default=None)
     notes: list[str] = []
@@ -194,10 +210,15 @@ def compute_pacing(
         notes.append("conversions are not reported for this account (see conversion_action)")
     values = [r["conversion_value"] for r in month_rows if r["conversion_value"] is not None]
     value = sum(values) if values else None
-    if corrected_value is not None:
-        value = corrected_value
+    # Value on a row without reported conversions has no lag to correct by; it counts as is.
+    unmatched = [
+        r["conversion_value"]
+        for r in month_rows
+        if not r["reported"] and r["conversion_value"] is not None
+    ]
+    expected_value = corrected_value + sum(unmatched) if corrected_value is not None else value
     cpa = spend / expected if expected else None
-    roas = value / spend if value is not None and spend > 0 else None
+    roas = expected_value / spend if expected_value is not None and spend > 0 else None
 
     last = data_through or today - timedelta(days=1)
     if data_through is not None and data_through < today - timedelta(days=1):
@@ -251,6 +272,7 @@ def compute_pacing(
         conversions=conversions,
         conversions_expected=expected,
         conversion_value=value,
+        conversion_value_expected=expected_value,
         cpa=cpa,
         roas=roas,
         run_rate=run_rate,

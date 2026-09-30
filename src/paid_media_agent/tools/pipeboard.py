@@ -264,6 +264,10 @@ def raise_for_payload_error(payload: dict[str, JsonValue]) -> None:
     raise ProviderError(f"provider error{f' (code {code})' if code else ''}: {detail}")
 
 
+NOT_SENT = frozenset({"ConnectError", "ConnectTimeout"})
+"""Transport errors raised before a request reached the server: nothing can have applied."""
+
+
 async def invoke_mcp_tool(
     client: McpClient, address: ToolAddress, arguments: Mapping[str, JsonValue], *, timeout: float
 ) -> dict[str, JsonValue]:
@@ -275,9 +279,15 @@ async def invoke_mcp_tool(
     except TimeoutError as exc:
         raise ProviderTimeout("provider call timed out") from exc
     except Exception as exc:
-        if getattr(getattr(exc, "response", None), "status_code", None) == 429:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status == 429:
             raise ProviderRateLimited("rate limited (HTTP 429)") from None
-        # A transport failure is not a provider answer: a mutation may have been applied.
+        if isinstance(status, int) and status < 500:
+            # The server answered and refused (a revoked token, a bad request): nothing applied.
+            raise ProviderError(f"HTTP {status}: {sanitize_exception(exc)}") from None
+        if type(exc).__name__ in NOT_SENT:
+            raise ProviderError(sanitize_exception(exc)) from None
+        # A dropped connection or a 5xx is not a provider answer: a mutation may have applied.
         raise ProviderUnknownOutcome(sanitize_exception(exc)) from None
     if result.is_error:
         raise ProviderError(sanitize_exception(RuntimeError(result.text[:300])))

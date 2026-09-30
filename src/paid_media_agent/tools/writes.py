@@ -657,7 +657,10 @@ class ProposalService:
         record = self._require(proposal_id)
         if not self._approval_policy.may_decide(actor_ref, record.changeset.requester_ref):
             raise WriteDenied("not_permitted", "only the requester or an approver can reject it")
-        state_value = transition(record.state, ProposalEvent.REJECT)
+        try:
+            state_value = transition(record.state, ProposalEvent.REJECT)
+        except InvalidTransition as exc:
+            raise WriteDenied("not_awaiting_approval", record.state.value) from exc
         updated = record.model_copy(
             update={
                 "state": state_value,
