@@ -77,7 +77,22 @@ def _error(call: ToolCall, body: dict[str, Any]) -> ToolMessage:
     return ToolMessage(call.id, call.name, json.dumps(body), status="error")
 
 
-KEPT_FIELDS = ("headline", "summary", "reading", "caveats", "notes", "note")
+KEPT_FIELDS = (
+    "headline",
+    "summary",
+    "reading",
+    "against_goals",
+    "comparisons",
+    "resolved_window",
+    "resolved_windows",
+    "budget_totals",
+    "flags",
+    "caveats",
+    "notes",
+    "note",
+)
+"""What a result means, in order: verdicts written by code come before notes, so they are the
+last to be dropped when the stub reaches its cap."""
 KEPT_CHARS = 2000
 
 

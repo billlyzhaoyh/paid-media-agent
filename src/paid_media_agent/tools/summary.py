@@ -8,15 +8,18 @@ configured daily budget. All arithmetic is here so the model never derives a fig
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
 from paid_media_agent.analytics.goals import GoalLookup
+from paid_media_agent.bandit.platform_rules import rules_for
+from paid_media_agent.domain.analysis import verdict
 from paid_media_agent.domain.common import JsonValue
 from paid_media_agent.domain.metrics import PerformanceRow
+from paid_media_agent.domain.windows import PRESET_HELP, WindowPreset, resolve_preset
 from paid_media_agent.harness.tools import ToolContext, ToolSpec, parameters_for
 from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.tools.artifacts import ArtifactError, ArtifactStore
@@ -34,8 +37,15 @@ class SummarizeWindowArgs(BaseModel):
     artifact_ids: list[str] = Field(
         description="performance_rows artifact ids, one per platform and account."
     )
-    start_date: date
-    end_date: date
+    window: WindowPreset | None = Field(
+        default=None,
+        description=PRESET_HELP.replace(
+            " The previous window is the same number of days immediately before.", ""
+        ),
+    )
+    days: int = Field(default=7, ge=1, le=90, description="For last_n_days_of_data.")
+    start_date: date | None = None
+    end_date: date | None = None
     budgets_artifact_ids: list[str] = Field(
         default_factory=list,
         description="provider_result artifacts from list_campaigns; supplies daily budgets for pacing.",
@@ -59,9 +69,15 @@ def _change(current: Decimal | None, previous: Decimal | None) -> Decimal | None
 
 
 def budgets_from_payload(payload: dict[str, JsonValue]) -> dict[str, Decimal]:
-    """Daily budgets keyed by entity id from a list_campaigns provider result."""
+    """Daily budgets in account currency, keyed by entity id, from a campaign listing.
+
+    The contract's normalised `settings` come first: a live provider's own `result` holds
+    Google micros or Meta minor units. Only a host fixture's result is already in currency.
+    """
+    settings = payload.get("settings")
     result = payload.get("result")
-    campaigns = result.get("campaigns") if isinstance(result, dict) else None
+    source = settings if isinstance(settings, dict) else result
+    campaigns = source.get("campaigns") if isinstance(source, dict) else None
     budgets: dict[str, Decimal] = {}
     for campaign in campaigns or []:
         if isinstance(campaign, dict) and campaign.get("daily_budget") not in (None, ""):
@@ -105,6 +121,11 @@ def summarize_rows(
         active_days = len({r.window.start for r in own})
         average_daily = metrics.spend / active_days
         budget = budgets.get(ref)
+        by_day: dict[date, Decimal] = {}
+        for r in own:
+            by_day[r.window.start] = by_day.get(r.window.start, Decimal(0)) + r.spend
+        worst = max(by_day, key=lambda d: by_day[d])
+        over = [d for d, spent in by_day.items() if budget and spent > budget]
         entities.append(
             {
                 "entity_ref": ref,
@@ -119,6 +140,13 @@ def summarize_rows(
                 "average_daily_spend": _money(average_daily),
                 "daily_budget": None if budget is None else _money(budget),
                 "pacing": _ratio_str(average_daily, budget),
+                # Day by day, not on average: an average under budget can hide days over it.
+                "days_over_budget": None if not budget else len(over),
+                "highest_day": {
+                    "date": worst.isoformat(),
+                    "spend": _money(by_day[worst]),
+                    "to_budget": _ratio_str(by_day[worst], budget),
+                },
             }
         )
     entities.sort(key=lambda e: Decimal(e["spend"]), reverse=True)
@@ -157,13 +185,91 @@ def summarize_rows(
         "over_budget": [
             e["entity_ref"] for e in entities if e["pacing"] and Decimal(e["pacing"]) > 1
         ],
+        "over_budget_days": [
+            f"{e['entity_name']} [{e['entity_ref']}]: {e['days_over_budget']} of "
+            f"{e['active_days']} days above its {e['daily_budget']} daily budget; highest "
+            f"{e['highest_day']['spend']} on {e['highest_day']['date']} "
+            f"({e['highest_day']['to_budget']}x)"
+            for e in entities
+            if e["days_over_budget"]
+        ],
     }
 
 
+def _window(
+    artifacts: ArtifactStore, args: SummarizeWindowArgs, today: date
+) -> tuple[date, date, str]:
+    if args.window is None:
+        if args.start_date is None or args.end_date is None:
+            raise ComputeError("give a window preset (e.g. last_week) or start_date and end_date")
+        return args.start_date, args.end_date, "dates given"
+    if args.start_date is not None or args.end_date is not None:
+        raise ComputeError("give a window preset or dates, not both")
+    ends = []
+    for artifact_id in args.artifact_ids:
+        rows = rows_from_payload(artifacts.read(artifact_id).payload)
+        complete = [r.window.start for r in rows if r.window.is_complete]
+        if rows:
+            ends.append(max(complete or [r.window.start for r in rows]))
+    if not ends:
+        raise ComputeError("no rows to resolve the window from")
+    through = min(ends)
+    (start, end), _ = resolve_preset(args.window, today=today, data_through=through, days=args.days)
+    return start, end, f"{args.window}, data through {through.isoformat()}"
+
+
+def platform_comparisons(headline: list[dict[str, Any]]) -> list[str]:
+    """How each pair of accounts compares on CPA and ROAS, both ways, with the verdict.
+
+    'X is 46% lower than Y' and 'Y is 86% higher than X' are the same gap; a model picking one
+    base by hand gets it wrong, so both are written here.
+    """
+    lines: list[str] = []
+    for i, a in enumerate(headline):
+        for b in headline[i + 1 :]:
+            name_a, name_b = (
+                f"{a['platform']} ({a['account']})",
+                f"{b['platform']} ({b['account']})",
+            )
+            if a["currency"] != b["currency"]:
+                lines.append(
+                    f"{name_a} and {name_b} report in different currencies "
+                    f"({a['currency']}, {b['currency']}): not compared"
+                )
+                continue
+            days = (
+                ""
+                if a["covered_window"] == b["covered_window"]
+                else (
+                    f" (they cover different days: {a['covered_window']} and {b['covered_window']})"
+                )
+            )
+            for metric, label in (("cpa", "CPA"), ("roas", "ROAS")):
+                if a.get(metric) in (None, "") or b.get(metric) in (None, ""):
+                    continue
+                x, y = Decimal(str(a[metric])), Decimal(str(b[metric]))
+                if x == 0 or y == 0:
+                    continue
+                unit = f" {a['currency']}" if metric == "cpa" else ""
+                ab, ba = x / y - 1, y / x - 1
+                lines.append(
+                    f"{label}: {name_a} {x:,.2f}{unit} is {abs(ab):.0%} "
+                    f"{'lower' if ab < 0 else 'higher'} ({verdict(metric, ab)}) than {name_b} "
+                    f"{y:,.2f}{unit}, a gap of {abs(x - y):,.2f}{unit}; {name_b}'s is "
+                    f"{abs(ba):.0%} {'lower' if ba < 0 else 'higher'} ({verdict(metric, ba)}){days}"
+                )
+    return lines
+
+
 def run_summarize_window(
-    artifacts: ArtifactStore, args: SummarizeWindowArgs, *, goals: GoalLookup | None = None
+    artifacts: ArtifactStore,
+    args: SummarizeWindowArgs,
+    *,
+    goals: GoalLookup | None = None,
+    today: date | None = None,
 ) -> dict[str, Any]:
-    if args.end_date < args.start_date:
+    start, end, rule = _window(artifacts, args, today or datetime.now(UTC).date())
+    if end < start:
         raise ComputeError("window end precedes start")
     budgets: dict[tuple[str, str], dict[str, Decimal]] = {}
     for artifact_id in args.budgets_artifact_ids:
@@ -200,18 +306,23 @@ def run_summarize_window(
             raise ComputeError(f"provide one performance_rows artifact for {platform}/{account}")
         summary = summarize_rows(
             rows,
-            start=args.start_date,
-            end=args.end_date,
+            start=start,
+            end=end,
             budgets=budgets.get((platform, account), {}),
         )
         summary["source_artifact"] = artifact_id
+        if summary["over_budget_days"]:
+            # A day over budget can be the platform's own allowance, not overspend.
+            allowance = rules_for(platform).pacing_note()
+            if allowance:
+                summary["over_budget_note"] = allowance
         summary["missing_fields"] = list(record.payload.get("missing_fields") or [])
         accounts[account] = summary
     metadata = artifacts.write_json(
         "analysis",
         {"schema_version": SUMMARY_SCHEMA_VERSION, "platforms": platforms},
         schema_version=SUMMARY_SCHEMA_VERSION,
-        requested_window=f"{args.start_date.isoformat()}..{args.end_date.isoformat()}",
+        requested_window=f"{start.isoformat()}..{end.isoformat()}",
         tool_name=SUMMARIZE_WINDOW_TOOL,
     )
     headline = [
@@ -226,8 +337,15 @@ def run_summarize_window(
         for platform, accounts in platforms.items()
         for account, summary in accounts.items()
     ]
-    # The headline comes first, so even a partial view of the result lists every account.
+    # The headline and the verdicts come first, so even a partial view of the result has them.
     result: dict[str, Any] = {"headline": headline}
+    judged = against_goals(by_account, start=start, end=end, goals=goals)
+    if judged:
+        result["against_goals"] = judged
+    compared = platform_comparisons(headline)
+    if compared:
+        result["comparisons"] = compared
+    result["resolved_window"] = {"window": f"{start.isoformat()}..{end.isoformat()}", "rule": rule}
     caveats = cross_platform_caveats(
         {h["platform"] for h in headline},
         {h["covered_window"] for h in headline},
@@ -236,9 +354,6 @@ def run_summarize_window(
         result["caveats"] = caveats
     result["artifact_id"] = metadata.artifact_id
     result["platforms"] = platforms
-    judged = against_goals(by_account, start=args.start_date, end=args.end_date, goals=goals)
-    if judged:
-        result["against_goals"] = judged
     return result
 
 
@@ -265,7 +380,9 @@ def build_summarize_window_tool(
             "CPA, ROAS, CTR, average daily spend and pacing against daily budgets (pass the "
             "list_campaigns artifacts), plus a daily series with day-over-day changes. Use it for "
             "pacing and top-N questions inside a single window; use compare_periods for "
-            "period-over-period change and check_anomalies for unusual days."
+            "period-over-period change and check_anomalies for unusual days. over_budget is "
+            "on average; over_budget_days counts each day above the daily budget. comparisons "
+            "state how accounts compare, both ways, with better or worse."
         ),
         parameters=parameters_for(SummarizeWindowArgs),
         handler=_run,

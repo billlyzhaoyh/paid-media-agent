@@ -69,6 +69,9 @@ class PacingReport:
     target_roas: float | None = None
     notes: list[str] = field(default_factory=list)
     reading: str = ""
+    budgets_vs_needed: float | None = None
+    """Active daily budgets over the daily spend that lands on the monthly budget: 1.2 means the
+    budgets are set 20% above it (platforms may not spend all of a budget)."""
 
     def as_json(self) -> dict[str, Any]:
         data = asdict(self)
@@ -259,6 +262,7 @@ def compute_pacing(
         if spend >= budget:
             notes.append("the monthly budget is already spent")
 
+    active = _active_budgets(store, account_alias)
     report = PacingReport(
         account_alias=account_alias,
         currency=currency,
@@ -280,8 +284,9 @@ def compute_pacing(
         projected_spend=projected,
         monthly_budget=budget,
         needed_daily=needed,
-        active_budgets=_active_budgets(store, account_alias),
+        active_budgets=active,
         budget_scale=scale,
+        budgets_vs_needed=active / needed if active is not None and needed else None,
         status=status,
         target_cpa=goal.target_cpa if goal else None,
         target_roas=goal.target_roas if goal else None,
@@ -326,6 +331,13 @@ def pacing_reading(report: PacingReport) -> str:
         line = f"Spending about {_money(report.needed_daily, c)} a day lands on budget"
         if report.active_budgets is not None:
             line += f"; active campaign budgets total {_money(report.active_budgets, c)} a day"
+            if report.budgets_vs_needed is not None:
+                gap = report.budgets_vs_needed - 1
+                line += (
+                    ", about what lands on budget"
+                    if abs(gap) < ON_TRACK
+                    else f", {abs(gap):.0%} {'above' if gap > 0 else 'below'} what lands on it"
+                )
         parts.append(line + ".")
     for line in (
         goal_line("CPA", report.cpa, report.target_cpa, lower_is_better=True),

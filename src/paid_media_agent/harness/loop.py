@@ -90,7 +90,8 @@ def calendar_lines(today: date) -> str:
     month_start = today.replace(day=1)
     last_month_end = month_start - timedelta(days=1)
     lines = [
-        f"Today is {today:%A} {today.isoformat()} (UTC). Resolved windows:",
+        f"Today is {today:%A} {today.isoformat()} (UTC; each tool counts in its account's own "
+        "timezone and returns the dates it used). Resolved windows:",
         f"- yesterday: {yesterday.isoformat()} ({yesterday:%A})",
         f"- last week (Monday to Sunday): {_span(last_monday, last_monday + timedelta(days=6))}",
         f"- the week before: {_span(last_monday - timedelta(days=7), last_monday - timedelta(days=1))}",

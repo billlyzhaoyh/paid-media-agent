@@ -124,3 +124,14 @@ async def test_the_anomalies_job_runs_inside_serve(
     assert run.status == "ok" and run.detail["methods"]["spend"] == "local_band95"
     assert runtime.store.fetch("SELECT count(*) FROM anomaly_checks") == [(1,)]
     runtime.store.close()
+
+
+def test_a_flag_says_how_many_days_ago_its_day_was() -> None:
+    from paid_media_agent.tools.anomalies import _with_reading
+
+    flag = {"metric": "conversions", "observed": 10.7, "day": "2026-09-18", "direction": "up",
+            "lo": 4.24, "hi": 10.31, "expected": 6.72, "method": "local_band95", "score": 0.08}  # fmt: skip
+    shown = _with_reading(flag, date(2026, 9, 30))
+    assert shown["days_ago"] == 12 and "on 2026-09-18 (12 days ago) is above" in shown["reading"]
+    assert "0.39 above its edge 10.31" in shown["reading"], "the distance in the metric's units"
+    assert _with_reading(flag, date(2026, 9, 19))["reading"].count("(1 day ago)") == 1

@@ -9,14 +9,16 @@ filters; it never writes SQL, and results name accounts by alias.
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from paid_media_agent.analytics.goals import account_today
 from paid_media_agent.analytics.history import MAX_ROWS, ModelHistoryView, query_history
 from paid_media_agent.analytics.pacing import ACTIVE_STATUSES
 from paid_media_agent.config import AccountRegistry
+from paid_media_agent.domain.windows import days_ago
 from paid_media_agent.harness.tools import ToolContext, ToolSpec, parameters_for
 from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.store.db import Store
@@ -92,9 +94,27 @@ def run_query_history(
         result["notes"] = FIELD_NOTES[args.view]
     if args.view == "settings" and not truncated:
         result["budget_totals"] = _budget_totals(rows)
+    if args.view in DATED:
+        _add_days_ago(rows, accounts, DATED[args.view])
     result["note"] = note
     result["rows"] = rows
     return result
+
+
+DATED = {"changes": "occurred_at", "settings": "valid_from"}
+"""Views whose rows are events: each gets `days_ago` from its account's own today."""
+
+
+def _add_days_ago(rows: list[dict[str, Any]], accounts: AccountRegistry, column: str) -> None:
+    todays: dict[str, date] = {}
+    for row in rows:
+        alias, when = row.get("account_alias"), row.get(column)
+        if not alias or when is None or accounts.resolve(str(alias)) is None:
+            continue
+        if alias not in todays:
+            todays[alias] = account_today(accounts, str(alias))
+        day = when.date() if isinstance(when, datetime) else date.fromisoformat(str(when)[:10])
+        row["days_ago"] = days_ago(day, todays[alias])
 
 
 def _budget_totals(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

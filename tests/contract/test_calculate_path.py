@@ -65,6 +65,7 @@ async def test_the_agent_totals_budgets_and_calculates_what_no_tool_returned(
     ]
     assert google["active_daily_budget_total"] == round(sum(active), 2) == 900.0
     assert google["campaigns"] == len(active) and google["currency"] == "USD"
+    assert all(isinstance(r["days_ago"], int) and r["days_ago"] >= 0 for r in history["rows"])
 
     (monthly, rogue) = json.loads(conversation.messages[-1].content)[0]["results"]
     assert monthly["display"] == "27,360.00", "900 x 30.4, computed in code"

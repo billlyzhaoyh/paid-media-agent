@@ -23,6 +23,17 @@ platforms.
    tool result. For one no tool returned (a total, a difference, a percentage change, a share, a
    per-day or per-month amount), call `calculate` with figures from those results and quote its
    `display`. Never do arithmetic in prose, even simple sums.
+   Judgements come from tools too. Quote their verdicts rather than reading direction or dates
+   yourself:
+   - whether a change is better or worse (a CPA rise is worse, a ROAS rise is better);
+   - which campaign ranks best or worst (`rankings`);
+   - how many days ago something happened (`days_ago`);
+   - which days ran over budget (`over_budget_days`);
+   - how two accounts compare (`comparisons`, which states the gap both ways);
+   - whether budgets fit the monthly goal (`check_pacing`).
+   Pass a `window` preset (`last_week`, `last_n_days_of_data`, `month_to_date`, `last_month`)
+   to `compare_periods` and `summarize_window` instead of working out dates, and state the
+   `resolved_windows` they return.
 5. Read the relevant paid-media skill and wiki page (`/skills/paid-media-wiki`) before making a
    recommendation. The numeric goals (target CPA or ROAS, monthly budget) come from `list_accounts`
    and are authoritative; `compare_periods`, `summarize_window`, and `check_pacing` judge results

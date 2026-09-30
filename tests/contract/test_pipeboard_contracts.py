@@ -462,3 +462,40 @@ async def test_google_signals_say_what_limits_spend_and_never_block_the_sync(
     run = await run_sync(**_sync_kwargs(failing), end=date(2026, 9, 1), days=1, aliases=("google",))
     assert run.rows == 2 and run.settings == 3, "performance and settings still land"
     assert run.unavailable == ["google signals: ProviderError"]
+
+
+async def test_summaries_use_budgets_in_currency_not_provider_units(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """Google returns micros and Meta minor units; a summary's pacing needs currency per day."""
+    from paid_media_agent.tools.summary import SummarizeWindowArgs, run_summarize_window
+
+    wired = await _wire(settings, tmp_path, FakePipeboard())
+    artifacts = wired.dispatcher._artifacts
+    expected = {"meta-us": {"120210000000001": "50.00", "120210000000002": "25.00"},
+                "google": {"111": "30.00", "222": "90.00"}}  # fmt: skip
+    for alias, budgets in expected.items():
+        run = await run_sync(**_sync_kwargs(wired), end=END, days=2, aliases=(alias,))
+        kinds: dict[str, list[str]] = {}
+        for artifact_id in run.reads:
+            kinds.setdefault(artifacts.read(artifact_id).metadata.kind, []).append(artifact_id)
+        listing = [a for a in kinds["provider_result"] if "settings" in artifacts.read(a).payload]
+        from paid_media_agent.tools.normalize import rows_from_payload
+
+        (rows_id,) = kinds["performance_rows"][:1]
+        days = [r.window.start for r in rows_from_payload(artifacts.read(rows_id).payload)]
+        summary = run_summarize_window(
+            artifacts,
+            SummarizeWindowArgs(
+                artifact_ids=[rows_id],
+                start_date=min(days),
+                end_date=max(days),
+                budgets_artifact_ids=listing,
+            ),
+        )
+        (account,) = next(iter(summary["platforms"].values())).values()
+        shown = {e["entity_ref"]: e["daily_budget"] for e in account["entities"]}
+        for ref, budget in budgets.items():
+            if ref in shown:
+                assert shown[ref] == budget, (alias, ref, shown[ref])
+        assert any(ref in shown for ref in budgets), f"{alias}: a budgeted campaign is shown"

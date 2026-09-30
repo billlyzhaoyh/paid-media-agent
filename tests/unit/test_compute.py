@@ -210,3 +210,55 @@ def test_normalization_preserves_zero_clicks() -> None:
     )
     assert rows[0].clicks == 0
     assert aggregate(rows).ctr == Decimal(0)
+
+
+def test_every_change_says_whether_it_is_better_or_worse() -> None:
+    from paid_media_agent.domain.analysis import change_text, verdict
+
+    assert verdict("cpa", Decimal("0.08")) == "worse" and verdict("cpa", -0.08) == "better"
+    assert verdict("roas", Decimal("0.0984")) == "better", "ROAS 2.44 -> 2.68 improved"
+    assert verdict("roas", -0.1) == "worse" and verdict("conversions", 0.2) == "better"
+    assert verdict("spend", 0.3) is None, "more spend is neither better nor worse on its own"
+    assert verdict("cpa", 0.001) == "flat" and verdict("cpa", None) is None
+    assert change_text("cpa", Decimal("0.082")) == "+8.2% (worse)"
+    assert change_text("spend", Decimal("-0.03")) == "-3.0%"
+
+
+def test_comparisons_carry_verdicts_and_rank_campaigns_with_enough_conversions() -> None:
+    def days(start: date, spend: str, conv: str, value: str, ref: str) -> list[PerformanceRow]:
+        return [
+            _row(start + timedelta(days=i), spend, 100, 1000, conv, value, ref) for i in range(7)
+        ]
+
+    cur, prev = date(2026, 8, 15), date(2026, 8, 1)
+    rows = [
+        # c1: spend up, CPA up (worse), ROAS down (worse); c2: cheap and improving;
+        # c3: too few conversions to rank.
+        *days(prev, "100", "5", "400", "c1"), *days(cur, "120", "4", "360", "c1"),
+        *days(prev, "50", "5", "300", "c2"), *days(cur, "50", "6", "360", "c2"),
+        *days(prev, "10", "0.1", "5", "c3"), *days(cur, "10", "0.1", "5", "c3"),
+    ]  # fmt: skip
+    window = lambda start: MetricWindow(  # noqa: E731
+        start=start, end=start + timedelta(days=6), timezone="UTC", is_complete=True
+    )
+    platform = compare_platform(
+        platform=Platform.GOOGLE_ADS, account_ref="a", rows=rows, current_window=window(cur),
+        previous_window=window(prev), entity_type=EntityType.CAMPAIGN, source_artifacts=["art_1"],
+    )  # fmt: skip
+    summary = summarize(
+        compare_periods(
+            platforms=[platform], requested_current=window(cur), requested_previous=window(prev)
+        ),
+        "art_1",
+    )
+    (headline,) = summary.platforms
+    assert headline.cpa_change.endswith("(worse)") and headline.roas_change.endswith("(worse)")
+    by_ref = {line.split("[")[1].split("]")[0]: line for line in headline.attention}
+    assert "(worse)" in by_ref["c1"] and "ROAS" in by_ref["c1"]
+    assert by_ref["c2"].count("(better)") == 2, "CPA fell and ROAS rose: both better"
+    rankings = "\n".join(headline.rankings)
+    assert "lowest (best) CPA of 2 with at least 5 conversions: c2 [c2]" in rankings
+    assert "highest (worst) CPA of 2 with at least 5 conversions: c1 [c1]" in rankings
+    assert "largest CPA rise (worse): c1 [c1]" in rankings
+    assert "spend up while ROAS fell (worse): c1 [c1]" in rankings
+    assert "c3" not in rankings, "0.7 conversions are too few to rank"

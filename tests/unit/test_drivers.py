@@ -82,7 +82,7 @@ def test_a_conversion_rate_drop_on_one_campaign_is_all_that_campaign_s_conversio
     assert (top.entity_ref, top.factor, top.within_noise) == ("a", "cvr", False)
     assert (top.before, top.after) == (pytest.approx(0.10), pytest.approx(0.05))
     assert report.significant is True
-    assert "CPA rose 38.5%" in report.reading and "conversion rate" in report.reading
+    assert "CPA rose 38.5% (worse)" in report.reading and "conversion rate" in report.reading
 
 
 def test_moving_spend_between_campaigns_with_fixed_rates_is_all_mix() -> None:
@@ -211,6 +211,11 @@ def test_accounts_combine_and_settings_changes_are_listed() -> None:
          "before": 100.0, "after": 150.0}
     ]  # fmt: skip
     assert "Settings changed" in report.reading
+    dated = explain(
+        store, ("acme", "meta"), metric="cpa", current=CURRENT, previous=PREVIOUS,
+        currency="USD", today=date(2026, 9, 30),
+    )  # fmt: skip
+    assert dated.known_changes[0]["days_ago"] == 22 and "(22 days ago)" in dated.reading
     body = report.as_json()
     assert body["accounts"] == ["acme", "meta"] and body["effects"] and body["drivers"]
     assert "acct-" not in str(body), "provider ids stay in the host"

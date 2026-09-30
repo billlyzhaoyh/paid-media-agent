@@ -72,7 +72,25 @@ def test_summary_computes_pacing_top_spenders_and_day_over_day_moves(tmp_path: P
     assert (top["entity_ref"], top["pacing"], top["daily_budget"]) == ("g-1", "1.1111", "90.00")
     assert second["pacing"] == "0.5714"  # 200 / 7 days = 28.57 against a 50 budget
     assert google["over_budget"] == ["g-1"]
+    assert (second["days_over_budget"], second["highest_day"]) == (
+        1,
+        {"date": "2026-08-05", "spend": "80.00", "to_budget": "1.6000"},
+    ), "an average under budget does not hide a day over it"
+    assert google["over_budget_days"][1] == (
+        "Campaign g-2 [g-2]: 1 of 7 days above its 50.00 daily budget; highest 80.00 on "
+        "2026-08-05 (1.6000x)"
+    )
+    assert "Google Ads can spend up to 2x" in google["over_budget_note"]
     assert "flagged_days" not in google, "judging a day is check_anomalies' job"
+    preset = run_summarize_window(
+        store,
+        SummarizeWindowArgs(artifact_ids=[perf.artifact_id], window="last_n_days_of_data", days=3),
+        today=date(2026, 8, 10),
+    )
+    assert preset["resolved_window"] == {
+        "window": "2026-08-05..2026-08-07",
+        "rule": "last_n_days_of_data, data through 2026-08-07",
+    }
     moves = [d.get("spend_change") for d in google["daily"]]
     assert moves[4] == "0.5000" and moves[5] == "-0.3333"  # the +50% day and its return
     assert store.read(out["artifact_id"]).metadata.tool_name == "summarize_window"
@@ -231,3 +249,33 @@ def test_the_headline_lists_every_account_first_and_platforms_carry_caveats(
     ]
     assert any("attribution" in c for c in out["caveats"])
     assert any("different days" in c for c in out["caveats"])
+
+
+def test_compare_periods_resolves_a_preset_and_says_which_dates(tmp_path: Path) -> None:
+    import pytest
+
+    store = ArtifactStore(tmp_path)
+    rows = [_row(d, "g-1", "100", "2") for d in range(1, 8)]
+    perf = store.write_json(
+        "performance_rows", rows_to_payload(rows), schema_version=ROWS_SCHEMA_VERSION,
+        platform="google_ads", account_ref="demo-google",
+    )  # fmt: skip
+    out = run_compare_periods(
+        store,
+        ComparePeriodsArgs(artifact_ids=[perf.artifact_id], window="last_n_days_of_data", days=3),
+        today=date(2026, 8, 10),
+    )
+    assert out["resolved_windows"] == {
+        "current": "2026-08-05..2026-08-07",
+        "previous": "2026-08-02..2026-08-04",
+        "rule": "last_n_days_of_data, data through 2026-08-07",
+    }
+    assert out["platforms"][0]["cpa_change"] == "0.0%", "flat carries no verdict"
+    with pytest.raises(ComputeError, match="preset or dates, not both"):
+        run_compare_periods(
+            store,
+            ComparePeriodsArgs(
+                artifact_ids=[perf.artifact_id], window="last_week", current_start=date(2026, 8, 1),
+                current_end=date(2026, 8, 3),
+            ),
+        )  # fmt: skip

@@ -17,6 +17,7 @@ from paid_media_agent.domain.analysis import (
     PlatformComparison,
     PlatformHeadline,
     ReconciliationCheck,
+    verdict,
 )
 from paid_media_agent.domain.common import DataQualityFlag, EntityType, JsonValue, Platform
 from paid_media_agent.domain.format import format_count, format_money, format_percent, format_ratio
@@ -108,7 +109,12 @@ def deltas(current: MetricSet, previous: MetricSet) -> tuple[MetricDelta, ...]:
             relative = _q(absolute / prev_d)
         result.append(
             MetricDelta(
-                metric=metric, current=cur_d, previous=prev_d, absolute=absolute, relative=relative
+                metric=metric,
+                current=cur_d,
+                previous=prev_d,
+                absolute=absolute,
+                relative=relative,
+                direction=verdict(metric, relative),
             )
         )
     return tuple(result)
@@ -347,29 +353,99 @@ def _window_label(window: MetricWindow) -> str:
     return f"{window.start.isoformat()}..{window.end.isoformat()} {window.timezone}{suffix}"
 
 
+RANK_MIN_CONVERSIONS = Decimal(5)
+"""A campaign needs this many conversions in the current window before its CPA or ROAS is ranked:
+fewer and one conversion more or less reorders the list."""
+
+
+def _delta(entity: EntityComparison | PlatformComparison, metric: str) -> MetricDelta:
+    return next(d for d in entity.deltas if d.metric == metric)
+
+
+def _judged(delta: MetricDelta) -> str:
+    """'+8.2% (worse)': the change with its verdict, so direction is never read by eye."""
+    text = format_percent(delta.relative)
+    return f"{text} ({delta.direction})" if delta.direction in ("better", "worse") else text
+
+
 def _attention_lines(platform: PlatformComparison, limit: int = 3) -> tuple[str, ...]:
-    """Code picks the largest absolute spend movers and states exact values."""
+    """Code picks the largest absolute spend movers and states exact values with verdicts."""
     scored = []
     for entity in platform.entities:
-        spend_delta = next(d for d in entity.deltas if d.metric == "spend")
+        spend_delta = _delta(entity, "spend")
         magnitude = abs(spend_delta.absolute) if spend_delta.absolute is not None else Decimal(0)
         scored.append((magnitude, entity, spend_delta))
     scored.sort(key=lambda item: (-item[0], item[1].entity_ref))
     lines: list[str] = []
+    money = platform.currency
     for _, entity, spend_delta in scored[:limit]:
-        cpa_delta = next(d for d in entity.deltas if d.metric == "cpa")
         flags = (
             f" flags={','.join(f.value for f in entity.quality_flags)}"
             if entity.quality_flags
             else ""
         )
+        cpa, roas = _delta(entity, "cpa"), _delta(entity, "roas")
         lines.append(
             f"{entity.entity_name} [{entity.entity_ref}]: spend "
-            f"{format_money(entity.current.spend, platform.currency)} vs "
-            f"{format_money(entity.previous.spend, platform.currency)} ({format_percent(spend_delta.relative)}), "
-            f"CPA {format_money(entity.current.cpa, platform.currency)} vs "
-            f"{format_money(entity.previous.cpa, platform.currency)} ({format_percent(cpa_delta.relative)}){flags}"
+            f"{format_money(entity.current.spend, money)} vs "
+            f"{format_money(entity.previous.spend, money)} ({format_percent(spend_delta.relative)}), "
+            f"CPA {format_money(entity.current.cpa, money)} vs "
+            f"{format_money(entity.previous.cpa, money)} ({_judged(cpa)}), "
+            f"ROAS {format_ratio(entity.current.roas)} vs {format_ratio(entity.previous.roas)} "
+            f"({_judged(roas)}){flags}"
         )
+    return tuple(lines)
+
+
+def _rankings(platform: PlatformComparison) -> tuple[str, ...]:
+    """Which campaign is best, worst, or moved most, decided by code rather than by scanning."""
+    money = platform.currency
+    judged = [
+        e
+        for e in platform.entities
+        if e.current.conversions is not None and e.current.conversions >= RANK_MIN_CONVERSIONS
+    ]
+    lines: list[str] = []
+    note = f"of {len(judged)} with at least {RANK_MIN_CONVERSIONS} conversions"
+
+    def name(entity: EntityComparison) -> str:
+        return f"{entity.entity_name} [{entity.entity_ref}]"
+
+    with_cpa = sorted(
+        (e for e in judged if e.current.cpa is not None), key=lambda e: e.current.cpa or Decimal(0)
+    )
+    if len(with_cpa) >= 2:
+        best, worst = with_cpa[0], with_cpa[-1]
+        lines.append(
+            f"lowest (best) CPA {note}: {name(best)} {format_money(best.current.cpa, money)}"
+        )
+        lines.append(
+            f"highest (worst) CPA {note}: {name(worst)} {format_money(worst.current.cpa, money)}"
+        )
+    with_roas = sorted(
+        (e for e in judged if e.current.roas is not None),
+        key=lambda e: e.current.roas or Decimal(0),
+    )
+    if len(with_roas) >= 2:
+        best, worst = with_roas[-1], with_roas[0]
+        lines.append(f"highest (best) ROAS {note}: {name(best)} {format_ratio(best.current.roas)}")
+        lines.append(
+            f"lowest (worst) ROAS {note}: {name(worst)} {format_ratio(worst.current.roas)}"
+        )
+    rises = [e for e in judged if _delta(e, "cpa").direction == "worse"]
+    if rises:
+        top = max(rises, key=lambda e: _delta(e, "cpa").relative or Decimal(0))
+        lines.append(
+            f"largest CPA rise (worse): {name(top)} {format_money(top.previous.cpa, money)} -> "
+            f"{format_money(top.current.cpa, money)} ({format_percent(_delta(top, 'cpa').relative)})"
+        )
+    diverging = [
+        name(e)
+        for e in judged
+        if (_delta(e, "spend").relative or 0) > 0 and _delta(e, "roas").direction == "worse"
+    ]
+    if diverging:
+        lines.append(f"spend up while ROAS fell (worse): {', '.join(diverging)}")
     return tuple(lines)
 
 
@@ -399,6 +475,10 @@ def summarize(comparison: PeriodComparison, artifact_id: str) -> AnalysisSummary
                 missing_fields=platform.missing_fields,
                 quality_flags=platform.quality_flags,
                 attention=_attention_lines(platform),
+                conversions_change=_judged(_delta(platform, "conversions")),
+                cpa_change=_judged(_delta(platform, "cpa")),
+                roas_change=_judged(_delta(platform, "roas")),
+                rankings=_rankings(platform),
             )
         )
     total = None

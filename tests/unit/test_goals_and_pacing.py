@@ -138,6 +138,19 @@ def test_pacing_projects_the_month_and_the_spend_that_lands_on_budget() -> None:
     )
     assert any("no measured lag" in n for n in report.notes), "young days are reported as is"
 
+    # Budgets that cannot land on the month are named against what would: 100 is 23% below 130.
+    for budget, said in ((100.0, "23% below what lands on it"), (170.0, "31% above"),
+                         (131.0, "about what lands on budget")):  # fmt: skip
+        store.write("DELETE FROM entity_settings_snapshots")
+        store.write(
+            "INSERT INTO entity_settings_snapshots VALUES ('google_ads', '1234567890', 'campaign', "
+            "'c1', ?, ?, 'acme', 'Search', 'ENABLED', ?, 'daily', NULL, NULL, NULL, 'USD', '{}')",
+            [datetime(2026, 9, 20, 6), uuid.uuid4(), budget],
+        )
+        judged = compute_pacing(store, account_alias="acme", today=TODAY, goal=goal, currency="USD")
+        assert judged.budgets_vs_needed == pytest.approx(budget / 130)
+        assert said in judged.reading, judged.reading
+
 
 def test_weekday_patterns_shape_the_projection_and_gaps_are_not_zero_spend() -> None:
     store = Store()

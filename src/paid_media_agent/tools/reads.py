@@ -342,9 +342,22 @@ class ReadDispatcher:
                 },
                 next_page=next_page,
             )
+        try:
+            # The contract's view in account currency (Google micros and Meta minor units
+            # converted), so budgets read from this artifact are never raw provider units.
+            settings = reader.settings(entry.name, result.payload, binding)
+        except Exception:
+            log.warning("settings normalization failed for %s", entry.qualified_name, exc_info=True)
+            settings = None
+        stored: dict[str, JsonValue] = {
+            "schema_version": PROVIDER_RESULT_SCHEMA_VERSION,
+            "result": result.payload,
+        }
+        if isinstance(settings, dict) and isinstance(settings.get("campaigns"), list):
+            stored["settings"] = dict(settings)
         metadata = self._artifacts.write_json(
             "provider_result",
-            {"schema_version": PROVIDER_RESULT_SCHEMA_VERSION, "result": result.payload},
+            stored,
             schema_version=PROVIDER_RESULT_SCHEMA_VERSION,
             platform=entry.platform.value,
             account_ref=alias,
@@ -359,7 +372,7 @@ class ReadDispatcher:
                     binding=binding,
                     tool_name=entry.qualified_name,
                     catalog_revision=catalog.revision,
-                    payload=reader.settings(entry.name, result.payload, binding),
+                    payload=settings if settings is not None else {},
                     artifact_id=metadata.artifact_id,
                     currency=result.currency,
                 )

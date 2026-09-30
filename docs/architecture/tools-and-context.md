@@ -78,6 +78,38 @@ share, or a monthly amount.
 - **Why.** In the stored eval runs, arithmetic in prose was the most common grounding failure:
   13 of Haiku's answers and 2 of Sonnet's, some of it wrong.
 
+## Verdicts
+
+Tools return the judgements an answer needs, not only the figures, because models misread them:
+"ROAS down from 2.44 to 2.68", "nine days ago" for twelve, "86% lower" for 46%.
+- **Better or worse.** One polarity rule (`domain/analysis.py` `verdict`): lower CPA, CPC and
+  CPM are better; higher ROAS, conversions, CTR and CVR are better; spend is neither.
+  - Every change in `compare_periods` carries it (`cpa_change: "+8.2% (worse)"`), as do its
+    attention lines, the `explain_change` and `what_if_budgets` readings, and the goal readings.
+- **Rankings.** `compare_periods` names, per platform:
+  - the best and worst CPA and ROAS among campaigns with at least 5 conversions;
+  - the largest CPA rise;
+  - campaigns whose spend rose while ROAS fell.
+- **Windows.** `compare_periods` and `summarize_window` take a `window` preset (`last_week`,
+  `last_n_days_of_data`, `month_to_date`, `last_month`) and return the dates they used.
+  - "Of data" ends on the newest day every read covers.
+  - A comparison's previous window is the same number of days immediately before.
+- **Days ago.** Anomaly flags, `explain_change` known changes, and `query_history` change and
+  settings rows carry `days_ago`, counted from the account's own today.
+- **Budgets.**
+  - `summarize_window` counts each campaign's days above its daily budget
+    (`over_budget_days`), with the highest day and the platform's own allowance (Google may
+    spend 2x a budget on one day).
+  - Budgets come from the read's normalised settings, in account currency, never from raw
+    provider units.
+  - `check_pacing` says how far active budgets are from the daily spend that lands on the
+    monthly budget.
+- **Comparisons.** `summarize_window` compares each pair of accounts in the same currency on
+  CPA and ROAS, both ways ("46% lower (better)"; "86% higher (worse)"). It refuses across
+  currencies.
+- **Offloading.** A stub keeps these fields (`against_goals`, `comparisons`, the resolved
+  windows, `budget_totals`, `flags`) ahead of the notes.
+
 ## Context budget and caching
 
 Every model call sends the whole thread, read back from the state file.

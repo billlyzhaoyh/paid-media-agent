@@ -37,6 +37,8 @@ from typing import TYPE_CHECKING, Any, Literal
 from paid_media_agent.analytics.goals import account_today
 from paid_media_agent.analytics.panel import PanelRow, completeness, lag_curves, maturity_days
 from paid_media_agent.config import AccountRegistry
+from paid_media_agent.domain.analysis import verdict
+from paid_media_agent.domain.windows import days_ago
 from paid_media_agent.store.db import Store
 
 if TYPE_CHECKING:
@@ -622,9 +624,11 @@ def report_reading(report: ChangeReport) -> str:
             f"{_fmt_metric(report.metric, d.after, report.currency)}."
         )
     direction = "rose" if d.change > 0 else "fell" if d.change < 0 else "held"
+    judged = verdict(report.metric, d.change)
     parts = [
-        f"{name} {direction} {abs(d.change):.1%} "
-        f"({_fmt_metric(report.metric, d.before, report.currency)} -> "
+        f"{name} {direction} {abs(d.change):.1%}"
+        + (f" ({judged})" if judged in ("better", "worse") else "")
+        + f" ({_fmt_metric(report.metric, d.before, report.currency)} -> "
         f"{_fmt_metric(report.metric, d.after, report.currency)}) for {span}"
     ]
     if report.significant is False:
@@ -687,6 +691,7 @@ def report_reading(report: ChangeReport) -> str:
         parts.append(
             f"Settings changed in these windows: {first['campaign']} {first['field']} "
             f"{first['before']} -> {first['after']} on {first['day']}"
+            + (f" ({first['days_ago']} days ago)" if "days_ago" in first else "")
             + (
                 f" and {len(report.known_changes) - 1} more"
                 if len(report.known_changes) > 1
@@ -803,8 +808,10 @@ def explain(
     current: Window,
     previous: Window,
     currency: str | None,
+    today: date | None = None,
 ) -> ChangeReport:
-    """The report without the curve check (which needs fitted curves; see `tools/drivers.py`)."""
+    """The report without the curve check (which needs fitted curves; see `tools/drivers.py`).
+    `today`, the accounts' own day, dates each known change as so many days ago."""
     before = window_cells(store, aliases, previous)
     after = window_cells(store, aliases, current)
     d = decompose(before, after, metric)
@@ -830,6 +837,9 @@ def explain(
             for a, p in sorted(per.items(), key=lambda kv: abs(kv[1]), reverse=True)
         ]
     report.known_changes = known_changes(store, aliases, previous.start, current.end)[:MAX_CHANGES]
+    if today is not None:
+        for change in report.known_changes:
+            change["days_ago"] = days_ago(date.fromisoformat(change["day"]), today)
     report.reading = report_reading(report)
     unknown = sum(c.unknown_lag_days for c in after.values())
     added = sum((c.conversions or 0) - (c.reported or 0) for c in after.values())
@@ -973,6 +983,7 @@ async def explain_accounts(
     groups = [chosen] if len(set(currencies.values())) <= 1 else [[a] for a in chosen]
     reports = []
     for group in groups:
+        today = min(account_today(accounts, alias) for alias in group)
         current, previous = resolve_windows(
             store,
             group,
@@ -980,7 +991,7 @@ async def explain_accounts(
             current_end=current_end,
             previous_start=previous_start,
             previous_end=previous_end,
-            today=min(account_today(accounts, alias) for alias in group),
+            today=today,
         )
         report = explain(
             store,
@@ -989,6 +1000,7 @@ async def explain_accounts(
             current=current,
             previous=previous,
             currency=currencies[group[0]],
+            today=today,
         )
         if len(groups) > 1:
             report.notes.append(

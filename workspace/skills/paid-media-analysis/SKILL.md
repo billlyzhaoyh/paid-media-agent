@@ -56,7 +56,13 @@ recommendations.
    `unavailable_sources` so it stays visible and suppresses the cross-platform total.
 7. Read the `analysis_summary`. Quote its values verbatim; never recompute from previews or rows.
    A figure the tools did not return (a difference, a share, a monthly amount) comes from
-   `calculate`, never from arithmetic in prose.
+   `calculate`, never from arithmetic in prose. Quote the tools' verdicts:
+   - better or worse on each change;
+   - `rankings`;
+   - `days_ago`;
+   - `over_budget_days`;
+   - `comparisons`.
+   Never judge direction, rank, or dates by eye.
    `unavailable` means missing, not zero. `against_goals` holds code-written readings of the
    window's CPA or ROAS against each account's target; quote them.
 8. Explain observation, business meaning, likely drivers, confidence, and next action separately.

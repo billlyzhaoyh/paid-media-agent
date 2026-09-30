@@ -86,7 +86,7 @@ async def test_current_date_is_appended_per_model_call(tmp_path: Path) -> None:
     agent = _agent(tmp_path, model, clock=lambda: datetime(2026, 9, 2, 12, tzinfo=UTC))
     await agent.send("t-1", "local-user", "What happened last week?")
     assert model.systems[-1].startswith("Base instructions.")
-    assert "Today is Wednesday 2026-09-02 (UTC)" in model.systems[-1]
+    assert "Today is Wednesday 2026-09-02 (UTC;" in model.systems[-1]
     assert "last week (Monday to Sunday): 2026-08-24 to 2026-08-30" in model.systems[-1]
 
 
@@ -132,6 +132,8 @@ async def test_an_offloaded_result_keeps_its_meaning_and_can_be_read_in_pages(
 
     body = json.dumps(
         {"headline": [{"platform": "google_ads", "spend": 1}, {"platform": "meta_ads", "spend": 2}],
+         "against_goals": [{"reading": "CPA 26.30 against a 30.00 target: 12% below (better)"}],
+         "comparisons": ["CPA: google_ads is 46% lower (better) than meta_ads"],
          "caveats": ["attribution differs"], "rows": ["x" * 50] * 400}
     )  # fmt: skip
     big = ToolSpec(
@@ -152,6 +154,8 @@ async def test_an_offloaded_result_keeps_its_meaning_and_can_be_read_in_pages(
         "meta_ads",
     ]
     assert stub["caveats"] == ["attribution differs"] and "read_artifact" in stub["note"]
+    assert "12% below (better)" in stub["against_goals"][0]["reading"]
+    assert stub["comparisons"] == ["CPA: google_ads is 46% lower (better) than meta_ads"]
     first = json.loads(
         (
             await dispatcher.dispatch(

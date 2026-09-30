@@ -268,3 +268,22 @@ not doing sums:
 - date differences ("nine days ago" for twelve);
 - relative comparisons ("86% lower" again, without `calculate`).
 Those need tools that return the verdicts, not a better calculator.
+
+## Verdicts (2026-09-30, partial)
+
+**Haiku 4.5 on the questions that failed on interpretation** (`f37a4b47`): 2 of the first 4
+questions passed. The account then ran out of credits (HTTP 402 at q15).
+- **q04 (pacing): fixed.** `over_budget_days` replaced "no campaign exceeded its daily
+  budget".
+- **q13:** still passes.
+- **q03:** the model compared 7-day windows where the question asked for two weeks.
+- **q06:** it still read `band_distance` as a percentage. The flag's reading now also states the
+  distance in the metric's own units.
+
+**A no-judge probe of q30 on Haiku.** The model:
+- used the `window` preset;
+- quoted "46% lower (better)" (it said "86%" before);
+- kept the attribution caveat.
+
+It missed only on a hand-computed gap, which `comparisons` now states too. The Sonnet run and
+the rest of the Haiku questions are still to do.

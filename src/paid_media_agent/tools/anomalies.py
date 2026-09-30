@@ -7,13 +7,15 @@ expected value and range, the method used, and which days could not be checked y
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
 from paid_media_agent.analytics.anomalies import check_anomalies
+from paid_media_agent.analytics.goals import account_today
 from paid_media_agent.config import AccountRegistry
+from paid_media_agent.domain.windows import days_ago
 from paid_media_agent.harness.tools import ToolContext, ToolSpec, parameters_for
 from paid_media_agent.predict.protocol import Predictor
 from paid_media_agent.redaction import sanitize_exception
@@ -30,12 +32,24 @@ class CheckAnomaliesArgs(BaseModel):
     window_days: int = Field(default=7, ge=1, le=28, description="Recent complete days to check.")
 
 
-def _with_reading(flag: dict[str, Any]) -> dict[str, Any]:
-    """A code-written sentence per flag, so the answer cannot misstate which side of the range."""
+def _with_reading(flag: dict[str, Any], today: date | None = None) -> dict[str, Any]:
+    """A code-written sentence per flag, so the answer cannot misstate which side of the range,
+    or how long ago the day was (`today` is the account's own)."""
     side = "above" if flag["direction"] == "up" else "below"
+    ago = ""
+    if today is not None:
+        count = days_ago(date.fromisoformat(str(flag["day"])), today)
+        flag = {**flag, "days_ago": count}
+        ago = f" ({count} day{'s' if count != 1 else ''} ago)"
+    edge = flag["hi"] if flag["direction"] == "up" else flag["lo"]
+    beyond = ""
+    if isinstance(edge, int | float) and isinstance(flag["observed"], int | float):
+        # In the metric's own units: band_distance read as a percentage is the usual misreading.
+        gap = abs(flag["observed"] - edge)
+        beyond = f", {gap:,.2f} {'above' if flag['direction'] == 'up' else 'below'} its edge {edge}"
     reading = (
-        f"{flag['metric']} {flag['observed']} on {flag['day']} is {side} the expected range "
-        f"{flag['lo']} to {flag['hi']} (expected {flag['expected']}; {flag['method']})"
+        f"{flag['metric']} {flag['observed']} on {flag['day']}{ago} is {side} the expected range "
+        f"{flag['lo']} to {flag['hi']}{beyond} (expected {flag['expected']}; {flag['method']})"
     )
     shown = {k: v for k, v in flag.items() if k != "score"}
     if "score" in flag:
@@ -52,10 +66,16 @@ def build_check_anomalies_tool(
             args = CheckAnomaliesArgs.model_validate(kwargs)
             if args.account_alias is not None and accounts.resolve(args.account_alias) is None:
                 raise ValueError(f"unknown account alias {args.account_alias}; call list_accounts")
+            # One account is checked as of its own day; several, as of the UTC day.
+            as_of = (
+                account_today(accounts, args.account_alias)
+                if args.account_alias is not None
+                else datetime.now(UTC).date()
+            )
             report = await check_anomalies(
                 store,
                 predictor,
-                as_of=datetime.now(UTC).date(),
+                as_of=as_of,
                 window_days=args.window_days,
                 account_alias=args.account_alias,
                 band=band,
@@ -71,7 +91,10 @@ def build_check_anomalies_tool(
         )
         result = {"summary": summary or "nothing checked; see notes", **result}
         result["flag_count"] = len(result["flags"])
-        result["flags"] = [_with_reading(flag) for flag in result["flags"][:MAX_FLAGS]]
+        result["flags"] = [
+            _with_reading(flag, account_today(accounts, flag["account_alias"]))
+            for flag in result["flags"][:MAX_FLAGS]
+        ]
         result["note"] = (
             "A flag is a prompt to investigate, not a finding. Conversions are checked on an "
             "earlier window than spend (see windows) because recent conversions are still "

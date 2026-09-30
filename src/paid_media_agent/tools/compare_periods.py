@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -12,6 +12,13 @@ from paid_media_agent.analytics.goals import GoalLookup
 from paid_media_agent.domain.analysis import ANALYSIS_SCHEMA_VERSION, PlatformComparison
 from paid_media_agent.domain.common import DataQualityFlag, EntityType, Platform
 from paid_media_agent.domain.metrics import MetricWindow, PerformanceRow
+from paid_media_agent.domain.windows import (
+    PRESET_HELP,
+    Span,
+    WindowPreset,
+    resolve_preset,
+    span_text,
+)
 from paid_media_agent.harness.tools import ToolContext, ToolSpec, parameters_for
 from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.tools.artifacts import ArtifactError, ArtifactStore
@@ -32,10 +39,12 @@ class ComparePeriodsArgs(BaseModel):
     artifact_ids: list[str] = Field(
         description="performance_rows artifact ids returned by platform reads."
     )
-    current_start: date
-    current_end: date
-    previous_start: date
-    previous_end: date
+    window: WindowPreset | None = Field(default=None, description=PRESET_HELP)
+    days: int = Field(default=7, ge=1, le=90, description="For last_n_days_of_data.")
+    current_start: date | None = None
+    current_end: date | None = None
+    previous_start: date | None = None
+    previous_end: date | None = None
     entity_type: EntityType = EntityType.CAMPAIGN
     unavailable_sources: list[str] = Field(
         default_factory=list,
@@ -43,23 +52,47 @@ class ComparePeriodsArgs(BaseModel):
     )
 
 
+def data_through(rows_by_artifact: list[list[PerformanceRow]]) -> date:
+    """The newest day every read covers: the end of 'the last N days of data' for all of them."""
+    ends = []
+    for rows in rows_by_artifact:
+        complete = [r.window.start for r in rows if r.window.is_complete]
+        ends.append(max(complete or [r.window.start for r in rows]))
+    return min(ends)
+
+
+def resolve_comparison(
+    args: ComparePeriodsArgs, loaded: list[list[PerformanceRow]], today: date
+) -> tuple[Span, Span, str]:
+    """The two windows, from a preset or the dates given, and how they were chosen."""
+    if args.window is not None:
+        if args.current_start is not None or args.previous_start is not None:
+            raise ComputeError("give a window preset or dates, not both")
+        through = data_through(loaded)
+        current, previous = resolve_preset(
+            args.window, today=today, data_through=through, days=args.days
+        )
+        return current, previous, f"{args.window}, data through {through.isoformat()}"
+    if args.current_start is None or args.current_end is None:
+        raise ComputeError("give a window preset (e.g. last_week) or current_start and current_end")
+    current = (args.current_start, args.current_end)
+    length = (current[1] - current[0]).days + 1
+    if args.previous_start is None or args.previous_end is None:
+        previous = (current[0] - timedelta(days=length), current[0] - timedelta(days=1))
+        return current, previous, "dates given; the previous window is the same days before"
+    return current, (args.previous_start, args.previous_end), "dates given"
+
+
 def run_compare_periods(
-    artifacts: ArtifactStore, args: ComparePeriodsArgs, *, goals: GoalLookup | None = None
+    artifacts: ArtifactStore,
+    args: ComparePeriodsArgs,
+    *,
+    goals: GoalLookup | None = None,
+    today: date | None = None,
 ) -> dict[str, Any]:
-    if args.current_end < args.current_start or args.previous_end < args.previous_start:
-        raise ComputeError("window end precedes start")
-    current = MetricWindow(
-        start=args.current_start, end=args.current_end, timezone="UTC", is_complete=True
-    )
-    previous = MetricWindow(
-        start=args.previous_start, end=args.previous_end, timezone="UTC", is_complete=True
-    )
-    if not current.same_length(previous):
-        raise ComputeError("comparison windows must have the same day count")
     if not args.artifact_ids:
         raise ComputeError("at least one artifact id is required")
-    platforms: list[PlatformComparison] = []
-    by_account: dict[str, list[PerformanceRow]] = {}
+    loaded: list[tuple[str, Any, list[PerformanceRow]]] = []
     for artifact_id in args.artifact_ids:
         record = artifacts.read(artifact_id)
         if record.metadata.kind != "performance_rows":
@@ -72,6 +105,19 @@ def run_compare_periods(
         rows = rows_from_payload(record.payload)
         if not rows:
             raise ComputeError(f"{artifact_id} contains no rows")
+        loaded.append((artifact_id, record, rows))
+    (cur_start, cur_end), (prev_start, prev_end), rule = resolve_comparison(
+        args, [rows for _, _, rows in loaded], today or datetime.now(UTC).date()
+    )
+    if cur_end < cur_start or prev_end < prev_start:
+        raise ComputeError("window end precedes start")
+    current = MetricWindow(start=cur_start, end=cur_end, timezone="UTC", is_complete=True)
+    previous = MetricWindow(start=prev_start, end=prev_end, timezone="UTC", is_complete=True)
+    if not current.same_length(previous):
+        raise ComputeError("comparison windows must have the same day count")
+    platforms: list[PlatformComparison] = []
+    by_account: dict[str, list[PerformanceRow]] = {}
+    for artifact_id, record, rows in loaded:
         first = min(r.window.start for r in rows)
         latest = max(r.window.start for r in rows)
         for label, window in (("current", current), ("previous", previous)):
@@ -133,6 +179,11 @@ def run_compare_periods(
         tool_name=COMPARE_PERIODS_TOOL,
     )
     summary = summarize(comparison, metadata.artifact_id).model_dump(mode="json")
+    summary["resolved_windows"] = {
+        "current": span_text((cur_start, cur_end)),
+        "previous": span_text((prev_start, prev_end)),
+        "rule": rule,
+    }
     caveats = cross_platform_caveats(
         {p.platform.value for p in platforms},
         {f"{p.current_window.start}..{p.current_window.end}" for p in platforms},

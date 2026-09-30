@@ -32,6 +32,7 @@ from paid_media_agent.bandit.fit import FittedAccount, fit_account
 from paid_media_agent.bandit.posterior import Posterior, is_valid
 from paid_media_agent.bandit.recommend import BanditConfig
 from paid_media_agent.config import AccountRegistry
+from paid_media_agent.domain.analysis import verdict
 from paid_media_agent.predict.protocol import Predictor
 from paid_media_agent.store.db import Store
 
@@ -531,7 +532,11 @@ def whatif_reading(report: WhatIfReport) -> str:
         f"{f.baseline.conversions.mean:.1f} -> {f.scenario.conversions.mean:.1f})."
     ]
     if f.baseline.cpa and f.scenario.cpa:
-        parts.append(f"CPA {_money(f.baseline.cpa.mean, c)} -> {_money(f.scenario.cpa.mean, c)}.")
+        judged = verdict("cpa", f.scenario.cpa.mean / f.baseline.cpa.mean - 1)
+        parts.append(
+            f"CPA {_money(f.baseline.cpa.mean, c)} -> {_money(f.scenario.cpa.mean, c)}"
+            + (f" ({judged})." if judged in ("better", "worse") else ".")
+        )
     inc = f.incremental_cpa
     if inc is not None:
         if f.spend_change > 0:
