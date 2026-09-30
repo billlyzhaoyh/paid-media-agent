@@ -71,6 +71,10 @@ The code is in `src/paid_media_agent/evals/`.
     durations ("90 days") are skipped. Their digits are stripped from source text too, so
     "3,862.42 + 14" is not grounded by a date. Commas are removed only as thousands separators,
     so CSV cells never merge.
+  - **Calculations.** A `calculate` result is a source only when every number in its
+    expression is itself found in another result, or in an earlier sourced calculation. Units
+    and calendar lengths (whole numbers below 32, and 100, 1000, 365, 52, 30.4) are exempt. A
+    calculation on an invented number grounds nothing, and is named in the detail.
   - **When it fails.** The check fails when too few checked numbers are found, or when any
     money figure is not found: it was either invented or computed in prose. A money figure has a
     currency symbol (`$ € £ ¥`), an ISO code ("7,400 USD"), or two decimals.
@@ -247,3 +251,20 @@ Re-grading the stored runs with the corrected checks called no model:
 A targeted live run of the changed paths passed 6 of 6 (`05c97e31`, Sonnet 5.5, $0.58 + $0.20
 for the judge): pacing (q04), the approval questions (q09, q10, q25, q26), and the recommended
 total (q20).
+
+## `calculate` (2026-09-30)
+
+These are targeted runs of the 12 questions whose stored answers did arithmetic in prose (q02, q03,
+q05, q06, q09, q11, q13, q17, q18, q20, q24, q30). They ran one attempt each.
+
+| Agent | Run | Passed | Grounding check failed | Answers calling `calculate` | Cost |
+| --- | --- | --- | --- | --- | --- |
+| Haiku 4.5 | `b978f679` | 4/12 (was 2/12 in `0de6c6a8`) | 2 (was 7) | 2 of 12 | $0.39 + $0.30 |
+| Sonnet 5.5 | `45ec3a43` | 6/6, stopped at q13: out of credits | 0 | 3 of 6 | $0.72 + $0.27 |
+
+**Haiku rarely calls the tool.** Its remaining failures are mostly the model reading numbers,
+not doing sums:
+- direction ("ROAS down from 2.44 to 2.68", CPA "improves" as it rises);
+- date differences ("nine days ago" for twelve);
+- relative comparisons ("86% lower" again, without `calculate`).
+Those need tools that return the verdicts, not a better calculator.

@@ -9,6 +9,7 @@ when too few figures are grounded, or when any money figure ($ or two decimals) 
 
 from __future__ import annotations
 
+import ast
 import fnmatch
 import json
 import re
@@ -19,6 +20,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from paid_media_agent.evals import figures
+from paid_media_agent.tools.calculate import CALCULATE_TOOL
 
 FAILED_REPLIES = ("Model call failed", "Stopped after")
 CURRENCIES = (
@@ -368,15 +370,75 @@ def check_figures(
     return Check("figures", ok, "all present" if ok else f"missing {[f'{m:.2f}' for m in missing]}")
 
 
+UNIT_CONSTANTS = frozenset({100.0, 1000.0, 365.0, 52.0, 30.4})
+"""Numbers an expression may use without a source: units and calendar lengths (and whole numbers
+below 32, as in `numbers_in`)."""
+
+
+def _literals(expression: str) -> list[Number]:
+    """The numbers written in a `calculate` expression, at the precision they were written."""
+    try:
+        tree = ast.parse(expression.replace("\u2212", "-"), mode="eval")
+    except (SyntaxError, ValueError):
+        return []
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, int | float):
+            if isinstance(node.value, bool):
+                continue
+            raw = ast.get_source_segment(expression, node) or str(node.value)
+            decimals = len(raw.split(".")[1]) if "." in raw else 0
+            found.append(Number(float(node.value), decimals, False, raw))
+    return found
+
+
+def admit_calculations(calls: Sequence[CallRecord], sources: Sources) -> list[str]:
+    """Add each `calculate` result to `sources` when every number it used is sourced.
+
+    Results are walked in order, so one calculation may build on an earlier one. A calculation
+    on a number no tool returned grounds nothing: it is named, and its result is left out.
+    """
+    unsourced: list[str] = []
+    for call in calls:
+        if call.name != CALCULATE_TOOL or call.status != "success":
+            continue
+        try:
+            items = json.loads(call.result).get("results") or []
+        except (ValueError, AttributeError):
+            continue
+        for item in items:
+            if not isinstance(item, dict) or item.get("error") or "value" not in item:
+                continue
+            missing = [
+                n.raw
+                for n in _literals(str(item.get("expression", "")))
+                if not (
+                    (n.decimals == 0 and abs(n.value) < 32)
+                    or abs(n.value) in UNIT_CONSTANTS
+                    or grounded(n, sources.values, sources.derived)
+                )
+            ]
+            if missing:
+                unsourced.append(f"{item.get('label', '?')}: {', '.join(missing)}")
+                continue
+            value = float(item["value"])
+            sources.values.append(value)
+            if abs(value) <= MAX_FRACTION:
+                sources.percents.append(value * 100)
+    return unsourced
+
+
 def check_grounded(transcript: Transcript, question: dict[str, Any], text: str) -> Check:
     minimum = float(question.get("grounded_min", 0.8))
     stated = numbers_in(transcript.answer)
     if not stated:
         return Check("grounded", True, "no figures stated")
-    sources = sources_from([*(c.result for c in transcript.calls), *transcript.extra_sources])
+    plain = [c.result for c in transcript.calls if c.name != CALCULATE_TOOL]
+    sources = sources_from([*plain, *transcript.extra_sources])
     asked = sources_from([text])
     sources.values += asked.values
     sources.percents += asked.percents
+    unsourced = admit_calculations(transcript.calls, sources)
     verdicts = [(n, verdict(n, sources)) for n in stated]
     checked = [(n, v) for n, v in verdicts if v != "unchecked"]
     missing = [n for n, v in checked if v == "missing"]
@@ -390,6 +452,8 @@ def check_grounded(transcript: Transcript, question: dict[str, Any], text: str) 
         detail += f" ({len(stated) - len(checked)} whole percentages unchecked)"
     if missing:
         detail += f"; not found: {[n.raw for n in missing][:8]}"
+    if unsourced:
+        detail += f"; calculated from unsourced inputs: {unsourced[:4]}"
     if money and minimum > 0:
         detail += "; money figures must come from a tool"
     return Check("grounded", share >= minimum - 1e-9 and not (money and minimum > 0), detail)

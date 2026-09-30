@@ -29,6 +29,7 @@ from paid_media_agent.store.conversations import ConversationStore
 from paid_media_agent.tools.anomalies import CHECK_ANOMALIES_TOOL, build_check_anomalies_tool
 from paid_media_agent.tools.artifact_read import READ_ARTIFACT_TOOL, build_read_artifact_tool
 from paid_media_agent.tools.bandit import RECOMMEND_BUDGETS_TOOL, build_recommend_budgets_tool
+from paid_media_agent.tools.calculate import CALCULATE_TOOL, build_calculate_tool
 from paid_media_agent.tools.catalog import AuthorizedToolCatalog
 from paid_media_agent.tools.compare_periods import COMPARE_PERIODS_TOOL, build_compare_periods_tool
 from paid_media_agent.tools.discovery import (
@@ -69,6 +70,7 @@ CORE_TOOLS: tuple[str, ...] = (
     EXPLAIN_CHANGE_TOOL,
     WHAT_IF_BUDGETS_TOOL,
     READ_ARTIFACT_TOOL,
+    CALCULATE_TOOL,
 )
 WRITE_TOOLS: tuple[str, ...] = (
     DISCOVER_WRITE_OPERATIONS_TOOL,
@@ -205,6 +207,7 @@ def build_agent_components(
         build_summarize_window_tool(runtime.artifacts, goals.current),
         build_render_report_tool(runtime.artifacts),
         build_read_artifact_tool(runtime.artifacts, secrets),
+        build_calculate_tool(),
         build_query_history_tool(runtime.store, runtime.accounts),
         build_check_pacing_tool(runtime.store, runtime.accounts),
         build_check_anomalies_tool(

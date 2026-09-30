@@ -19,7 +19,10 @@ platforms.
    each campaign's funnel rates, says what is noise, and what a campaign's own spend change
    explains. `what_if_budgets` answers "what if I change these budgets": spend, conversions, and
    CPA against today with ranges, and what campaigns cannot spend.
-4. Let deterministic tools compute metrics and reconciliation. Do not calculate from raw rows in prose.
+4. Let deterministic tools compute metrics and reconciliation. Every figure you state comes from a
+   tool result. For one no tool returned (a total, a difference, a percentage change, a share, a
+   per-day or per-month amount), call `calculate` with figures from those results and quote its
+   `display`. Never do arithmetic in prose, even simple sums.
 5. Read the relevant paid-media skill and wiki page (`/skills/paid-media-wiki`) before making a
    recommendation. The numeric goals (target CPA or ROAS, monthly budget) come from `list_accounts`
    and are authoritative; `compare_periods`, `summarize_window`, and `check_pacing` judge results

@@ -356,3 +356,45 @@ def test_grounding_reads_real_tool_shapes_and_every_way_figures_are_written() ->
     assert check.passed, "a zero minimum never fails"
     check = check_grounded(transcript, {}, "question")
     assert not check.passed and "money" in check.detail, "a currency code is money"
+
+
+def test_a_calculation_grounds_its_result_only_from_sourced_inputs() -> None:
+    from paid_media_agent.evals.checks import CallRecord, Transcript, check_grounded
+    from paid_media_agent.harness.tools import ToolContext
+    from paid_media_agent.tools.calculate import build_calculate_tool
+
+    tool = build_calculate_tool()
+
+    def calculated(*expressions: str) -> CallRecord:
+        args = {
+            "calculations": [
+                {"label": f"c{i}", "expression": e, "format": "money"}
+                for i, e in enumerate(expressions)
+            ]
+        }
+        result = tool.handler(args, ToolContext("t", "u"))  # type: ignore[arg-type]
+        return CallRecord("calculate", args, str(result))
+
+    proposal = CallRecord(
+        "propose_change",
+        {},
+        json.dumps({"before": [{"field": "daily_budget", "value": 180.0}],
+                    "after": [{"field": "daily_budget", "value": 216.0}]}),
+    )  # fmt: skip
+    answer = "The budget rises $36.00 a day, about $1,080.00 a month; $1,110.00 with the rest."
+    sourced = Transcript(
+        "q09",
+        answer,
+        calls=[proposal, calculated("(216 - 180) * 30", "1080.00 + 30")],
+    )
+    check = check_grounded(sourced, {}, "question")
+    assert check.passed, check.detail
+
+    invented = Transcript(
+        "q09", "That saves $7,400.00 a month.", calls=[proposal, calculated("7400 * 1")]
+    )
+    check = check_grounded(invented, {}, "question")
+    assert not check.passed and "calculated from unsourced inputs" in check.detail
+    assert "7400" in check.detail, "a calculation cannot make an invented number true"
+    prose = Transcript("q09", "About $1,080.00 a month.", calls=[proposal])
+    assert not check_grounded(prose, {}, "question").passed, "prose arithmetic still fails"

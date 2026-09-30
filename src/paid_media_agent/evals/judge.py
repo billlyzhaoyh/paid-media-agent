@@ -27,7 +27,9 @@ agent's final answer. Judge only the final answer, using the tool results as gro
 Score each criterion from 1 (bad) to 5 (excellent):
 - correct: the answer's claims agree with the tool results and meet the expectation.
 - grounded: every number and fact comes from a tool result or the question; nothing invented, and
-  no arithmetic done in prose that the tools did not return.
+  no arithmetic done in prose that the tools did not return. A `calculate` result is a tool
+  result when the numbers in its expression came from other tool results; a calculation on
+  numbers no tool returned grounds nothing.
 - complete: it answers what was asked, with the caveats the data needs (missing days, conversions
   still arriving, attribution differences, noise), and says clearly when data is unavailable.
 - clear: it leads with the answer, is concise and well organised, and would help a marketer act.

@@ -59,6 +59,25 @@ A result over `PAID_MEDIA_RESULT_OFFLOAD_CHARS` becomes an artifact and a stub.
 - The first eval run showed why: a cross-platform summary's preview showed only Google, and the
   model reported it as the total for every platform.
 
+## Arithmetic
+
+Tools return the figures an analysis rests on. A figure none of them returned comes from the core
+tool `calculate`, never from arithmetic in the reply: a total, a difference, a percentage change, a
+share, or a monthly amount.
+- **What it accepts.** One call takes up to 20 labelled expressions over figures from earlier
+  results, e.g. `(216 - 180) * 30` or `pct_change(26.04, 27.97)`. Each has a `display` format:
+  number, percent, or money.
+- **How it evaluates.** Expressions are parsed, never executed. Only number literals, `+ - * /`,
+  parentheses, and `sum mean min max abs round pct_change share` are admitted, in exact decimal
+  arithmetic. Everything else is refused per item with a reason: names, attributes, powers,
+  thousands separators (`max(1,234)` is ambiguous), and numbers beyond 10^15.
+- **Figures asked for often are returned directly**, so they need no calculation:
+  - `summarize_window` entities carry `share_of_spend`;
+  - the `query_history` settings view carries each account's `budget_totals`: the current
+    active daily budgets added up.
+- **Why.** In the stored eval runs, arithmetic in prose was the most common grounding failure:
+  13 of Haiku's answers and 2 of Sonnet's, some of it wrong.
+
 ## Context budget and caching
 
 Every model call sends the whole thread, read back from the state file.

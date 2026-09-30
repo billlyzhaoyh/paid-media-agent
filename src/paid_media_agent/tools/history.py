@@ -15,6 +15,7 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 
 from paid_media_agent.analytics.history import MAX_ROWS, ModelHistoryView, query_history
+from paid_media_agent.analytics.pacing import ACTIVE_STATUSES
 from paid_media_agent.config import AccountRegistry
 from paid_media_agent.harness.tools import ToolContext, ToolSpec, parameters_for
 from paid_media_agent.redaction import sanitize_exception
@@ -89,9 +90,36 @@ def run_query_history(
     result: dict[str, Any] = {"view": args.view, "row_count": len(rows), "truncated": truncated}
     if args.view in FIELD_NOTES:
         result["notes"] = FIELD_NOTES[args.view]
+    if args.view == "settings" and not truncated:
+        result["budget_totals"] = _budget_totals(rows)
     result["note"] = note
     result["rows"] = rows
     return result
+
+
+def _budget_totals(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Each account's current daily budgets added up, so no total is summed by hand."""
+    totals: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        status = str(row.get("status") or "").upper()
+        if row.get("valid_to") is not None or row.get("daily_budget") is None:
+            continue
+        if status and status not in ACTIVE_STATUSES:
+            continue
+        entry = totals.setdefault(
+            row["account_alias"],
+            {
+                "account_alias": row["account_alias"],
+                "currency": row.get("currency"),
+                "active_daily_budget_total": 0.0,
+                "campaigns": 0,
+            },
+        )
+        entry["active_daily_budget_total"] += float(row["daily_budget"])
+        entry["campaigns"] += 1
+    for entry in totals.values():
+        entry["active_daily_budget_total"] = round(entry["active_daily_budget_total"], 2)
+    return list(totals.values())
 
 
 def build_query_history_tool(store: Store, accounts: AccountRegistry) -> ToolSpec:
