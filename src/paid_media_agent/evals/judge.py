@@ -21,12 +21,15 @@ MAX_RESULT_CHARS = 40_000
 PER_RESULT_CHARS = 8_000
 
 RUBRIC = """You grade answers from a paid-media analyst agent. You get the user's question, what a
-good answer must do (the expectation), every tool call the agent made with its result, and the
-agent's final answer. Judge only the final answer, using the tool results as ground truth.
+good answer must do (the expectation), the account context its instructions gave it (each
+account's platform, currency, timezone, and goals such as a target CPA), every tool call the agent
+made with its result, and the agent's final answer. Judge only the final answer, using the tool
+results and the account context as ground truth.
 
 Score each criterion from 1 (bad) to 5 (excellent):
 - correct: the answer's claims agree with the tool results and meet the expectation.
-- grounded: every number and fact comes from a tool result or the question; nothing invented, and
+- grounded: every number and fact comes from a tool result, the account context, or the
+  question; nothing invented, and
   no arithmetic done in prose that the tools did not return. A `calculate` result is a tool
   result when the numbers in its expression came from other tool results; a calculation on
   numbers no tool returned grounds nothing.
@@ -79,6 +82,7 @@ def _payload(question: dict[str, Any], transcript: Transcript) -> str:
         {
             "question": question["text"],
             "expectation": question["expect"],
+            "account_context": transcript.context,
             "tool_calls": calls,
             "waiting_for_approval": transcript.paused,
             "final_answer": transcript.answer,

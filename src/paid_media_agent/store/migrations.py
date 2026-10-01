@@ -589,6 +589,11 @@ ALTER TABLE eval_results ADD COLUMN draft VARCHAR;
 """
 """The first answer when the runtime's grounding check sent it back once; NULL when it passed."""
 
+EVAL_CONTEXT = """
+ALTER TABLE eval_results ADD COLUMN prompt_context VARCHAR;
+"""
+"""The accounts and goals the agent's system prompt carried, so a regrade sees them too."""
+
 MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("0001_operational", OPERATIONAL),
     ("0002_conversations", CONVERSATIONS),
@@ -604,6 +609,7 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("0012_evals", EVALS),
     ("0013_eval_cache", EVAL_CACHE),
     ("0014_eval_repair", EVAL_REPAIR),
+    ("0015_eval_context", EVAL_CONTEXT),
 )
 
 

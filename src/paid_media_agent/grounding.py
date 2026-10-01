@@ -477,17 +477,21 @@ def artifact_sources(artifacts: ArtifactStore, calls: Sequence[CallRecord]) -> l
     return sources
 
 
-def answer_check(artifacts: ArtifactStore) -> Callable[[Sequence[Message], str], tuple[str, ...]]:
+def answer_check(
+    artifacts: ArtifactStore, context: Callable[[], str] | None = None
+) -> Callable[[Sequence[Message], str], tuple[str, ...]]:
     """The runtime's check: the figures in `answer` no tool in the thread returned, when there
-    are enough of them to fail the eval rule; empty when the answer passes."""
+    are enough of them to fail the eval rule; empty when the answer passes. `context` is what the
+    system prompt told the agent (the accounts and their goals): its figures are sourced too."""
 
     def check(messages: Sequence[Message], answer: str) -> tuple[str, ...]:
         calls = calls_of(messages)
+        given = [context()] if context is not None else []
         result = assess(
             answer,
             calls,
             extra_sources=artifact_sources(artifacts, calls),
-            asked=asked_in(messages),
+            asked=[*asked_in(messages), *given],
         )
         if result.passed:
             return ()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -17,10 +19,23 @@ from paid_media_agent.bandit.live import live_config
 from paid_media_agent.bandit.proposals import propose_decision
 from paid_media_agent.config import Settings
 from paid_media_agent.domain.presentation import ProposalView, proposal_summary
+from paid_media_agent.domain.proposals import ProposalState
 from paid_media_agent.grounding import answer_check
 from paid_media_agent.harness.files import build_file_tools
-from paid_media_agent.harness.loop import Agent, AnswerCheck, ApprovalGate, PauseSummary
-from paid_media_agent.harness.messages import ToolCall
+from paid_media_agent.harness.loop import (
+    Agent,
+    AnswerCheck,
+    ApprovalGate,
+    AutoPause,
+    PauseSummary,
+)
+from paid_media_agent.harness.messages import (
+    AssistantMessage,
+    Message,
+    ToolCall,
+    ToolMessage,
+    UserMessage,
+)
 from paid_media_agent.harness.models import ChatModel, cache_session, resolve_model
 from paid_media_agent.harness.skills import discover_skills, skills_prompt
 from paid_media_agent.harness.tools import ToolContext, ToolDispatcher, ToolSpec
@@ -281,7 +296,11 @@ def build_agent_components(
         context_budget_tokens=settings.paid_media_context_budget_tokens,
         read_tools_budget_tokens=settings.paid_media_read_tools_budget_tokens,
         prompt_context=lambda: account_lines(runtime.accounts, goals),
-        check_answer=answer_check(runtime.artifacts) if settings.paid_media_answer_repair else None,
+        check_answer=answer_check(
+            runtime.artifacts, context=lambda: account_lines(runtime.accounts, goals)
+        )
+        if settings.paid_media_answer_repair
+        else None,
     )
 
 
@@ -306,7 +325,62 @@ def build_agent(
         read_tools_budget_tokens=components.read_tools_budget_tokens,
         prompt_context=components.prompt_context,
         check_answer=components.check_answer,
+        auto_pause=_unpaused_proposals(components.proposal_service),
     )
+
+
+def _unpaused_proposals(service: ProposalService) -> AutoPause:
+    """Proposals made this turn, still awaiting approval, that no `execute_change` paused on.
+
+    A model sometimes stages a change and then describes it instead of pausing; the reviewer
+    would get no card. The runtime pauses each one itself, at its current revision.
+    """
+
+    def unpaused(messages: Sequence[Message], context: ToolContext) -> list[ToolCall]:
+        start = max(
+            (i + 1 for i, m in enumerate(messages)
+             if isinstance(m, UserMessage) and m.origin == "user"),
+            default=0,
+        )  # fmt: skip
+        proposed: dict[UUID, None] = {}
+        executed: set[str] = set()
+        for message in messages[start:]:
+            if isinstance(message, AssistantMessage):
+                executed |= {
+                    str(c.args.get("proposal_id"))
+                    for c in message.tool_calls
+                    if c.name == EXECUTE_CHANGE_TOOL
+                }
+            elif isinstance(message, ToolMessage) and message.name == PROPOSE_CHANGE_TOOL:
+                try:
+                    body = json.loads(message.content)
+                    proposed[UUID(str(body["proposal"]["proposal_id"]))] = None
+                except (ValueError, KeyError, TypeError):
+                    continue
+        calls = []
+        for proposal_id in proposed:
+            if str(proposal_id) in executed:
+                continue
+            record = service.get(proposal_id)
+            if (
+                record is None
+                or record.changeset.thread_id != context.thread_id
+                or record.state is not ProposalState.AWAITING_APPROVAL
+            ):
+                continue
+            calls.append(
+                ToolCall(
+                    id=f"host-pause-{uuid.uuid4().hex[:12]}",
+                    name=EXECUTE_CHANGE_TOOL,
+                    args={
+                        "proposal_id": str(proposal_id),
+                        "revision": record.changeset.revision,
+                    },
+                )
+            )
+        return calls
+
+    return unpaused
 
 
 def _pause_summary(service: ProposalService) -> PauseSummary:

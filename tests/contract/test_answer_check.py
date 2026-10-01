@@ -135,3 +135,35 @@ async def test_the_check_can_be_turned_off(settings: Settings, project_root: Pat
     )
     conversation = await runtime.agent.send("g-4", "local-user", "What do budgets add up to?")
     assert conversation.messages[-1].content == "Budgets total $950.00."
+
+
+async def test_goals_from_the_account_section_count_as_sourced(
+    settings: Settings, project_root: Path
+) -> None:
+    from paid_media_agent.analytics.goals import GoalStore
+
+    steps = [
+        lambda _m: tool_call_message("query_history", SETTINGS_READ),
+        lambda _m: AssistantMessage(
+            "Active daily budgets total 900.00 USD; your target CPA is 32.50 USD."
+        ),
+    ]
+    runtime = await _runtime(settings, project_root, steps)
+    GoalStore(runtime.profile.store).set(
+        "demo-google",
+        {"target_cpa": 32.5},
+        effective_from=TODAY - timedelta(days=30),
+        source="test",
+    )
+    conversation = await runtime.agent.send("g-5", "local-user", "Budgets and our target?")
+    assert conversation.messages[-1].content.endswith("target CPA is 32.50 USD.")
+    assert _purposes(runtime, "g-5") == ["agent", "agent"], "no repair: the prompt gave it"
+
+    from paid_media_agent.evals.checks import check_grounded
+    from paid_media_agent.evals.judge import _payload
+    from paid_media_agent.evals.runner import transcript_of
+
+    transcript = transcript_of("q", conversation.messages, runtime)
+    assert "target_cpa 32.5" in transcript.context
+    assert check_grounded(transcript, {}, "Budgets and our target?").passed
+    assert json.loads(_payload({"text": "q", "expect": "e"}, transcript))["account_context"]

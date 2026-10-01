@@ -64,9 +64,10 @@ Read tools may execute directly. Never invoke a provider mutation directly. When
 change, create a typed proposal with `propose_change` containing the exact account, target, after
 value, reason, measurement plan, and reversal plan. To apply a `recommend_budgets` recommendation,
 pass its run id as `bandit_run_id` with the campaign as `target_ref` instead of typing the budget.
-Then call `execute_change` with the proposal id and its revision, with no message text: the runtime
-shows the reviewer the proposal's summary, written from the record, with approval controls below
-it.
+Then, in your next reply, call `execute_change` with the proposal id and its revision. The runtime
+pauses there and shows the reviewer the proposal's summary, written from the record, with approval
+controls below it, in place of any text you write. A turn that ends without the call is paused on
+the proposal anyway.
 Never ask the user to type "approve", and never say a change is staged and waiting for a word.
 
 Never offer a change `discover_write_operations` does not admit: its `never_available` list

@@ -139,6 +139,18 @@ async def test_the_report_flags_what_to_distrust_and_reads_against_goals(
     assert "capped" in rows[capped.entity_ref].flags
     assert "go unspent" in report.reading
     assert "target" in (report.against_goals or "") and report.month is not None
+    # A raise's marginal conversions cost more than a 20 target here: worse, said by code.
+    marginal = report.incremental_vs_target or ""
+    assert (
+        marginal.startswith("each extra conversion costs about") and "20.00 USD target" in marginal
+    )
+    inc = report.forecast.incremental_cpa
+    assert inc is not None and (("above" in marginal) == (inc > 20))
+    assert ("(worse)" in marginal) == (inc > 20) and marginal in (report.against_goals or "")
+    assert marginal[0].upper() + marginal[1:] in report.reading
+    raised = rows[free.entity_ref]
+    if raised.incremental_cpa is not None:
+        assert raised.as_json()["incremental_vs_target"].startswith("each extra conversion")
     assert "monthly budget" in report.reading
     body = report.as_json()
     best = body["best_split"]
@@ -201,3 +213,19 @@ async def test_an_unchanged_scenario_lands_the_month_where_pacing_does(
     )
     pacing = compute_pacing(store, account_alias=alias, today=fitted.as_of, goal=goal)
     assert report.month["projected_spend"] == pytest.approx(pacing.projected_spend, abs=0.01)
+
+
+def test_a_cut_is_judged_by_what_its_lost_conversions_cost() -> None:
+    from paid_media_agent.bandit.whatif import incremental_vs_target
+
+    dear = incremental_vs_target(46.83, -50.0, 30.0, "USD")
+    cheap = incremental_vs_target(20.0, -50.0, 30.0, "USD")
+    assert dear is not None and "56% above the 30.00 USD target" in dear
+    assert dear.endswith("drops conversions that cost more than the target (better)")
+    assert cheap is not None and cheap.endswith("cost less than the target (worse)")
+    raise_ = incremental_vs_target(46.83, 50.0, 30.0, "USD")
+    assert (
+        raise_
+        == "each extra conversion costs about 46.83 USD, 56% above the 30.00 USD target (worse)"
+    )
+    assert incremental_vs_target(46.83, 50.0, None, "USD") is None

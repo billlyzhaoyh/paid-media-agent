@@ -85,8 +85,16 @@ PROVIDERS: dict[str, Provider] = {
 TRANSIENT_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 529})
 
 
-def wire_messages(system: str, messages: Sequence[Message]) -> list[dict[str, Any]]:
-    wire: list[dict[str, Any]] = [{"role": "system", "content": system}] if system else []
+def wire_messages(
+    system: str, messages: Sequence[Message], *, cache_system: bool = False
+) -> list[dict[str, Any]]:
+    """`cache_system` puts a cache breakpoint at the end of the system prompt. Tools come before
+    it in Anthropic's order, so every thread's first call reads the shared tools and instructions
+    from the cache instead of writing them; automatic caching covers the conversation after."""
+    content: str | list[dict[str, Any]] = system
+    if cache_system and system:
+        content = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+    wire: list[dict[str, Any]] = [{"role": "system", "content": content}] if system else []
     for message in messages:
         if isinstance(message, UserMessage):
             wire.append({"role": "user", "content": message.content})
@@ -204,7 +212,7 @@ class OpenAICompatibleModel:
             raise ModelError(f"{self._missing_key} is not set", transient=False)
         body: dict[str, Any] = {
             "model": self._model,
-            "messages": wire_messages(system, messages),
+            "messages": wire_messages(system, messages, cache_system=self.cache_requested),
             "max_tokens": self._max_tokens,
         }
         if tools:

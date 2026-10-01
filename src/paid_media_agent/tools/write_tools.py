@@ -164,9 +164,9 @@ def build_write_tools(
             {
                 "proposal": view.model_dump(mode="json"),
                 "next_step": (
-                    "Call execute_change with proposal_id and revision, with no message text: "
-                    "the runtime shows the reviewer this proposal's summary from the record and "
-                    "pauses for human approval."
+                    "Now, in your next reply, call execute_change with this proposal_id and "
+                    "revision. The runtime pauses for human approval and shows the reviewer this "
+                    "proposal's summary from the record in place of any text you write."
                 ),
             }
         )

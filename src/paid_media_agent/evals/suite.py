@@ -174,6 +174,7 @@ async def run_suite(
             "seconds": transcript.seconds,
             "error": transcript.error,
             "draft": transcript.draft if transcript.repaired else None,
+            "prompt_context": transcript.context or None,
         }
         refused = provider_refusal(
             transcript.error,
@@ -234,6 +235,7 @@ def regrade(store: EvalStore, run_id: uuid.UUID, *, project_root: Path) -> uuid.
             paused=detail == "paused for approval",
             mutations=mutations,
             error=old["error"],
+            context=old.get("prompt_context") or "",
         )
         checks = run_checks(transcript, question, anchor=anchor, today=today)
         verdict = old["judge"]

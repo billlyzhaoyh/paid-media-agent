@@ -79,7 +79,9 @@ def build_what_if_budgets_tool(
         result["note"] = (
             "A forecast from each campaign's fitted spend response; nothing has changed. Quote "
             "the reading; do not recompute. Figures are per day unless under over_horizon. "
-            "incremental_cpa is what each extra conversion costs (or each lost one saves). "
+            "incremental_cpa is what each extra conversion costs (or each lost one saves); "
+            "incremental_vs_target judges it against the target CPA: quote it, never compare "
+            "the two yourself. "
             "Treat campaigns flagged outside_history as guesses; capped ones cannot spend more "
             "because demand or a bid target limits them. To act on a scenario, only when the user "
             "asks, call propose_change per campaign; each waits for approval."

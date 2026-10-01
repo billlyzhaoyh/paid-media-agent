@@ -145,7 +145,10 @@ The model does not keep the books on what it read or what it proposed; the host 
   and day, the newest artifact wins an overlap, totals reconcile against the provider's when
   that is still exact, and a day no artifact covers is named.
 - **Proposals.** A paused proposal always shows the summary written from its record
-  (`proposal_summary`), on every surface, in place of the model's text. To apply a budget
+  (`proposal_summary`), on every surface, in place of the model's text. A turn that ends with a
+  proposal from that turn still awaiting approval and unpaused is paused on it by the runtime
+  (`host-pause-` calls): a model that describes a staged change instead of pausing still leaves
+  the reviewer a card. To apply a budget
   recommendation the model passes `propose_change` the run's `bandit_run_id` and the campaign:
   the budget, reason, and plans come from the stored decision, and a stale, ineligible, foreign,
   or already-proposed decision is refused.
@@ -154,7 +157,8 @@ The model does not keep the books on what it read or what it proposed; the host 
 
 Every final answer is checked with the eval's grounding rule (`paid_media_agent/grounding.py`,
 also used by `evals/checks.py`): its figures must be in the thread's tool results, the payloads
-those results name, `calculate` results built on sourced figures, or the user's own words.
+those results name, `calculate` results built on sourced figures, the account section of the
+system prompt (each account's goals), or the user's own words.
 - When it fails (any money figure missing, or under 80% of figures found), the draft is kept for
   the record and a host note naming the figures sends it back once; that one extra model call is
   logged with purpose `repair`. Surfaces show only the answer that follows.
@@ -180,8 +184,12 @@ Every model call sends the whole thread, read back from the state file.
   automatic `cache_control` (`PAID_MEDIA_PROMPT_CACHE=auto`, the default).
   - The cached prefix (tools, system prompt, earlier turns) moves forward as a thread grows, so
     each step of a tool loop reads the thread so far from cache.
-  - The tool list and the system prompt are the same on every call (see Tool disclosure), so
-    the prefix is read from cache after a thread's first call.
+  - The tool list and the system prompt are the same on every call (see Tool disclosure).
+  - Automatic caching alone puts its breakpoint at the end of the conversation, so the shared
+    tools and instructions never had a cache entry of their own: every thread's first call wrote
+    them again (Sonnet, 15.8k tokens at 1.25x). The system prompt therefore also carries an
+    explicit breakpoint. Tools come before it, so one entry covers both, and a thread's first call
+    reads them. The entry is rewritten when the calendar or an account's goals change.
   - OpenRouter routes each conversation to a provider on its own unless told otherwise, and each
     provider has its own cache. Requests therefore carry a `session_id` fixed per deployment (a
     hash of the state path; for evals, per model and day), so every thread lands on the provider

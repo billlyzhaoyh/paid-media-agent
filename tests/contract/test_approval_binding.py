@@ -328,3 +328,75 @@ async def test_an_approval_racing_a_new_message_leaves_no_unused_claim(
     service = runtime.components.proposal_service
     assert service.approvals.latest_unused(pid, 1) is None, "no claim was left for later"
     assert service.get(pid).state is ProposalState.AWAITING_APPROVAL
+
+
+async def test_a_proposal_the_model_only_describes_is_paused_by_the_runtime(
+    settings: Settings, project_root: Path
+) -> None:
+    from paid_media_agent.harness.messages import AssistantMessage
+
+    described = AssistantMessage(
+        "Your proposal is ready for approval. Once approved, I'll execute it."
+    )
+    state = FixtureState()
+    provider = FakeWriteProvider(state)
+    runtime, _ = build_runtime(
+        settings, project_root, [propose_step(), lambda _m: described, final_step],
+        fixture_state=state, write_provider=provider,
+    )  # fmt: skip
+    runner = _runner(runtime)
+    outcome = await runner.send(thread_id="a", caller_ref="local-user", text="cut PMax to 240")
+    assert outcome.interrupted and outcome.proposal is not None, "a card, not a promise"
+    conversation = runtime.agent.conversation("a")
+    (paused,) = conversation.pending
+    assert paused.name == "execute_change" and paused.id.startswith("host-pause-")
+    assert paused.args == {"proposal_id": str(outcome.proposal.proposal_id), "revision": 1}
+    last = [m for m in conversation.messages if isinstance(m, AssistantMessage)][-1]
+    assert last.content.startswith("Proposed change for review") and "-> 240" in last.content
+    assert provider.mutation_calls == []
+    done = await runner.approve(
+        proposal_id=UUID(paused.args["proposal_id"]), approver_ref="reviewer-1"
+    )
+    assert not done.interrupted and done.text.startswith("done:") and "verified" in done.text
+    assert len(provider.mutation_calls) == 1
+
+
+async def test_only_unpaused_live_proposals_from_this_turn_are_paused(
+    settings: Settings, project_root: Path
+) -> None:
+    from paid_media_agent.harness.messages import AssistantMessage
+
+    # Paused by the model itself: paused once, by its own call.
+    runtime, _ = build_runtime(
+        settings, project_root, [propose_step(), execute_step, final_step],
+        fixture_state=FixtureState(),
+    )  # fmt: skip
+    conversation = await runtime.agent.send("b", "local-user", "cut PMax to 240")
+    assert [c.id.startswith("host-pause-") for c in conversation.pending] == [False]
+
+    # Rejected before the turn ends: nothing left to pause.
+    def reject(messages: Any) -> AssistantMessage:
+        (proposal,) = _proposals(messages)
+        runtime.components.proposal_service.reject(
+            UUID(proposal["proposal_id"]), actor_ref="reviewer-1", message="no"
+        )
+        return AssistantMessage("I staged it, but it was rejected.")
+
+    runtime, _ = build_runtime(
+        settings, project_root, [propose_step(), reject], fixture_state=FixtureState()
+    )
+    conversation = await runtime.agent.send("c", "local-user", "cut PMax to 240")
+    assert not conversation.awaiting_approval
+
+    # A proposal from an earlier turn is that turn's business, not this one's.
+    runtime, _ = build_runtime(
+        settings, project_root,
+        [propose_step(), lambda _m: AssistantMessage("staged"),
+         lambda _m: AssistantMessage("Anything else?")],
+        fixture_state=FixtureState(),
+    )  # fmt: skip
+    first = await runtime.agent.send("d", "local-user", "cut PMax to 240")
+    assert first.awaiting_approval
+    await runtime.agent.resume("d", "local-user", "reject")
+    later = await runtime.agent.send("d", "local-user", "thanks")
+    assert not later.awaiting_approval

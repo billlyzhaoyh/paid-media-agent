@@ -69,6 +69,8 @@ PauseSummary = Callable[[Sequence[ToolCall], ToolContext], str]
 AnswerCheck = Callable[[Sequence[Message], str], Sequence[str]]
 """The figures in a final answer no tool in the thread returned, when there are enough to fail
 the grounding rule; empty when it passes (`grounding.answer_check`)."""
+AutoPause = Callable[[Sequence[Message], ToolContext], Sequence[ToolCall]]
+"""Gated calls for proposals made this turn that the model ended without pausing on."""
 MODEL_FAILED = "Model call failed"
 
 
@@ -159,6 +161,7 @@ class Agent:
         read_tools_budget_tokens: int = 6000,
         prompt_context: Callable[[], str] | None = None,
         check_answer: AnswerCheck | None = None,
+        auto_pause: AutoPause | None = None,
     ) -> None:
         self.model = model
         self.system_prompt = system_prompt
@@ -175,6 +178,7 @@ class Agent:
         self._pause_summary = pause_summary
         self._prompt_context = prompt_context
         self._check_answer = check_answer
+        self._auto_pause = auto_pause
         reads = [spec.schema for spec in dispatcher.tools.values() if spec.kind == "read"]
         self.all_reads_bound = estimate_tokens("", [], reads) <= read_tools_budget_tokens
         """Every authorized read is bound on every call when they fit the budget, so the tool
@@ -459,6 +463,25 @@ class Agent:
             return reply
         return replace(reply, content=summary) if summary else reply
 
+    def _paused_by_host(
+        self, thread_id: str, reply: AssistantMessage, context: ToolContext
+    ) -> AssistantMessage:
+        """A final reply that leaves this turn's proposal unpaused becomes the pause itself.
+
+        Its text would be replaced by the code-written summary anyway; its provider state
+        belonged to a text reply, so it is dropped rather than replayed with tool calls.
+        """
+        if self._auto_pause is None:
+            return reply
+        try:
+            calls = tuple(self._auto_pause(self.conversations.messages(thread_id), context))
+        except Exception:
+            logger.warning("could not check for unpaused proposals", exc_info=True)
+            return reply
+        if not calls:
+            return reply
+        return AssistantMessage(content=reply.content, tool_calls=calls, usage=reply.usage)
+
     def _unsourced(self, thread_id: str, reply: AssistantMessage) -> Sequence[str]:
         """Figures in a final answer no tool returned; nothing when there is no check to run."""
         if self._check_answer is None or not reply.content.strip():
@@ -488,6 +511,8 @@ class Agent:
         purpose = "agent"
         for _ in range(self._max_model_calls):
             reply = await self._complete(thread_id, caller_ref, purpose)
+            if not reply.tool_calls:
+                reply = self._paused_by_host(thread_id, reply, context)
             reply = self._with_pause_summary(reply, context)
             if not reply.tool_calls:
                 unsourced = self._unsourced(thread_id, reply)

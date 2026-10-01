@@ -157,6 +157,8 @@ def transcript_of(
             transcript.repaired = True
             transcript.draft = before.content if isinstance(before, AssistantMessage) else ""
     transcript.extra_sources = artifact_sources(runtime.profile.artifacts, calls)
+    if runtime.components.prompt_context is not None:
+        transcript.context = runtime.components.prompt_context()
     return transcript
 
 

@@ -117,6 +117,8 @@ class CampaignForecast:
     constraint: str = "unknown"
     flags: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    vs_target: str | None = None
+    """The incremental CPA against the account's target CPA, judged in code."""
 
     @property
     def incremental_cpa(self) -> float | None:
@@ -141,6 +143,7 @@ class CampaignForecast:
                 self.conversions_change.as_json() if self.conversions_change else None
             ),
             "incremental_cpa": _r(self.incremental_cpa),
+            "incremental_vs_target": self.vs_target,
             "constraint": self.constraint,
             "flags": self.flags,
             "notes": self.notes,
@@ -483,6 +486,7 @@ class WhatIfReport:
     best: dict[str, Any] | None = None
     goals: dict[str, Any] | None = None
     against_goals: str | None = None
+    incremental_vs_target: str | None = None
     month: dict[str, Any] | None = None
     notes: list[str] = field(default_factory=list)
     reading: str = ""
@@ -501,6 +505,7 @@ class WhatIfReport:
                 "spend": round(f.spend_change, 2),
                 "conversions": f.conversions_change.as_json(),
                 "incremental_cpa": _r(f.incremental_cpa),
+                "incremental_vs_target": self.incremental_vs_target,
             },
             "over_horizon": {
                 "days": h,
@@ -522,6 +527,36 @@ def _money(value: float, currency: str | None) -> str:
     return f"{number} {currency}" if currency else number
 
 
+def incremental_vs_target(
+    incremental_cpa: float | None, spend_change: float, target: float | None, currency: str | None
+) -> str | None:
+    """What the marginal conversions cost against the target CPA, with the verdict.
+
+    A raise is worse when each extra conversion costs more than the target. A cut is better when
+    each conversion it gives up cost more than the target: it drops the expensive ones.
+    """
+    if incremental_cpa is None or not target or abs(spend_change) < 1e-9:
+        return None
+    gap = incremental_cpa / target - 1
+    where = (
+        "on the target"
+        if abs(gap) < 0.005
+        else f"{abs(gap):.0%} {'above' if gap > 0 else 'below'} the {_money(target, currency)} "
+        "target"
+    )
+    if spend_change > 0:
+        judged = "" if abs(gap) < 0.005 else f" ({'worse' if gap > 0 else 'better'})"
+        return f"each extra conversion costs about {_money(incremental_cpa, currency)}, {where}{judged}"
+    if abs(gap) < 0.005:
+        return f"each conversion given up saves about {_money(incremental_cpa, currency)}, {where}"
+    dearer = gap > 0
+    return (
+        f"each conversion given up saves about {_money(incremental_cpa, currency)}, {where}: "
+        f"the cut drops conversions that cost {'more' if dearer else 'less'} than the target "
+        f"({'better' if dearer else 'worse'})"
+    )
+
+
 def whatif_reading(report: WhatIfReport) -> str:
     f, c = report.forecast, report.currency
     d = f.conversions_change
@@ -538,7 +573,11 @@ def whatif_reading(report: WhatIfReport) -> str:
             + (f" ({judged})." if judged in ("better", "worse") else ".")
         )
     inc = f.incremental_cpa
-    if inc is not None:
+    if report.incremental_vs_target:
+        parts.append(
+            report.incremental_vs_target[0].upper() + report.incremental_vs_target[1:] + "."
+        )
+    elif inc is not None:
         if f.spend_change > 0:
             parts.append(f"Each extra conversion costs about {_money(inc, c)}.")
         else:
@@ -637,7 +676,15 @@ def what_if(
         report.goals = {**goal.values(), "effective_from": goal.effective_from.isoformat()}
         cpa = result.scenario.cpa.mean if result.scenario.cpa else None
         line = goal_line("Expected CPA", cpa, goal.target_cpa, lower_is_better=True)
-        report.against_goals = line or None
+        report.incremental_vs_target = incremental_vs_target(
+            result.incremental_cpa, result.spend_change, goal.target_cpa, report.currency
+        )
+        for row in result.campaigns:
+            row.vs_target = incremental_vs_target(
+                row.incremental_cpa, row.spend - row.spend_now, goal.target_cpa, report.currency
+            )
+        marginal = report.incremental_vs_target
+        report.against_goals = "; ".join(x for x in (line, marginal) if x) or None
         pacing = compute_pacing(
             store, account_alias=account_alias, today=fitted.as_of, goal=goal, currency=currency
         )

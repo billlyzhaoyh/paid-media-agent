@@ -320,9 +320,48 @@ the cost slice:
 | Haiku 4.5 | `6f6c6384` | 5.2 | 59k | 63% | $0.037 |
 
 The three-call questions read only 25–33% from cache: their first call wrote the prefix instead
-of finding one an earlier question had cached. That points to cross-thread provider routing,
-which the session id addresses.
+of finding one an earlier question had cached.
 
-Still to measure, after a credit top-up:
-`eval run --ids q01,q04,q16,q17,q20,q30 --no-judge`, on Haiku and then on Sonnet 5.5, about
-$0.60 together.
+## Cost per answer (2026-10-01): after
+
+The same six questions, no judge, all passing:
+
+| Agent | Run | Commit | Calls per question | Input per question | From cache | Written | Agent cost per question |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Haiku 4.5 | `53a4fb98` | `fded5f8` (cost slice) | 3.0 | 41k | 72% | 28% | $0.021 |
+| Sonnet 5.5 | `f2dac9ff` | `fded5f8` (cost slice) | 4.0 | 86k | 70% | 30% | $0.098 |
+| Sonnet 5.5 | `b4b35544` | S18b (system breakpoint) | 3.5 | 72k | 85% | 15% | $0.057 |
+
+- **The cost slice cut Haiku's calls and cost** (5.2 to 3.0 calls, $0.037 to $0.021), but not
+  Sonnet's ($0.096 to $0.098).
+- **Why.** Per-call usage showed every question's first call writing the whole shared prefix
+  (Sonnet, 15.8k tokens) while later calls read the thread perfectly. Automatic caching places
+  its one breakpoint at the end of the conversation, so the tools and system prompt never had
+  their own entry. The pinned session was not enough.
+- **S18b adds an explicit breakpoint at the end of the system prompt.** First calls now read the
+  prefix (Haiku write questions `ba778b3b`: 2 of 3 wrote nothing), and Sonnet costs $0.057 a
+  question, 41% less than before either slice.
+
+## S18 and S18b (2026-10-01)
+
+**S18 on Haiku** (`92883660`: q09, q10, q16, q20, q25, no judge): 3/5.
+- **q09 and q10 regressed.** Haiku proposed the change, then described it ("once approved, I'll
+  execute it") without calling `execute_change`: nothing paused. S18's wording ("call
+  `execute_change` with no message text") caused it.
+- **S18b fixes it twice over.** The instructions again ask for the call in the next reply, and
+  the runtime pauses any proposal a turn leaves unpaused. After: q09, q10, q25 all pause
+  (`ba778b3b`, 3/3, $0.015 a question).
+
+**Verdicts, judged on passing answers** (`1d3d866d` Haiku 2/6, `89d85fe5` Sonnet 7/10):
+- **Goals the checks could not see.** Since the cost slice the accounts and goals are in the
+  system prompt, which the judge and the grounding check did not get, so "target CPA 30" was
+  "invented" (Sonnet q13, Haiku q30). S18b gives both the account section; Haiku q13 then passed
+  (`ceb91396`).
+- **Incremental CPA against the target.** Both models misjudged it on q17 ("46.83 is below the
+  30.00 target"). `what_if_budgets` now states it per campaign and for the account, and Sonnet
+  quotes it ("46.83 USD, 56% above the 30.00 USD target (worse)"; the cut "drops conversions that
+  cost more than the target (better)").
+- **Still open.** Haiku answered "this month" week over week (q15). Sonnet said conversions were
+  not flagged where the anomaly check never covered the last days (q06). Haiku asked which
+  account q17 meant before forecasting (`ceb91396`). Haiku's q30 omitted the attribution and
+  maturity caveats.

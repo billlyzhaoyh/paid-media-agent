@@ -82,8 +82,14 @@ async def test_prompt_caching_is_requested_for_anthropic_models_on_openrouter(
     model, sent = _model(model_id, base_url, prompt_cache=setting, zero_data_retention=True)
     await model.complete(system="s", messages=[UserMessage("hi")], tools=[])
     assert ("cache_control" in sent[0]) is cached and model.cache_requested is cached
+    system = sent[0]["messages"][0]["content"]
     if cached:
-        assert sent[0]["cache_control"] == {"type": "ephemeral"}
+        assert sent[0]["cache_control"] == {"type": "ephemeral"}, "the conversation, automatically"
+        assert system == [{"type": "text", "text": "s", "cache_control": {"type": "ephemeral"}}], (
+            "and the shared tools and instructions, for every thread"
+        )
+    else:
+        assert system == "s"
     assert ("provider" in sent[0]) is (base_url == OPENROUTER), "zdr goes to OpenRouter only"
 
 

@@ -83,6 +83,8 @@ class Transcript:
     """The runtime's grounding check sent the first answer back once."""
     draft: str = ""
     """That first answer, when it was repaired."""
+    context: str = ""
+    """The accounts and goals the system prompt gave the agent: figures from it are sourced."""
 
     def as_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -134,7 +136,7 @@ def check_grounded(transcript: Transcript, question: dict[str, Any], text: str) 
         transcript.answer,
         transcript.calls,
         extra_sources=transcript.extra_sources,
-        asked=[text],
+        asked=[text, transcript.context],
         minimum=minimum,
     )
     if not result.stated:
