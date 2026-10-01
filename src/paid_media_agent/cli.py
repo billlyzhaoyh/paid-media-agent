@@ -2087,7 +2087,7 @@ def _eval_store(path: str | None) -> Any:
 def _eval_model(spec: str, settings: Settings, *, rpm: int) -> Any:
     from paid_media_agent.config import ModelConfig
     from paid_media_agent.evals.runner import Throttled
-    from paid_media_agent.harness.models import resolve_model
+    from paid_media_agent.harness.models import cache_session, resolve_model
 
     same = spec == settings.paid_media_model
     model = resolve_model(
@@ -2096,6 +2096,8 @@ def _eval_model(spec: str, settings: Settings, *, rpm: int) -> Any:
         timeout_seconds=settings.paid_media_model_timeout_seconds,
         zero_data_retention=settings.paid_media_model_zero_data_retention,
         prompt_cache=settings.paid_media_prompt_cache,
+        # One session per model and day: every question of a run shares the cached prefix.
+        session_id=cache_session(f"eval:{spec}:{date.today().isoformat()}"),
     )
     return Throttled(model, rpm)
 
@@ -2125,19 +2127,29 @@ def _echo_eval(run: dict[str, Any], results: list[dict[str, Any]], against: Any)
         mark = "PASS" if r["passed"] else "FAIL"
         cost = f"${r['cost_usd']:.4f}" if r.get("cost_usd") is not None else "cost n/a"
         line = f"  {mark} {r['question_id']:22} {r.get('seconds') or 0:6.1f}s {cost}"
+        if r.get("input_tokens"):
+            # Calls and how much of their input came from, or went into, the prompt cache.
+            line += (
+                f" {r.get('model_calls') or 0}c {(r.get('cached_tokens') or 0) / r['input_tokens']:.0%}"
+                f"/{(r.get('cache_write_tokens') or 0) / r['input_tokens']:.0%}w"
+            )
         if not r["passed"]:
             line += f"  {why(r)}"
         click.echo(line)
     cost = "n/a" if t["cost_usd"] is None else f"${t['cost_usd']:.2f}"
     judge_cost = "" if t["judge_cost_usd"] is None else f" + judge ${t['judge_cost_usd']:.2f}"
     hit = "n/a" if t["cache_hit_rate"] is None else f"{t['cache_hit_rate']:.0%}"
+    if t.get("cache_write_rate") is not None:
+        hit += f" ({t['cache_write_rate']:.0%} written)"
     if repeated:
         click.echo(
             f"questions passed on a majority of attempts: {t['questions_passed']}/{t['questions']}"
         )
     click.echo(
         f"passed {t['passed']}/{t['attempts']} attempts ({(t['pass_rate'] or 0):.0%}); judge passed "
-        f"{t['judge_passed']}/{t['judged']}; cost {cost}{judge_cost}; {t['model_calls']} model "
+        f"{t['judge_passed']}/{t['judged']}"
+        + (f" ({t['judge_skipped']} not judged: a check failed)" if t.get("judge_skipped") else "")
+        + f"; cost {cost}{judge_cost}; {t['model_calls']} model "
         f"calls, {hit} of input from cache; p50 {t['p50_seconds']}s, max {t['max_seconds']}s"
     )
     if t["mean_scores"]:
@@ -2166,6 +2178,11 @@ def _echo_eval(run: dict[str, Any], results: list[dict[str, Any]], against: Any)
     "--judge", "judge_spec", default=None, help="Judge model (default PAID_MEDIA_EVAL_JUDGE_MODEL)."
 )
 @click.option("--no-judge", is_flag=True, help="Deterministic checks only.")
+@click.option(
+    "--judge-all",
+    is_flag=True,
+    help="Judge every answer; by default an answer that failed a check is not judged.",
+)
 @click.option("--ids", default=None, help="Comma-separated question ids or prefixes (q01,q16).")
 @click.option(
     "--repeat",
@@ -2187,6 +2204,7 @@ def eval_run(
     model_spec: str | None,
     judge_spec: str | None,
     no_judge: bool,
+    judge_all: bool,
     ids: str | None,
     repeat: int,
     rpm: int,
@@ -2223,6 +2241,7 @@ def eval_run(
                 ids=ids.split(",") if ids else None,
                 on_result=progress,
                 repeat=repeat,
+                judge_all=judge_all,
             )
         )
         run = store.run(run_id)

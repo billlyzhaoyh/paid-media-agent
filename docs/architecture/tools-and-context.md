@@ -18,12 +18,28 @@ advertisers, and GA4 properties. Fixture coverage remains Google, Meta, and Redd
 
 ## Tool disclosure
 
-Core, write, and file tools are bound to every model call. Platform read tools are bound only after
-`discover_tools` finds them: its catalog search activates the matching tools for the thread, at most
-`PAID_MEDIA_MAX_SELECTED_TOOLS` at a time, dropping the oldest. Activation only decides which
-schemas the model sees. Authorization is separate: any authorized read can be called, and nothing
-outside the authorized catalog can be, whatever the model names. The same path works for every
-model provider; there is no provider-specific tool search.
+Core, write, and file tools are bound to every model call.
+
+**Platform read tools.** Every authorized read tool is bound too, sorted by name after the
+others, while their schemas fit `PAID_MEDIA_READ_TOOLS_BUDGET_TOKENS` (default 6,000; the
+sample catalog is about 2,500). The tool list is then identical on every call and in every
+thread, so the prompt cache holds and no turn is spent finding tools.
+
+**A larger catalog** is bound as `discover_tools` finds what a thread needs:
+- at most `PAID_MEDIA_MAX_SELECTED_TOOLS`;
+- the set only grows, and the oldest leave only past the cap;
+- the bound order is by name, so the list changes only when a new tool is found.
+
+`discover_tools` also searches the catalog by keyword when the model is unsure which tool fits.
+
+**Authorization is separate from binding.** Binding decides only which schemas the model sees:
+any authorized read can be called, and nothing outside the authorized catalog can be, whatever
+the model names. The same path works for every model provider; there is no provider-specific
+tool search.
+
+**The accounts are in the system prompt**, after the calendar: each alias with its platform,
+currency, timezone, today, and current goals. That saves the `list_accounts` turn most questions
+began with. It changes only when a goal or an account's day changes.
 
 ## Results
 
@@ -128,7 +144,12 @@ Every model call sends the whole thread, read back from the state file.
   automatic `cache_control` (`PAID_MEDIA_PROMPT_CACHE=auto`, the default).
   - The cached prefix (tools, system prompt, earlier turns) moves forward as a thread grows, so
     each step of a tool loop reads the thread so far from cache.
-  - Tool order is stable, so only activating a read tool changes the prefix.
+  - The tool list and the system prompt are the same on every call (see Tool disclosure), so
+    the prefix is read from cache after a thread's first call.
+  - OpenRouter routes each conversation to a provider on its own unless told otherwise, and each
+    provider has its own cache. Requests therefore carry a `session_id` fixed per deployment (a
+    hash of the state path; for evals, per model and day), so every thread lands on the provider
+    that already holds the shared prefix.
   - The direct `anthropic:` provider goes through Anthropic's OpenAI-compatible endpoint, which
     does not cache.
 - **Usage.** Every attempt is a row in `llm_calls`, via `harness/usage.py`:

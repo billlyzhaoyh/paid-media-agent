@@ -87,6 +87,20 @@ async def test_prompt_caching_is_requested_for_anthropic_models_on_openrouter(
     assert ("provider" in sent[0]) is (base_url == OPENROUTER), "zdr goes to OpenRouter only"
 
 
+async def test_a_session_id_pins_every_thread_to_one_provider_on_openrouter() -> None:
+    from paid_media_agent.harness.models import cache_session
+
+    session = cache_session("/state/pma.duckdb")
+    assert session == cache_session("/state/pma.duckdb") and session.startswith("pma-")
+    assert "/state" not in session, "opaque: no path leaves the host"
+    pinned, sent = _model("anthropic/claude-haiku-4.5", OPENROUTER, session_id=session)
+    await pinned.complete(system="s", messages=[UserMessage("hi")], tools=[])
+    assert sent[0]["session_id"] == session
+    direct, sent = _model("claude-sonnet-4-6", "https://api.anthropic.com/v1", session_id=session)
+    await direct.complete(system="s", messages=[UserMessage("hi")], tools=[])
+    assert "session_id" not in sent[0], "only OpenRouter takes the field"
+
+
 class _Recovering:
     """Fails with the given errors, then answers with usage attached."""
 

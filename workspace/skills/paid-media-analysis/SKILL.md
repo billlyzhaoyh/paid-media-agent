@@ -8,8 +8,8 @@ description: Analyze paid-media performance, compare periods or entities, diagno
 Use this skill for performance questions, audits, comparisons, diagnosis, budget reasoning, and
 recommendations.
 
-1. Take each account's numeric goals (target CPA, target ROAS, monthly budget) from
-   `list_accounts`; they are authoritative. Read `/skills/company-context/SKILL.md` when present
+1. Take each account's numeric goals (target CPA, target ROAS, monthly budget) from the
+   accounts in the system prompt (`list_accounts` refreshes them); they are authoritative. Read `/skills/company-context/SKILL.md` when present
    for what they mean, conversions, and naming. Ask for missing facts the analysis needs; do not
    guess. Then read
    `/skills/paid-media-wiki/decision-model.md` and the page the question calls for:
@@ -23,7 +23,8 @@ recommendations.
    (`data_complete_through`), not today; "this month" is the calendar month to date. When a
    platform's data ends inside the requested window, keep the requested window in the answer and
    name the missing days rather than silently shrinking it.
-3. Call `list_accounts` for aliases, then `discover_tools` with keywords. Never invent a tool name.
+3. Use the account aliases in the system prompt. Call platform reads directly, together when
+   they are independent; `discover_tools` searches them by keyword. Never invent a tool name.
    Platform tools are named `<platform>__<tool>` and take `account_alias`, never a provider id.
    Pipeboard loads all tools exposed by its eight configured MCP servers. Search the live catalog;
    availability depends on connected accounts and host policy. GA4 uses property aliases.

@@ -398,3 +398,48 @@ def test_a_calculation_grounds_its_result_only_from_sourced_inputs() -> None:
     assert "7400" in check.detail, "a calculation cannot make an invented number true"
     prose = Transcript("q09", "About $1,080.00 a month.", calls=[proposal])
     assert not check_grounded(prose, {}, "question").passed, "prose arithmetic still fails"
+
+
+async def test_an_answer_that_failed_a_check_is_not_judged_unless_asked(
+    settings: Settings, project_root: Path
+) -> None:
+    class Counting(Judge):
+        def __init__(self) -> None:
+            super().__init__()
+            self.asked: list[str] = []
+
+        async def complete(self, *, system: str, messages: Sequence[Message], tools: Any) -> Any:
+            self.asked.append(json.loads(messages[-1].content)["question"])
+            return await super().complete(system=system, messages=messages, tools=tools)
+
+    store = EvalStore(store=Store())
+    judge = Counting()
+    run_id, results = await run_suite(
+        settings, project_root=project_root, model=Analyst(invent=True), model_spec="a",
+        judge_model=judge, judge_spec="j", store=store, ids=["q16", "q08"],
+    )  # fmt: skip
+    by_id = {r["question_id"]: r for r in results}
+    assert by_id["q16_why_cpa"]["judge"] == {"skipped": "a check failed", "passed": None}
+    assert not by_id["q16_why_cpa"]["passed"] and len(judge.asked) == 1, "only q08 was judged"
+    summary = store.run(run_id)["totals"]
+    assert (summary["judged"], summary["judge_skipped"]) == (1, 1)
+    stored = {r["question_id"]: r for r in store.results(run_id)}
+    calls = stored["q16_why_cpa"]["call_usage"]
+    assert len(calls) == stored["q16_why_cpa"]["model_calls"] and calls[0] == [None, None, None], (
+        "one entry per model call, in order; scripted models report no tokens"
+    )
+
+    judge = Counting()
+    _, results = await run_suite(
+        settings, project_root=project_root, model=Analyst(invent=True), model_spec="a",
+        judge_model=judge, judge_spec="j", store=store, ids=["q16"], judge_all=True,
+    )  # fmt: skip
+    assert len(judge.asked) == 1 and results[0]["judge"]["scores"], "--judge-all judges it"
+
+    from paid_media_agent.evals.suite import regrade
+
+    again = store.results(regrade(store, run_id, project_root=project_root))
+    assert {r["question_id"]: r["passed"] for r in again} == {
+        "q08_pipeline": True,
+        "q16_why_cpa": False,
+    }, "a skipped judgement regrades on the checks alone"

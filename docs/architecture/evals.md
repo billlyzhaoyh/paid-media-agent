@@ -97,7 +97,19 @@ The code is in `src/paid_media_agent/evals/`.
 - **Recording:** judge calls are recorded in `llm_calls` with purpose `eval_judge`.
 
 A question **passes** when every check passes and, when a judge ran, the judge passes.
-`--no-judge` runs the checks alone.
+- An answer that failed a check is not judged, because it fails either way. Its judgement is
+  stored as skipped and counted in the totals. The judge was a third of a run's cost.
+- `--judge-all` judges every answer anyway.
+- `--no-judge` runs the checks alone.
+
+**Spending little:**
+1. Iterate with `--ids` and `--no-judge`; the checks cost nothing to grade.
+2. Re-grade stored runs (`eval regrade`) after changing the checks; that calls no model.
+3. Judge with Sonnet 5.5 for baselines and before a commit.
+
+Each result stores the model calls' cache use: `cache_write_tokens`, and `call_usage` with each
+call's input, cached, and written tokens in order. The report shows it per question as
+`5c 88%/4%w`: calls, the share of input read from cache, and the share written to it.
 
 ## Results
 
@@ -287,3 +299,25 @@ questions passed. The account then ran out of credits (HTTP 402 at q15).
 
 It missed only on a hand-computed gap, which `comparisons` now states too. The Sonnet run and
 the rest of the Haiku questions are still to do.
+
+## Cost per answer (2026-10-01): before
+
+These are the measurement questions (q01, q04, q16, q17, q20, q30), from stored runs, before
+the cost slice:
+- **All read tools bound.** Every authorized read is bound, so no `discover_tools` turn.
+- **Accounts in the prompt.** No `list_accounts` turn.
+- **Pinned provider.** A `session_id` keeps every thread on one OpenRouter provider.
+- **Judge on passing answers only.** No judge call for an answer that already failed a check.
+
+| Agent | Run | Calls per question | Input per question | From cache | Agent cost per question |
+| --- | --- | --- | --- | --- | --- |
+| Sonnet 5.5 | `5e4f7dcc` | 4.3 | 65k | 57% | $0.096 |
+| Haiku 4.5 | `6f6c6384` | 5.2 | 59k | 63% | $0.037 |
+
+The three-call questions read only 25–33% from cache: their first call wrote the prefix instead
+of finding one an earlier question had cached. That points to cross-thread provider routing,
+which the session id addresses.
+
+Still to measure, after a credit top-up:
+`eval run --ids q01,q04,q16,q17,q20,q30 --no-judge`, on Haiku and then on Sonnet 5.5, about
+$0.60 together.

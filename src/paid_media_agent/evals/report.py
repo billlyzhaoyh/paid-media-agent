@@ -27,11 +27,17 @@ def _majority(passed: int, attempts: int) -> bool:
 def totals(results: list[dict[str, Any]]) -> dict[str, Any]:
     n = len(results)
     passed = sum(1 for r in results if r["passed"])
-    judged = [r for r in results if r.get("judge") and not r["judge"].get("error")]
+    judged = [
+        r
+        for r in results
+        if r.get("judge") and not r["judge"].get("error") and not r["judge"].get("skipped")
+    ]
+    skipped = sum(1 for r in results if r.get("judge") and r["judge"].get("skipped"))
     cost = [r["cost_usd"] for r in results if r.get("cost_usd") is not None]
     judge_cost = [r["judge_cost_usd"] for r in results if r.get("judge_cost_usd") is not None]
     inputs = sum(r.get("input_tokens") or 0 for r in results)
     cached = sum(r.get("cached_tokens") or 0 for r in results)
+    written = sum(r.get("cache_write_tokens") or 0 for r in results)
     seconds = [r["seconds"] for r in results if r.get("seconds") is not None]
     checks: dict[str, int] = {}
     for r in results:
@@ -49,6 +55,7 @@ def totals(results: list[dict[str, Any]]) -> dict[str, Any]:
         "check_failures": checks,
         "judge_passed": sum(1 for r in judged if r["judge"]["passed"]),
         "judged": len(judged),
+        "judge_skipped": skipped,
         "mean_scores": {
             k: round(statistics.mean(r["judge"]["scores"][k] for r in judged), 2)
             for k in ("correct", "grounded", "complete", "clear")
@@ -60,6 +67,10 @@ def totals(results: list[dict[str, Any]]) -> dict[str, Any]:
         "model_calls": sum(r.get("model_calls") or 0 for r in results),
         "input_tokens": inputs,
         "cache_hit_rate": round(cached / inputs, 3) if inputs else None,
+        "cache_write_rate": round(written / inputs, 3) if inputs and written else None,
+        "calls_per_question": round(sum(r.get("model_calls") or 0 for r in results) / n, 1)
+        if n
+        else None,
         "p50_seconds": round(statistics.median(seconds), 1) if seconds else None,
         "max_seconds": max(seconds) if seconds else None,
     }
@@ -118,7 +129,7 @@ def why(result: dict[str, Any]) -> str:
     verdict = result.get("judge")
     if verdict and verdict.get("error"):
         parts.append(f"judge error: {verdict['error']}")
-    elif verdict and not verdict.get("passed"):
+    elif verdict and not verdict.get("passed") and not verdict.get("skipped"):
         worst = min(verdict["scores"], key=lambda k: verdict["scores"][k])
         parts.append(f"judge {worst} {verdict['scores'][worst]}/5: {verdict['reasons'][worst]}")
     return "; ".join(parts)[:400]

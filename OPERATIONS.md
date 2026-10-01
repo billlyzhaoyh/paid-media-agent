@@ -332,8 +332,10 @@ For any other OpenAI-compatible endpoint, set `PAID_MEDIA_MODEL_BASE_URL` and
 `PAID_MEDIA_MODEL_ZERO_DATA_RETENTION=true` routes only to endpoints that do not retain prompts.
 
 Reasoning models return reasoning blocks with each tool call; the loop stores them with the
-conversation and sends them back unchanged. Platform tools are bound to the model only after
-`discover_tools` finds them, at most `PAID_MEDIA_MAX_SELECTED_TOOLS` at a time.
+conversation and sends them back unchanged. Every authorized platform read tool is bound
+while their schemas fit `PAID_MEDIA_READ_TOOLS_BUDGET_TOKENS` (default 6,000), which keeps the prompt
+identical across calls so it caches. Past the budget, tools are bound as `discover_tools` finds them,
+at most `PAID_MEDIA_MAX_SELECTED_TOOLS` at a time.
 
 ## Writes
 

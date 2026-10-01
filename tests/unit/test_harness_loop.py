@@ -249,7 +249,10 @@ async def test_a_run_stops_after_its_model_call_budget(tmp_path: Path) -> None:
 async def test_read_tools_are_bound_only_once_activated_and_the_oldest_is_dropped(
     tmp_path: Path,
 ) -> None:
-    agent, _ = _agent(Store(), tmp_path, ScriptedChatModel(steps=[]), max_active_reads=1)
+    agent, _ = _agent(
+        Store(), tmp_path, ScriptedChatModel(steps=[]), max_active_reads=1,
+        read_tools_budget_tokens=0,
+    )  # fmt: skip
     bound = {t.name for t in agent.bound_tools("t")}
     assert {"read", "other", "execute"} <= bound and not {"platform_a", "platform_b"} & bound
 
@@ -259,6 +262,30 @@ async def test_read_tools_are_bound_only_once_activated_and_the_oldest_is_droppe
     context.activate(["platform_b"])
     assert {t.name for t in agent.bound_tools("t")} & {"platform_a", "platform_b"} == {"platform_b"}
     assert agent.conversation("t").activated_tools == ("platform_b",)
+
+
+async def test_reads_that_fit_the_budget_are_always_bound_in_a_fixed_order(
+    tmp_path: Path,
+) -> None:
+    agent, _ = _agent(Store(), tmp_path, ScriptedChatModel(steps=[]))
+    names = [t.name for t in agent.bound_tools("t")]
+    assert agent.all_reads_bound and names[-2:] == ["platform_a", "platform_b"]
+    agent._context("t", "alice").activate(["platform_b"])
+    assert (
+        [t.name for t in agent.bound_tools("t")]
+        == names
+        == [t.name for t in agent.bound_tools("another")]
+    ), "activation changes nothing when every read is bound"
+
+
+async def test_activation_only_grows_until_the_cap(tmp_path: Path) -> None:
+    agent, _ = _agent(Store(), tmp_path, ScriptedChatModel(steps=[]), read_tools_budget_tokens=0)
+    context = agent._context("t", "alice")
+    context.activate(["platform_b"])
+    context.activate(["platform_a", "platform_b"])
+    assert agent.conversation("t").activated_tools == ("platform_b", "platform_a")
+    bound = [t.name for t in agent.bound_tools("t")]
+    assert bound[-2:] == ["platform_a", "platform_b"], "bound by name, whatever the order found"
 
 
 async def test_two_turns_on_one_thread_run_one_after_the_other(tmp_path: Path) -> None:

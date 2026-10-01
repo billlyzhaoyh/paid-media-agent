@@ -173,9 +173,9 @@ model, tools, and approval gate; the loop runs them and keeps conversations, inc
 paused for approval, in the DuckDB state file. Extend the assembly without maintaining a separate
 agent for each interface.
 
-Any OpenAI-compatible model works: Anthropic, OpenAI, Gemini, OpenRouter, Groq, and others. Platform
-tools are bound only after `discover_tools` finds them, limiting how many tool definitions the model
-reads on each call. Skills guide the investigation and reporting process; edit them as Markdown in
+Any OpenAI-compatible model works: Anthropic, OpenAI, Gemini, OpenRouter, Groq, and others. Every
+authorized platform read tool is bound while they fit a token budget, so the prompt stays the same
+on every call and caches; a larger catalog is bound as `discover_tools` finds what a thread needs. Skills guide the investigation and reporting process; edit them as Markdown in
 `workspace/skills/`.
 
 To apply your company's report style, ask your coding agent to update

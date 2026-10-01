@@ -41,7 +41,10 @@ class EvalStore:
 
     def add_result(self, run_id: uuid.UUID, row: dict[str, Any]) -> None:
         self.store.write(
-            "INSERT INTO eval_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO eval_results (run_id, question_id, passed, checks, judge, answer, calls, "
+            "model_calls, input_tokens, output_tokens, cached_tokens, cost_usd, judge_cost_usd, "
+            "seconds, error, cache_write_tokens, call_usage) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 run_id,
                 row["question_id"],
@@ -58,6 +61,8 @@ class EvalStore:
                 row.get("judge_cost_usd"),
                 row.get("seconds"),
                 row.get("error"),
+                row.get("cache_write_tokens"),
+                json.dumps(row["call_usage"]) if row.get("call_usage") is not None else None,
             ],
         )
 
@@ -104,4 +109,6 @@ class EvalStore:
             row["checks"] = json.loads(row["checks"])
             row["judge"] = json.loads(row["judge"]) if row["judge"] else None
             row["calls"] = json.loads(row["calls"])
+            usage = row.get("call_usage")
+            row["call_usage"] = json.loads(usage) if isinstance(usage, str) else usage
         return rows

@@ -3,7 +3,7 @@
 | User capability | Agent entry | Trusted implementation | State | Main failure signal |
 |---|---|---|---|---|
 | Run fixture demo | `paid-media-agent demo` | `runtime/local.py` + scripted model + `tools/compute.py` | thread + `workspace/analysis` artifacts | fixture/schema mismatch |
-| Discover tools | `discover_tools` | `tools/catalog.py` search; activates tools for the thread | catalog revision | stale or unknown tool |
+| Discover tools | `discover_tools` | `tools/catalog.py` search; binds tools for the thread when the catalog is too large to bind whole | catalog revision | stale or unknown tool |
 | Read platform data | `<platform>__<tool>` | `tools/reads.py` dispatcher + guard | artifact metadata | auth, scope, schema, or partial source failure |
 | Query history | `query_history`; `paid-media-agent history` | `analytics/history.py` fixed queries over the views | history tables in the state file | unknown alias; days never pulled |
 | Build history | reads, `sync`, `backfill`, scheduled jobs | `tools/contracts.py` per platform; `analytics/ingest.py`, `analytics/sync.py`, `scheduler.py` | pulls, snapshots, settings, `job_runs` | no matching contract, provider failure, or call limit, listed as unavailable |

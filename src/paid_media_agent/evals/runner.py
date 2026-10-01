@@ -196,11 +196,21 @@ def _usage(store: Store, thread_id: str) -> dict[str, Any]:
     row = store.fetch_dicts(
         "SELECT count(*) AS model_calls, count(*) FILTER (WHERE status <> 'ok') AS failed_calls, "
         "sum(input_tokens) AS input_tokens, sum(output_tokens) AS output_tokens, "
-        "sum(cached_tokens) AS cached_tokens, sum(cost_usd) AS cost_usd "
-        "FROM llm_calls WHERE thread_id = ?",
+        "sum(cached_tokens) AS cached_tokens, sum(cache_write_tokens) AS cache_write_tokens, "
+        "sum(cost_usd) AS cost_usd FROM llm_calls WHERE thread_id = ?",
         [thread_id],
     )[0]
-    return {k: (float(v) if k == "cost_usd" and v is not None else v) for k, v in row.items()}
+    usage = {k: (float(v) if k == "cost_usd" and v is not None else v) for k, v in row.items()}
+    # Each call in order, so a cache miss can be placed (the first call, or after a change).
+    usage["call_usage"] = [
+        [r["input_tokens"], r["cached_tokens"], r["cache_write_tokens"]]
+        for r in store.fetch_dicts(
+            "SELECT input_tokens, cached_tokens, cache_write_tokens FROM llm_calls "
+            "WHERE thread_id = ? ORDER BY created_at",
+            [thread_id],
+        )
+    ]
+    return usage
 
 
 async def run_question(

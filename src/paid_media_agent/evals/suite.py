@@ -27,6 +27,8 @@ from paid_media_agent.harness.models import ChatModel
 from paid_media_agent.harness.usage import CallRecord, LlmCallRecorder
 
 ResultHandler = Callable[[dict[str, Any]], Awaitable[None] | None]
+SKIPPED_JUDGEMENT: dict[str, Any] = {"skipped": "a check failed", "passed": None}
+"""Stored for an answer not judged because it already failed a check."""
 _REFUSED = re.compile(r"model returned HTTP (401|402|403)\b")
 """The model provider refused the key (auth) or the account (credits): later questions would only
 measure that, so the run stops. Anchored on the model client's own error, so an answer quoting a
@@ -88,8 +90,12 @@ async def run_suite(
     today: date | None = None,
     on_result: ResultHandler | None = None,
     repeat: int = 1,
+    judge_all: bool = False,
 ) -> tuple[uuid.UUID, list[dict[str, Any]]]:
-    """Ask every question `repeat` times; with repeats, attempts are stored as `q01...#2`."""
+    """Ask every question `repeat` times; with repeats, attempts are stored as `q01...#2`.
+
+    An answer that failed a deterministic check fails whatever the judge says, so it is not
+    judged unless `judge_all`: the judge was a third of an eval's cost."""
     questions = load_questions(ids)
     current, anchor = eval_dates(today)
     run_id = store.start_run(
@@ -104,6 +110,7 @@ async def run_suite(
             "context_budget_tokens": settings.paid_media_context_budget_tokens,
             "max_model_calls": settings.paid_media_max_model_calls,
             "repeat": repeat,
+            "judge_all": judge_all,
         },
     )
     recorder = LlmCallRecorder(store.store)
@@ -123,7 +130,8 @@ async def run_suite(
         transcript = run.transcript
         checks = run_checks(transcript, question, anchor=anchor, today=current)
         verdict = None
-        if judge_model is not None:
+        skipped = judge_model is not None and not judge_all and not all(c.passed for c in checks)
+        if judge_model is not None and not skipped:
             started = time.monotonic()
             verdict = await judge(judge_model, question, transcript)
             recorder.record(
@@ -147,13 +155,19 @@ async def run_suite(
             "category": question["category"],
             "passed": passed,
             "checks": [c.__dict__ for c in checks],
-            "judge": verdict.as_json() if verdict is not None else None,
+            "judge": verdict.as_json()
+            if verdict is not None
+            else SKIPPED_JUDGEMENT
+            if skipped
+            else None,
             "answer": transcript.answer,
             "calls": [c.__dict__ for c in transcript.calls],
             "model_calls": usage.get("model_calls"),
             "input_tokens": usage.get("input_tokens"),
             "output_tokens": usage.get("output_tokens"),
             "cached_tokens": usage.get("cached_tokens"),
+            "cache_write_tokens": usage.get("cache_write_tokens"),
+            "call_usage": usage.get("call_usage"),
             "cost_usd": usage.get("cost_usd"),
             "judge_cost_usd": verdict.cost_usd if verdict is not None else None,
             "seconds": transcript.seconds,
@@ -221,6 +235,8 @@ def regrade(store: EvalStore, run_id: uuid.UUID, *, project_root: Path) -> uuid.
         )
         checks = run_checks(transcript, question, anchor=anchor, today=today)
         verdict = old["judge"]
+        if verdict is not None and verdict.get("skipped"):
+            verdict = None  # never judged; the checks alone decide, and totals count the skip
         row = {
             **old,
             "passed": all(c.passed for c in checks) and (verdict is None or verdict["passed"]),

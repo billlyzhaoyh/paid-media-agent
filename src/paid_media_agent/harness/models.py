@@ -8,6 +8,7 @@ after tool results.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from collections.abc import Sequence
@@ -169,6 +170,7 @@ class OpenAICompatibleModel:
         provider: str | None = None,
         missing_key: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        session_id: str | None = None,
     ) -> None:
         self._model = model
         self._missing_key = missing_key
@@ -180,6 +182,10 @@ class OpenAICompatibleModel:
             prompt_cache == "auto" and self._openrouter and model.startswith("anthropic/")
         )
         """OpenRouter's automatic prompt caching, for Anthropic models (cache_control)."""
+        self._session_id = session_id[:256] if session_id else None
+        """OpenRouter pins requests with one session id to one provider. Without it each
+        conversation is routed on its own, so a new thread can land on a provider whose cache
+        lacks the shared tools and instructions, and pays to write them again."""
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             headers={"Authorization": f"Bearer {api_key}"},
@@ -209,6 +215,8 @@ class OpenAICompatibleModel:
         if self.cache_requested:
             # Automatic caching: the breakpoint follows the last cacheable block as a thread grows.
             body["cache_control"] = {"type": "ephemeral"}
+        if self._openrouter and self._session_id:
+            body["session_id"] = self._session_id
         try:
             response = await self._client.post("/chat/completions", json=body)
         except httpx.TimeoutException as exc:
@@ -268,6 +276,7 @@ def resolve_model(
     timeout_seconds: int,
     zero_data_retention: bool = False,
     prompt_cache: PromptCache = "auto",
+    session_id: str | None = None,
 ) -> OpenAICompatibleModel:
     """The configured model. `base_url` overrides the provider's endpoint for compatible servers.
 
@@ -292,4 +301,11 @@ def resolve_model(
         prompt_cache=prompt_cache,
         provider=config.provider,
         missing_key=None if api_key else key_env,
+        session_id=session_id,
     )
+
+
+def cache_session(settings_key: str) -> str:
+    """A stable, opaque session id for one deployment (or one eval run): every thread shares the
+    provider that already caches the instructions and tool schemas."""
+    return "pma-" + hashlib.sha256(settings_key.encode()).hexdigest()[:24]

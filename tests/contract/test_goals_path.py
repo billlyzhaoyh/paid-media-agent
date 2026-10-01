@@ -221,7 +221,11 @@ async def test_goals_reach_list_accounts_pacing_and_period_comparisons(
     ]
     report = pacing["accounts"][0]
     assert report["monthly_budget"] == 25000.0 and report["target_cpa"] == 30.0
-    assert "against a 30.00 target" in report["reading"]
+    if report["data_through"] is None:
+        # Data ends two days ago: on a month's first two days, no day of it is in yet.
+        assert report["reading"].startswith("No spend recorded")
+    else:
+        assert "against a 30.00 target" in report["reading"]
     assert "fixture-" not in json.dumps(pacing)
     assert unknown["error"] is True and "unknown account alias" in unknown["detail"]
 
@@ -367,3 +371,23 @@ def test_the_api_sets_goals_for_approvers_only_and_reports_pacing(
     paced = client.get("/pacing?alias=demo-google", headers=other).json()["accounts"][0]
     assert paced["monthly_budget"] == 12000.0 and paced["target_roas"] == 4.0
     assert client.get("/goals").status_code == 401
+
+
+async def test_the_accounts_and_goals_are_in_the_prompt_and_change_only_with_them(
+    settings: Settings, project_root: Path
+) -> None:
+    from paid_media_agent.testing.scripted_model import ScriptedChatModel
+
+    runtime, model = build_runtime(settings, project_root, [lambda _m: AssistantMessage("ok")] * 3)
+    assert isinstance(model, ScriptedChatModel)
+    await runtime.agent.send("p-1", "local-user", "hello")
+    await runtime.agent.send("p-2", "local-user", "hello again")
+    first, second = model.systems
+    assert first == second, "the same prompt on every call while nothing changes: it caches"
+    assert "- demo-google: google_ads, USD" in first and "goals: none set" in first
+    GoalStore(runtime.profile.store).set(
+        "demo-google", {"target_cpa": 30}, effective_from=TODAY - timedelta(days=1), source="cli"
+    )
+    await runtime.agent.send("p-3", "local-user", "and now?")
+    assert "demo-google: google_ads, USD" in model.systems[-1]
+    assert "goals: target_cpa 30.0" in model.systems[-1], "a goal change shows on the next call"

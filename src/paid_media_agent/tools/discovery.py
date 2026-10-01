@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -28,26 +29,58 @@ class _NoArgs(BaseModel):
     pass
 
 
-def build_list_accounts_tool(accounts: AccountRegistry, goals: GoalStore | None = None) -> ToolSpec:
-    def _goals(alias: str) -> dict[str, JsonValue] | None:
-        goal = goals.current(alias, account_today(accounts, alias)) if goals else None
+def account_directory(
+    accounts: AccountRegistry, goals: GoalStore | None = None
+) -> list[dict[str, JsonValue]]:
+    """Each configured account with its platform, currency, timezone, today, and current goals."""
+
+    def _goals(alias: str, today: date) -> dict[str, JsonValue] | None:
+        goal = goals.current(alias, today) if goals else None
         if goal is None:
             return None
         return {**goal.values(), "effective_from": goal.effective_from.isoformat()}
 
+    directory: list[dict[str, JsonValue]] = []
+    for b in accounts.bindings:
+        today = account_today(accounts, b.alias)
+        directory.append(
+            {
+                "alias": b.alias,
+                "platform": b.platform.value,
+                "currency": b.currency,
+                "timezone": b.timezone,
+                "today": today.isoformat(),
+                "goals": _goals(b.alias, today),
+            }
+        )
+    return directory
+
+
+def account_lines(accounts: AccountRegistry, goals: GoalStore | None = None) -> str:
+    """The accounts for the system prompt, so no turn is spent asking for them. It changes only
+    when a goal or an account's day changes, so it stays in the prompt cache."""
+    lines = ["Accounts (use these aliases; `list_accounts` refreshes them):"]
+    for a in account_directory(accounts, goals):
+        goal = a["goals"]
+        set_goals = (
+            ", ".join(
+                f"{k} {v}" for k, v in goal.items() if v is not None and k != "effective_from"
+            )
+            if isinstance(goal, dict)
+            else ""
+        )
+        lines.append(
+            f"- {a['alias']}: {a['platform']}, {a['currency']}, {a['timezone']} "
+            f"(today {a['today']}); goals: {set_goals or 'none set'}"
+        )
+    return "\n".join(lines)
+
+
+def build_list_accounts_tool(accounts: AccountRegistry, goals: GoalStore | None = None) -> ToolSpec:
     def _list(_args: dict[str, Any], _context: ToolContext) -> str:
         return json.dumps(
             {
-                "accounts": [
-                    {
-                        "alias": b.alias,
-                        "platform": b.platform.value,
-                        "currency": b.currency,
-                        "timezone": b.timezone,
-                        "goals": _goals(b.alias),
-                    }
-                    for b in accounts.bindings
-                ],
+                "accounts": account_directory(accounts, goals),
                 "note": "goals are the configured targets (money in the account's currency); "
                 "null means none are set, so label judgements directional.",
             }
@@ -91,7 +124,10 @@ def build_discover_tools_tool(catalog_provider: CatalogProvider) -> ToolSpec:
 
     return ToolSpec(
         name=DISCOVER_TOOLS_TOOL,
-        description="Search the authorized read-tool catalog by keywords and make the matching tools available. Call this before using a platform tool.",
+        description=(
+            "Search the authorized platform read tools by keywords: which tool fits, and its "
+            "arguments. The tools it finds can be called; most deployments bind them all already."
+        ),
         parameters=parameters_for(_DiscoverArgs),
         handler=_discover,
     )

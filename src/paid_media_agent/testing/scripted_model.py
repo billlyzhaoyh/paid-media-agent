@@ -60,6 +60,8 @@ class ScriptedChatModel:
     steps: list[Step]
     model_name: str = "demo"
     bound_tool_batches: list[list[dict[str, Any]]] = field(default_factory=list)
+    systems: list[str] = field(default_factory=list)
+    """The system prompt each call was sent, for tests of what the prompt holds."""
     call_count: int = 0
 
     @property
@@ -69,11 +71,12 @@ class ScriptedChatModel:
     async def complete(
         self,
         *,
-        system: str,  # noqa: ARG002 - the script ignores the prompt
+        system: str,
         messages: Sequence[Message],
         tools: Sequence[ToolSchema],
     ) -> AssistantMessage:
         self.bound_tool_batches.append([t.as_openai() for t in tools])
+        self.systems.append(system)
         index = self.call_count
         self.call_count += 1
         if index >= len(self.steps):

@@ -18,7 +18,7 @@ from paid_media_agent.domain.presentation import ProposalView, proposal_summary
 from paid_media_agent.harness.files import build_file_tools
 from paid_media_agent.harness.loop import Agent, ApprovalGate, PauseSummary
 from paid_media_agent.harness.messages import ToolCall
-from paid_media_agent.harness.models import ChatModel, resolve_model
+from paid_media_agent.harness.models import ChatModel, cache_session, resolve_model
 from paid_media_agent.harness.skills import discover_skills, skills_prompt
 from paid_media_agent.harness.tools import ToolContext, ToolDispatcher, ToolSpec
 from paid_media_agent.harness.usage import LlmCallRecorder
@@ -35,6 +35,7 @@ from paid_media_agent.tools.compare_periods import COMPARE_PERIODS_TOOL, build_c
 from paid_media_agent.tools.discovery import (
     DISCOVER_TOOLS_TOOL,
     LIST_ACCOUNTS_TOOL,
+    account_lines,
     build_discover_tools_tool,
     build_list_accounts_tool,
 )
@@ -111,6 +112,9 @@ class AgentComponents:
     max_model_calls: int
     model_timeout_seconds: int
     context_budget_tokens: int = 0
+    read_tools_budget_tokens: int = 6000
+    prompt_context: Callable[[], str] | None = None
+    """Per-call additions to the system prompt: the accounts and their goals."""
 
 
 def host_operations(runtime: RuntimeProfile) -> dict[str, HostOperation]:
@@ -185,6 +189,7 @@ def build_agent_components(
         timeout_seconds=settings.paid_media_model_timeout_seconds,
         zero_data_retention=settings.paid_media_model_zero_data_retention,
         prompt_cache=settings.paid_media_prompt_cache,
+        session_id=cache_session(str(settings.paid_media_state_path.resolve())),
     )
     read_dispatcher, service, executor = _services(settings, runtime)
     project_root = runtime.skills_root or Path.cwd()
@@ -269,6 +274,8 @@ def build_agent_components(
         max_model_calls=settings.paid_media_max_model_calls,
         model_timeout_seconds=settings.paid_media_model_timeout_seconds,
         context_budget_tokens=settings.paid_media_context_budget_tokens,
+        read_tools_budget_tokens=settings.paid_media_read_tools_budget_tokens,
+        prompt_context=lambda: account_lines(runtime.accounts, goals),
     )
 
 
@@ -290,6 +297,8 @@ def build_agent(
         call_log=LlmCallRecorder(store),
         context_budget_tokens=components.context_budget_tokens,
         pause_summary=_pause_summary(components.proposal_service),
+        read_tools_budget_tokens=components.read_tools_budget_tokens,
+        prompt_context=components.prompt_context,
     )
 
 

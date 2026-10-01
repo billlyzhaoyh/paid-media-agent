@@ -163,7 +163,10 @@ class Settings(BaseSettings):
     out; tests pin it to the shipped dates. Set it only when reproducing a specific window."""
     paid_media_account_config_path: Path = Path("config/accounts.example.toml")
     paid_media_max_selected_tools: int = Field(default=6, ge=1, le=40)
-    """Platform read tools bound at once; discover_tools replaces the oldest beyond this."""
+    """Platform read tools bound at once when they are not all bound (see the budget below)."""
+    paid_media_read_tools_budget_tokens: int = Field(default=6000, ge=0)
+    """Every authorized read tool is bound on every call while their schemas fit this many
+    tokens, so the prompt cache holds; a larger catalog is bound as discover_tools finds tools."""
     paid_media_result_offload_chars: int = Field(default=6000, ge=500)
 
     pipeboard_api_token: SecretStr | None = None

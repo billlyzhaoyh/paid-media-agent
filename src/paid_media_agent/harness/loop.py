@@ -19,7 +19,7 @@ from dataclasses import field as dataclass_field
 from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
-from paid_media_agent.harness.context import ContextView, fit_to_budget
+from paid_media_agent.harness.context import ContextView, estimate_tokens, fit_to_budget
 from paid_media_agent.harness.messages import (
     AssistantMessage,
     Conversation,
@@ -135,6 +135,8 @@ class Agent:
         call_log: CallLog | None = None,
         context_budget_tokens: int = 0,
         pause_summary: PauseSummary | None = None,
+        read_tools_budget_tokens: int = 6000,
+        prompt_context: Callable[[], str] | None = None,
     ) -> None:
         self.model = model
         self.system_prompt = system_prompt
@@ -149,6 +151,12 @@ class Agent:
         self._call_log = call_log
         self._context_budget = context_budget_tokens
         self._pause_summary = pause_summary
+        self._prompt_context = prompt_context
+        reads = [spec.schema for spec in dispatcher.tools.values() if spec.kind == "read"]
+        self.all_reads_bound = estimate_tokens("", [], reads) <= read_tools_budget_tokens
+        """Every authorized read is bound on every call when they fit the budget, so the tool
+        list never changes within or across threads and the prompt cache holds. A larger
+        catalog is bound as `discover_tools` finds what a thread needs."""
         self._turns: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
         """One turn at a time per thread: two at once would give a call two results. A lock
         lives while a turn holds or awaits it, so idle threads leave nothing behind."""
@@ -166,13 +174,14 @@ class Agent:
         return self.conversations.load(thread_id)
 
     def bound_tools(self, thread_id: str) -> list[ToolSchema]:
-        """Core, write, and file tools always; read tools once discover_tools activated them."""
-        activated = set(self.conversations.activated(thread_id))
-        return [
-            spec.schema
-            for spec in self.dispatcher.tools.values()
-            if spec.kind != "read" or spec.name in activated
-        ]
+        """Core, write, and file tools, then read tools sorted by name: all of them when they fit
+        the budget, otherwise those discover_tools activated in this thread."""
+        specs = self.dispatcher.tools.values()
+        reads = sorted((spec for spec in specs if spec.kind == "read"), key=lambda s: s.name)
+        if not self.all_reads_bound:
+            activated = set(self.conversations.activated(thread_id))
+            reads = [spec for spec in reads if spec.name in activated]
+        return [spec.schema for spec in specs if spec.kind != "read"] + [s.schema for s in reads]
 
     async def send(
         self, thread_id: str, caller_ref: str, text: str, on_event: EventHandler | None = None
@@ -272,20 +281,31 @@ class Agent:
 
     def _context(self, thread_id: str, caller_ref: str) -> ToolContext:
         def activate(names: Sequence[str]) -> None:
-            current = [n for n in self.conversations.activated(thread_id) if n not in names]
+            # Only grows, so the bound list changes only when a new tool is found; the oldest
+            # leave only past the cap.
+            current = list(self.conversations.activated(thread_id))
             known = [
                 n
                 for n in names
-                if self.dispatcher.tools.get(n) and self.dispatcher.tools[n].kind == "read"
+                if n not in current
+                and self.dispatcher.tools.get(n)
+                and self.dispatcher.tools[n].kind == "read"
             ]
-            self.conversations.set_activated(
-                thread_id, (current + known)[-self._max_active_reads :]
-            )
+            if known:
+                self.conversations.set_activated(
+                    thread_id, (current + known)[-self._max_active_reads :]
+                )
 
         return ToolContext(thread_id=thread_id, caller_ref=caller_ref, activate=activate)
 
     def _system(self) -> str:
-        return f"{self.system_prompt}\n\n{calendar_lines(self._clock().date())}".strip()
+        parts = [self.system_prompt, calendar_lines(self._clock().date())]
+        if self._prompt_context is not None:
+            try:
+                parts.append(self._prompt_context())
+            except Exception:
+                logger.warning("could not build the prompt context", exc_info=True)
+        return "\n\n".join(p for p in parts if p).strip()
 
     def _record(
         self,

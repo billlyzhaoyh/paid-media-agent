@@ -1,4 +1,5 @@
-"""Tool selection: platform reads are bound only after discover_tools activates them."""
+"""Tool selection. Every authorized read is bound when they fit the budget, so the tool list is
+the same on every call; past it, reads are bound only after discover_tools activates them."""
 
 from __future__ import annotations
 
@@ -37,10 +38,33 @@ def _done(_messages: object) -> AssistantMessage:
     return AssistantMessage(content="ok")
 
 
+def _discovery(settings: Settings) -> Settings:
+    """A catalog too large to bind whole: reads are bound as discover_tools finds them."""
+    return settings.model_copy(update={"paid_media_read_tools_budget_tokens": 0})
+
+
+async def test_a_catalog_that_fits_is_bound_whole_and_never_changes(
+    settings: Settings, project_root: Path
+) -> None:
+    runtime, model = build_runtime(
+        settings, project_root, [_discover("campaign performance", "google_ads"), _done, _done]
+    )
+    assert runtime.agent.all_reads_bound
+    await run_until_interrupt(runtime, config(), "Compare campaign performance.")
+    await run_until_interrupt(runtime, config(thread_id="t-other"), "Anything else?")
+    first, *rest = model.bound_tool_batches
+    assert _platform(first) == READ_NAMES, "every authorized read, from the first call"
+    assert all(batch == first for batch in rest), "identical on every call and every thread"
+    names = [t["function"]["name"] for t in first]
+    reads = [n for n in names if n in READ_NAMES]
+    assert reads == sorted(reads) and names[-len(reads) :] == reads, "reads last, by name"
+    assert not _names(first) & MUTATION_NAMES
+
+
 async def test_nothing_platform_specific_is_bound_before_discovery(
     settings: Settings, project_root: Path
 ) -> None:
-    runtime, model = build_runtime(settings, project_root, [_done])
+    runtime, model = build_runtime(_discovery(settings), project_root, [_done])
     assert runtime.components.metadata.selection == TOOL_SELECTION == "discover_tools"
     await run_until_interrupt(runtime, config(), "Which campaigns need attention?")
     batch = model.bound_tool_batches[-1]
@@ -56,7 +80,7 @@ async def test_discover_tools_activates_matching_reads_for_the_thread(
     settings: Settings, project_root: Path
 ) -> None:
     runtime, model = build_runtime(
-        settings,
+        _discovery(settings),
         project_root,
         [_discover("campaign performance", "google_ads"), _done, _done],
     )
@@ -79,7 +103,7 @@ async def test_discover_tools_activates_matching_reads_for_the_thread(
 async def test_activation_is_capped_and_drops_the_oldest(
     settings: Settings, project_root: Path
 ) -> None:
-    capped = settings.model_copy(update={"paid_media_max_selected_tools": 2})
+    capped = _discovery(settings).model_copy(update={"paid_media_max_selected_tools": 2})
     runtime, model = build_runtime(
         capped,
         project_root,
@@ -102,7 +126,7 @@ async def test_unknown_names_never_widen_the_bound_set(
     settings: Settings, project_root: Path
 ) -> None:
     runtime, model = build_runtime(
-        settings,
+        _discovery(settings),
         project_root,
         [
             _discover("zzzz nothing matches this"),
@@ -144,7 +168,7 @@ async def test_authorized_reads_are_callable_without_being_bound(
     settings: Settings, project_root: Path
 ) -> None:
     runtime, model = build_runtime(
-        settings,
+        _discovery(settings),
         project_root,
         [
             lambda _m: tool_call_message(
