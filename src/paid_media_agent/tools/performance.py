@@ -40,6 +40,8 @@ class AccountRead:
     missing_fields: tuple[str, ...] = ()
     overlapping_rows: int = 0
     """Rows that more than one artifact held; the newest artifact's copy is kept."""
+    requested_from: date | None = None
+    """The earliest day any of the reads asked for: data starting later does not exist."""
 
     @property
     def first_day(self) -> date:
@@ -79,6 +81,9 @@ def load_reads(artifacts: ArtifactStore, artifact_ids: Sequence[str]) -> list[Ac
     grouped: dict[tuple[str, str], list[ArtifactRecord]] = {}
     for artifact_id in dict.fromkeys(artifact_ids):
         record = artifacts.read(artifact_id)
+        empty = record.payload.get("empty_read")
+        if isinstance(empty, str):
+            raise ComputeError(f"{artifact_id} is an empty read. {empty}")
         if record.metadata.kind != "performance_rows":
             raise ComputeError(NOT_ROWS.format(artifact_id=artifact_id, kind=record.metadata.kind))
         rows = rows_from_payload(record.payload)
@@ -109,6 +114,14 @@ def load_reads(artifacts: ArtifactStore, artifact_ids: Sequence[str]) -> list[Ac
                 provider_totals=None if overlaps else _combined_totals(records),
                 missing_fields=tuple(sorted(missing)),
                 overlapping_rows=overlaps,
+                requested_from=min(
+                    (
+                        date.fromisoformat(r.metadata.requested_window.split("..")[0])
+                        for r in records
+                        if r.metadata.requested_window
+                    ),
+                    default=None,
+                ),
             )
         )
     return reads
@@ -122,6 +135,23 @@ def uncovered(reads: Sequence[AccountRead], failures: Sequence[FailedRead]) -> l
     """
     covered = {r.account for r in reads}
     return [f.text() for f in failures if f.source not in covered]
+
+
+def before_the_data(read: AccountRead, label: str, start: date, end: date) -> ComputeError:
+    """Why a window that starts before the rows cannot be compared, and what would help."""
+    span = f"{start.isoformat()}..{end.isoformat()}"
+    first = read.first_day.isoformat()
+    if read.requested_from is not None and read.requested_from <= start:
+        # The read asked for these days and the source had none: re-reading cannot help.
+        return ComputeError(
+            f"{read.platform}/{read.account}: the source has no data before {first}, so the "
+            f"{label} window {span} is not available; say so, and compare only windows from "
+            f"{first} on"
+        )
+    return ComputeError(
+        f"{', '.join(read.artifact_ids)}: the {label} window starts {start.isoformat()} but the "
+        f"read begins {first}; re-read the union of both windows"
+    )
 
 
 def require_days(read: AccountRead, start: date, end: date) -> None:

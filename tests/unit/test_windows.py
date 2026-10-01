@@ -23,8 +23,9 @@ from paid_media_agent.domain.windows import days_ago, resolve_preset
          (date(2026, 9, 21), date(2026, 9, 27)), (date(2026, 9, 14), date(2026, 9, 20))),
         ("last_n_days_of_data", date(2026, 1, 2), date(2025, 12, 31), 28,
          (date(2025, 12, 4), date(2025, 12, 31)), (date(2025, 11, 6), date(2025, 12, 3))),
+        # Month to date is against the same days of last month.
         ("month_to_date", date(2026, 9, 30), date(2026, 9, 28), 7,
-         (date(2026, 9, 1), date(2026, 9, 28)), (date(2026, 8, 4), date(2026, 8, 31))),
+         (date(2026, 9, 1), date(2026, 9, 28)), (date(2026, 8, 1), date(2026, 8, 28))),
         ("last_month", date(2026, 3, 10), date(2026, 3, 8), 7,
          (date(2026, 2, 1), date(2026, 2, 28)), (date(2026, 1, 4), date(2026, 1, 31))),
         ("last_month", date(2026, 1, 5), date(2026, 1, 3), 7,
@@ -35,14 +36,28 @@ def test_presets_resolve_to_equal_windows(
     preset: str, today: date, through: date, days: int, current: tuple, previous: tuple
 ) -> None:
     got = resolve_preset(preset, today=today, data_through=through, days=days)  # type: ignore[arg-type]
-    assert got == (current, previous)
+    assert (got.current, got.previous) == (current, previous) and not got.notes
     assert (got[0][1] - got[0][0]) == (got[1][1] - got[1][0]), "the same number of days"
 
 
-def test_month_to_date_without_data_this_month_says_so() -> None:
-    with pytest.raises(ValueError, match="no data this month"):
-        resolve_preset("month_to_date", today=date(2026, 10, 1), data_through=date(2026, 9, 29))
+def test_month_to_date_without_data_this_month_uses_the_latest_month_and_says_so() -> None:
+    got = resolve_preset("month_to_date", today=date(2026, 10, 1), data_through=date(2026, 9, 29))
+    assert got.current == (date(2026, 9, 1), date(2026, 9, 29))
+    assert got.previous == (date(2026, 8, 1), date(2026, 8, 29))
+    assert got.note == (
+        "October has no complete day of data yet (data runs through 2026-09-29), "
+        "so this is September to date"
+    )
     assert days_ago(date(2026, 9, 18), date(2026, 9, 30)) == 12
+
+
+def test_month_to_date_after_a_short_month_takes_the_days_just_before() -> None:
+    got = resolve_preset("month_to_date", today=date(2026, 3, 31), data_through=date(2026, 3, 30))
+    assert got.current == (date(2026, 3, 1), date(2026, 3, 30))
+    assert got.previous == (date(2026, 1, 30), date(2026, 2, 28)), "30 days, as many as now"
+    assert got.previous_note.startswith("February has only 28 days") and not got.note
+    same = resolve_preset("month_to_date", today=date(2026, 3, 20), data_through=date(2026, 3, 18))
+    assert same.previous == (date(2026, 2, 1), date(2026, 2, 18)) and not same.notes
 
 
 def test_platforms_are_compared_both_ways_with_verdicts() -> None:

@@ -215,8 +215,12 @@ def _window(
         complete = [r.window.start for r in read.rows if r.window.is_complete]
         ends.append(max(complete or [r.window.start for r in read.rows]))
     through = min(ends)
-    (start, end), _ = resolve_preset(args.window, today=today, data_through=through, days=args.days)
-    return start, end, f"{args.window}, data through {through.isoformat()}"
+    resolved = resolve_preset(args.window, today=today, data_through=through, days=args.days)
+    rule = f"{args.window}, data through {through.isoformat()}"
+    if resolved.note:
+        rule += f"; {resolved.note}"
+    start, end = resolved.current
+    return start, end, rule
 
 
 def platform_comparisons(headline: list[dict[str, Any]]) -> list[str]:

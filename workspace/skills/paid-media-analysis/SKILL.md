@@ -56,7 +56,10 @@ recommendations.
    `compare_periods` with the artifact ids and both windows. Pass every artifact a read returned
    (`artifact_ids` when it had several pages). The host lists failed reads under
    `unavailable_sources` itself; name them in the answer. For totals over raw rows, use
-   `query_history` or `read_artifact` with `group_by`; never add rows up.
+   `query_history` or `read_artifact` with `group_by`; never add rows up. To compare accounts
+   from history, call `query_history` once with `group_by: ["account"]` and no alias, and quote
+   its `comparisons`, `caveats`, and `maturity`. When a tool names days it did not check
+   (`not_checked`), say they were not checked.
 7. Read the `analysis_summary`. Quote its values verbatim; never recompute from previews or rows.
    A figure the tools did not return (a difference, a share, a monthly amount) comes from
    `calculate`, never from arithmetic in prose. Quote the tools' verdicts:

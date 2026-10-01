@@ -358,6 +358,13 @@ class ReadDispatcher:
         }
         if isinstance(settings, dict) and isinstance(settings.get("campaigns"), list):
             stored["settings"] = dict(settings)
+        empty = empty_read_note(
+            requested_window, _count_rows(result.payload), result.data_complete_through
+        )
+        if empty:
+            # A dated read with no rows, typically past the newest day of data: say so, here and
+            # to any summary tool it is passed to.
+            stored["empty_read"] = empty
         metadata = self._artifacts.write_json(
             "provider_result",
             stored,
@@ -415,7 +422,24 @@ class ReadDispatcher:
             quality_flags=(),
             preview=preview,
             next_page=next_page,
+            **({"note": empty} if empty else {}),
         )
+
+
+def empty_read_note(
+    requested_window: str | None, rows: int | None, data_complete_through: str | None
+) -> str | None:
+    """Why a dated read returned nothing, or None when it has rows or no window."""
+    if not requested_window or rows != 0:
+        return None
+    note = f"No rows for {requested_window}"
+    start = requested_window.split("..")[0]
+    if data_complete_through and start > data_complete_through:
+        note += f": the data runs through {data_complete_through}"
+    return (
+        note + ". Read a window that ends by then, or pass a window preset to summarize_window "
+        "or compare_periods."
+    )
 
 
 def _count_rows(payload: dict[str, JsonValue]) -> int | None:

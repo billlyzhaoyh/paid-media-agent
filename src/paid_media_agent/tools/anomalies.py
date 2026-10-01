@@ -7,7 +7,7 @@ expected value and range, the method used, and which days could not be checked y
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
@@ -58,6 +58,20 @@ def _with_reading(flag: dict[str, Any], today: date | None = None) -> dict[str, 
     return {"reading": reading, **shown}
 
 
+def _not_checked(windows: dict[str, str]) -> dict[str, str]:
+    """Days in the spend window that a metric's earlier window left unchecked."""
+    spend = windows.get("spend")
+    if not spend:
+        return {}
+    spend_end = date.fromisoformat(spend.split("..")[1])
+    missed = {}
+    for metric, span in windows.items():
+        end = date.fromisoformat(span.split("..")[1])
+        if metric != "spend" and end < spend_end:
+            missed[metric] = f"{(end + timedelta(days=1)).isoformat()}..{spend_end.isoformat()}"
+    return missed
+
+
 def build_check_anomalies_tool(
     store: Store, accounts: AccountRegistry, predictor: Predictor | None, *, band: float = 0.95
 ) -> ToolSpec:
@@ -89,7 +103,15 @@ def build_check_anomalies_tool(
             f"range ({method})"
             for metric, method in report.methods.items()
         )
+        unchecked = _not_checked(result.get("windows") or {})
+        for metric, span in unchecked.items():
+            summary += (
+                f"; {metric} for {span} were not checked: they are still arriving, so do not call "
+                "them normal or unusual"
+            )
         result = {"summary": summary or "nothing checked; see notes", **result}
+        if unchecked:
+            result["not_checked"] = unchecked
         result["flag_count"] = len(result["flags"])
         result["flags"] = [
             _with_reading(flag, account_today(accounts, flag["account_alias"]))
@@ -102,7 +124,8 @@ def build_check_anomalies_tool(
             "dod_rule_fallback is the ±50% day-over-day rule. band_distance is how far outside "
             "the expected range a day fell, as a share of the range's width (0.2 = a fifth of a "
             "range beyond its edge); it is not a percentage change. Days never pulled into "
-            "history are not checked."
+            "history are not checked, nor are the days under not_checked: never describe them "
+            "as within the expected range."
         )
         return json.dumps(result)
 

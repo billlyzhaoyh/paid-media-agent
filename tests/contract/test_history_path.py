@@ -272,7 +272,7 @@ def test_a_report_window_the_data_does_not_cover_fails_cleanly(
         main, ["report", "--cadence", "monthly", "--end", "2026-08-28", "--no-render"]
     )
     assert result.exit_code == 1 and "Traceback" not in result.output
-    assert "FAIL report:" in result.output and "previous window starts" in result.output
+    assert "FAIL report:" in result.output and "the source has no data before" in result.output
 
 
 async def test_totals_come_from_the_tools_and_match_the_summary_exactly(
@@ -334,3 +334,63 @@ async def test_totals_come_from_the_tools_and_match_the_summary_exactly(
     assert raw["row_count"] == 14 and set(raw["rows"][0]) == {"day", "spend"}
     paged = call("read_artifact", {"artifact_id": summary["artifact_id"], "group_by": "total"})
     assert paged["error"] is True and "performance_rows" in paged["detail"]
+
+
+async def test_a_read_past_the_data_says_so_and_summaries_name_it(
+    settings: Settings, project_root: Path
+) -> None:
+    from paid_media_agent.tools.compute import ComputeError
+    from paid_media_agent.tools.summary import SummarizeWindowArgs, run_summarize_window
+
+    runtime, _ = build_runtime(settings, project_root, [])
+    empty = await runtime.components.read_dispatcher.execute(
+        "google_ads__get_campaign_performance",
+        {ACCOUNT_ALIAS_ARG: "demo-google", "start_date": "2026-08-30", "end_date": "2026-08-30"},
+    )
+    assert empty.row_count == 0
+    assert empty.note.startswith("No rows for 2026-08-30..2026-08-30: the data runs through")
+    with pytest.raises(ComputeError, match=r"is an empty read\. No rows for 2026-08-30"):
+        run_summarize_window(
+            runtime.profile.artifacts,
+            SummarizeWindowArgs(artifact_ids=[empty.artifact_id], window="last_n_days_of_data"),
+        )
+
+
+async def test_account_totals_compare_accounts_and_say_what_is_still_arriving(
+    settings: Settings, project_root: Path
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from paid_media_agent.harness.tools import ToolContext
+
+    # Data that ends two days ago, as live: its newest days are not yet final.
+    today = datetime.now(UTC).date()
+    anchor = today - timedelta(days=2)
+    anchored = settings.model_copy(update={"paid_media_fixture_anchor": anchor})
+    runtime, _ = build_runtime(anchored, project_root, [], fixture_state=FixtureState(anchor))
+    await run_sync(
+        accounts=runtime.profile.accounts,
+        catalog=runtime.catalog,
+        dispatcher=runtime.components.read_dispatcher,
+        end=today - timedelta(days=1),
+    )
+    tool = runtime.components.dispatcher.tools["query_history"]
+    body = json.loads(
+        tool.handler(  # type: ignore[arg-type]
+            {
+                "view": "daily",
+                "group_by": ["account"],
+                "start_date": (anchor - timedelta(days=27)).isoformat(),
+            },
+            ToolContext("h-3", "local-user"),
+        )
+    )
+    accounts = {r["account_alias"]: r for r in body["rows"]}
+    assert {"demo-google", "demo-meta"} <= set(accounts)
+    assert any(c.startswith("CPA: google_ads (demo-google)") for c in body["comparisons"])
+    assert any("own attribution" in c for c in body["caveats"])
+    google = accounts["demo-google"]
+    assert google["first_day"] <= google["last_day"]
+    assert google["conversions_matured"] < google["conversions"], "the newest days are recent"
+    assert "still arriving" in google["maturity"]
+    assert list(body).index("comparisons") < list(body).index("rows"), "verdicts first"

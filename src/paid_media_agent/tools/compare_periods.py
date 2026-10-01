@@ -31,7 +31,12 @@ from paid_media_agent.tools.compute import (
 )
 from paid_media_agent.tools.goal_check import against_goals
 from paid_media_agent.tools.normalize import NormalizationError
-from paid_media_agent.tools.performance import load_reads, require_days, uncovered
+from paid_media_agent.tools.performance import (
+    before_the_data,
+    load_reads,
+    require_days,
+    uncovered,
+)
 from paid_media_agent.tools.summary import cross_platform_caveats
 
 COMPARE_PERIODS_TOOL = "compare_periods"
@@ -70,10 +75,11 @@ def resolve_comparison(
         if args.current_start is not None or args.previous_start is not None:
             raise ComputeError("give a window preset or dates, not both")
         through = data_through(loaded)
-        current, previous = resolve_preset(
-            args.window, today=today, data_through=through, days=args.days
-        )
-        return current, previous, f"{args.window}, data through {through.isoformat()}"
+        resolved = resolve_preset(args.window, today=today, data_through=through, days=args.days)
+        rule = f"{args.window}, data through {through.isoformat()}"
+        if resolved.notes:
+            rule += f"; {resolved.notes}"
+        return resolved.current, resolved.previous, rule
     if args.current_start is None or args.current_end is None:
         raise ComputeError("give a window preset (e.g. last_week) or current_start and current_end")
     current = (args.current_start, args.current_end)
@@ -115,10 +121,7 @@ def run_compare_periods(
         for label, window in (("current", current), ("previous", previous)):
             if window.start < first:
                 # The read did not cover this window; a partial total would look like a drop.
-                raise ComputeError(
-                    f"{source}: the {label} window starts {window.start.isoformat()} but the "
-                    f"read begins {first.isoformat()}; re-read the union of both windows"
-                )
+                raise before_the_data(read, label, window.start, window.end)
             if not any(window.start <= r.window.start <= window.end for r in rows):
                 # An empty window is unavailable data, never zero spend.
                 raise ComputeError(

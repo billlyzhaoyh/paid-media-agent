@@ -126,7 +126,8 @@ _GROUPED: dict[HistoryView, tuple[str, str]] = {
     # (aggregates, source). Ratios come from the sums, never from averaging daily ratios, at the
     # precision `compute.aggregate` uses, so every tool states the same figure.
     "daily": (
-        "count(DISTINCT day) AS days, sum(spend) AS spend, sum(impressions) AS impressions, "
+        "count(DISTINCT day) AS days, min(day) AS first_day, max(day) AS last_day, "
+        "sum(spend) AS spend, sum(impressions) AS impressions, "
         "sum(clicks) AS clicks, sum(conversions) AS conversions, "
         "sum(conversion_value) AS conversion_value, "
         "count(*) - count(conversions) AS rows_missing_conversions, "

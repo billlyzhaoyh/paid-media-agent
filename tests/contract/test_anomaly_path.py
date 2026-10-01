@@ -53,6 +53,10 @@ async def test_the_agent_checks_synced_history_with_the_local_band(
     for flag in checked.get("flags", []):
         assert "score" not in flag and "band_distance" in flag, "never read as a percentage"
     assert "not a percentage" in checked["note"]
+    spend_end = checked["windows"]["spend"].split("..")[1]
+    conversions_end = checked["windows"]["conversions"].split("..")[1]
+    assert ("not_checked" in checked) == (conversions_end < spend_end)
+    assert ("were not checked" in checked["summary"]) == ("not_checked" in checked)
     assert unknown["error"] is True and "unknown account alias" in unknown["detail"]
 
 
@@ -135,3 +139,11 @@ def test_a_flag_says_how_many_days_ago_its_day_was() -> None:
     assert shown["days_ago"] == 12 and "on 2026-09-18 (12 days ago) is above" in shown["reading"]
     assert "0.39 above its edge 10.31" in shown["reading"], "the distance in the metric's units"
     assert _with_reading(flag, date(2026, 9, 19))["reading"].count("(1 day ago)") == 1
+
+
+def test_days_a_metric_was_not_checked_are_named() -> None:
+    from paid_media_agent.tools.anomalies import _not_checked
+
+    windows = {"spend": "2026-09-23..2026-09-29", "conversions": "2026-09-17..2026-09-23"}
+    assert _not_checked(windows) == {"conversions": "2026-09-24..2026-09-29"}
+    assert _not_checked({**windows, "conversions": "2026-09-23..2026-09-29"}) == {}

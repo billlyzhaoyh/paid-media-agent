@@ -114,7 +114,19 @@ Tools return the judgements an answer needs, not only the figures, because model
 - **Windows.** `compare_periods` and `summarize_window` take a `window` preset (`last_week`,
   `last_n_days_of_data`, `month_to_date`, `last_month`) and return the dates they used.
   - "Of data" ends on the newest day every read covers.
-  - A comparison's previous window is the same number of days immediately before.
+  - A comparison's previous window is the same number of days immediately before, except month
+    to date, which is against the same days of last month (the days just before when last month
+    is shorter).
+  - Month to date on a month with no complete day of data yet (the 1st, with data through the
+    29th) is the latest month with data, to date, and the rule says so.
+  - A dated read with no rows says why ("the data runs through 2026-09-29"), and the summary
+    tools call it an empty read rather than the wrong kind of artifact.
+- **Coverage.** `check_anomalies` checks conversions on an earlier window than spend, because
+  recent conversions are still arriving; `not_checked` and the summary name the days it skipped,
+  so none is called normal.
+- **Totals across accounts.** `query_history` with `group_by: ["account"]` and no alias returns
+  each account's totals with `comparisons` and the attribution caveat, and each grouped row says
+  how many of its conversions are not yet final (`maturity`).
 - **Days ago.** Anomaly flags, `explain_change` known changes, and `query_history` change and
   settings rows carry `days_ago`, counted from the account's own today.
 - **Budgets.**

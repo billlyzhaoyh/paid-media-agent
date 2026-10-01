@@ -365,3 +365,27 @@ The same six questions, no judge, all passing:
   not flagged where the anomaly check never covered the last days (q06). Haiku asked which
   account q17 meant before forecasting (`ceb91396`). Haiku's q30 omitted the attribution and
   maturity caveats.
+
+## S18c: windows, coverage, and caveats (2026-10-01)
+
+The three remaining misses each came from something a tool left unsaid. The runs were on 1
+October, with sample data covering 2–29 September only.
+- **q06, Sonnet** (`248349cf`): **passed** (judge 4/4/5/4). `check_anomalies` now names the
+  conversion days it did not check (`not_checked`); before, the answer called them "within the
+  expected range".
+- **q15, Haiku** (`309f979c`, `c3c6f39a`): still fails.
+  - **What the tools now do.** "Month to date" on a month with no data yet resolves to September
+    to date, against the same days of last month, and says so. An empty read of 1 October says
+    the data runs through 29 September. A window before the data's first day says the source has
+    none, rather than "re-read".
+  - **What remains.** The sample data has no August, so "the same days last month" cannot exist.
+    Haiku says the data starts 2 September, then frames the gap as September of an earlier year.
+  - **The question depends on the date.** Its expectation assumes a mid-month date and earlier
+    data.
+- **q30, Haiku** (`309f979c`): still fails on completeness. It summarized each platform in its
+  own call, so no tool result carried the cross-platform caveat, and it did not say October has
+  no data yet. `query_history` account totals now carry `comparisons`, the attribution caveat,
+  and a `maturity` reading when called once for all accounts, but Haiku did not use them here.
+
+**Stabilise the dates.** Run the date-dependent questions (q15, q30) with the eval's "today"
+pinned mid-month, so they measure the agent rather than the calendar.
