@@ -118,6 +118,15 @@ def run_compare_periods(
     for read in reads:
         rows, first, latest = read.rows, read.first_day, read.last_day
         source = ", ".join(read.artifact_ids)
+        if previous.end < first and read.requested_from is not None:
+            # Nothing of the previous window exists: the comparison cannot be made at all, which
+            # matters more than a current window that starts a day early.
+            raise ComputeError(
+                f"{read.platform}/{read.account}: the previous window "
+                f"{previous.start.isoformat()}..{previous.end.isoformat()} is entirely before the "
+                f"data, which starts {first.isoformat()}, so there is nothing to compare with. Say "
+                "so plainly, and use summarize_window for the current window on its own."
+            )
         for label, window in (("current", current), ("previous", previous)):
             if window.start < first:
                 # The read did not cover this window; a partial total would look like a drop.

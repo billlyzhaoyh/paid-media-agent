@@ -279,3 +279,34 @@ def test_compare_periods_resolves_a_preset_and_says_which_dates(tmp_path: Path) 
                 current_end=date(2026, 8, 3),
             ),
         )  # fmt: skip
+
+
+def test_a_previous_window_before_all_the_data_is_named_first(tmp_path: Path) -> None:
+    import pytest
+
+    store = ArtifactStore(tmp_path)
+    perf = store.write_json(
+        "performance_rows",
+        rows_to_payload([_row(day, "g-1", "10", "1") for day in range(2, 30)]),
+        schema_version=ROWS_SCHEMA_VERSION,
+        platform="google_ads",
+        account_ref="demo-google",
+        requested_window="2026-08-01..2026-08-29",
+    )
+    # 1 September, data through 29 August from the 2nd: July is not in the data at all.
+    with pytest.raises(ComputeError, match=r"previous window 2026-07-01\.\.2026-07-29 is entirely"):
+        run_compare_periods(
+            store,
+            ComparePeriodsArgs(artifact_ids=[perf.artifact_id], window="month_to_date"),
+            today=date(2026, 9, 1),
+        )
+    # A previous window that is only partly before the data: those days do not exist.
+    with pytest.raises(ComputeError, match=r"the source has no data before 2026-08-02"):
+        run_compare_periods(
+            store,
+            ComparePeriodsArgs(
+                artifact_ids=[perf.artifact_id],
+                current_start=date(2026, 8, 9),
+                current_end=date(2026, 8, 16),
+            ),
+        )

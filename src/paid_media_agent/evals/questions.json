@@ -213,7 +213,7 @@
   "id": "q15_date",
   "category": "date handling",
   "text": "Compare this month to date with the same days last month for Google Ads.",
-  "expect": "resolves 'this month' as the current calendar month to date and compares the same days of the prior month; names the completeness date and any days without data; no arithmetic in prose",
+  "expect": "resolves 'this month' as the current calendar month to date, or, when it has no complete day of data yet, says so and labels the latest month it uses instead; compares the same days of the prior month where the data has them, and where the prior month is outside the data says so plainly rather than substituting a different comparison; names the completeness date and any days without data; no arithmetic in prose",
   "tools_all": [],
   "tools_none": [],
   "figures": null,
@@ -447,7 +447,7 @@
   "id": "q30_platform_cpa",
   "category": "cross-platform",
   "text": "Which platform has the better CPA this month, Google or Meta?",
-  "expect": "compares each platform's CPA over the same window with a caveat that attribution differs and conversions are not comparable one-to-one; no blended or deduplicated claim",
+  "expect": "compares each platform's CPA over the same window with a caveat that attribution differs and conversions are not comparable one-to-one; when this month has no complete day of data yet, says so and labels the month it uses; no blended or deduplicated claim",
   "tools_all": [
    [
     "*__get_campaign_performance",

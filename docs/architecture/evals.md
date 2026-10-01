@@ -389,3 +389,19 @@ October, with sample data covering 2–29 September only.
 
 **Stabilise the dates.** Run the date-dependent questions (q15, q30) with the eval's "today"
 pinned mid-month, so they measure the agent rather than the calendar.
+
+**Questions fixed rather than dates pinned.** Pinning the eval's date would not help: the sample
+data covers 28 days, so the prior month is never in it, and the tools read the real date. Instead
+q15's and q30's expectations now ask for what 28 days can answer:
+- when this month has no complete day of data yet, say so and label the month used;
+- when the prior month is outside the data, say so plainly rather than substitute a comparison.
+
+`compare_periods` now names a previous window that lies entirely before the data first, ahead of a
+current window that starts a day early.
+
+| Question | Haiku 4.5 | Sonnet 5.5 |
+| --- | --- | --- |
+| q15 | fail (`ad856f3e`: omits that October has no data) | **pass** (`9bafb173`) |
+| q30 | fail (`86228ea8`: no attribution caveat, September unlabelled) | **pass** (`cc3edd81`) |
+
+Haiku's remaining misses are omissions the tools already state; Sonnet passes both.

@@ -272,7 +272,7 @@ def test_a_report_window_the_data_does_not_cover_fails_cleanly(
         main, ["report", "--cadence", "monthly", "--end", "2026-08-28", "--no-render"]
     )
     assert result.exit_code == 1 and "Traceback" not in result.output
-    assert "FAIL report:" in result.output and "the source has no data before" in result.output
+    assert "FAIL report:" in result.output and "is entirely before the" in result.output
 
 
 async def test_totals_come_from_the_tools_and_match_the_summary_exactly(
