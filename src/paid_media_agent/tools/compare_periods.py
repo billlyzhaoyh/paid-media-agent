@@ -32,6 +32,7 @@ from paid_media_agent.tools.compute import (
 from paid_media_agent.tools.goal_check import against_goals
 from paid_media_agent.tools.normalize import NormalizationError
 from paid_media_agent.tools.performance import (
+    NotEnoughHistory,
     before_the_data,
     load_reads,
     require_days,
@@ -121,7 +122,7 @@ def run_compare_periods(
         if previous.end < first and read.requested_from is not None:
             # Nothing of the previous window exists: the comparison cannot be made at all, which
             # matters more than a current window that starts a day early.
-            raise ComputeError(
+            raise NotEnoughHistory(
                 f"{read.platform}/{read.account}: the previous window "
                 f"{previous.start.isoformat()}..{previous.end.isoformat()} is entirely before the "
                 f"data, which starts {first.isoformat()}, so there is nothing to compare with. Say "

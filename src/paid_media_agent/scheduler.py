@@ -163,6 +163,9 @@ class Scheduler:
             try:
                 detail = await job.run()
                 status = "ok"
+            except JobSkipped as exc:
+                log.info("job %s skipped: %s", job.name, exc)
+                detail, status = {"skipped": str(exc)}, "skipped"
             except Exception as exc:
                 log.warning("job %s failed", job.name, exc_info=True)
                 detail, status = {"error": sanitize_exception(exc)}, "failed"
@@ -172,6 +175,10 @@ class Scheduler:
                 [status, finished, json.dumps(detail, default=str), run_id],
             )
             return JobRun(run_id, job.name, trigger, status, started, finished, detail)
+
+
+class JobSkipped(Exception):
+    """A job with nothing to do yet (a report longer than the history): recorded, not failed."""
 
 
 def build_jobs(runtime: SelfHostedRuntime, *, clock: Callable[[], datetime] = utc_now) -> list[Job]:
@@ -231,15 +238,20 @@ def build_jobs(runtime: SelfHostedRuntime, *, clock: Callable[[], datetime] = ut
 
     def report(cadence: Cadence) -> Callable[[], Awaitable[dict[str, Any]]]:
         async def _report() -> dict[str, Any]:
-            run = await run_cadence_report(
-                cadence=cadence,
-                end=yesterday(),
-                accounts=profile.accounts,
-                catalog=runtime.catalog,
-                dispatcher=dispatcher,
-                artifacts=profile.artifacts,
-                goals=GoalStore(runtime.store).current,
-            )
+            from paid_media_agent.tools.performance import NotEnoughHistory
+
+            try:
+                run = await run_cadence_report(
+                    cadence=cadence,
+                    end=yesterday(),
+                    accounts=profile.accounts,
+                    catalog=runtime.catalog,
+                    dispatcher=dispatcher,
+                    artifacts=profile.artifacts,
+                    goals=GoalStore(runtime.store).current,
+                )
+            except NotEnoughHistory as exc:
+                raise JobSkipped(sanitize_exception(exc)) from None
             listed = (run.report or {}).get("files")
             files = (
                 [str(f.get("path")) for f in listed if isinstance(f, dict)]

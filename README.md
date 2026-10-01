@@ -44,12 +44,36 @@ produces.
   gaps that could change the conclusion.
 - **Produce reports.** Generate weekly or monthly summaries with charts, campaign tables, and
   recommendations. Download HTML, or PDF when the host has the rendering libraries installed.
+- **Explain, forecast, and recommend.** Split a change in CPA, ROAS, or conversions into its
+  drivers, forecast what a budget change would do with an 80% range, and recommend how to split
+  an account's budget across its campaigns.
 - **Prepare changes for review.** Propose campaign updates with a reason and a plan for checking
   the result.
 
 The model decides what to investigate. Code calculates the metrics and checks report figures
 against the source data. Large responses stay in files; the model receives summaries with the
 source, date window, and data-quality flags.
+
+## How it keeps answers honest
+
+- **Code does the arithmetic.** Tools return totals, changes marked better or worse, rankings,
+  the dates a window resolved to, and account-to-account comparisons. Anything else comes from a
+  `calculate` tool, never from arithmetic in the reply.
+- **Every answer is checked.** Each figure in a final answer must trace to a tool result, the
+  account goals, or the user's own words. An answer that fails is sent back once; anything still
+  unsourced is marked unverified.
+- **Every change waits for a person.** A proposal shows a summary written from its record, waits
+  for an authorized approval, runs once, and is read back to confirm it applied.
+- **It knows what it did not see.** Failed reads, days without data, conversions still arriving,
+  and differences in attribution are stated, not shown as zero.
+
+**Measured.** A [30-question eval](docs/architecture/evals.md) on synthetic accounts grades each
+answer with deterministic checks and a judge model. Claude Sonnet 5.5 passed 25 of 30, at about
+$0.06 per answer with prompt caching; targeted reruns after later fixes are in the eval log.
+
+**Status.** Tested end to end on synthetic accounts: the offline demo, the eval, and the Docker
+image. The live Pipeboard read path, live ad-account writes, and the Slack app have not yet been
+run against real accounts or a real workspace.
 
 **Live ad account changes are off by default.** Enabling them requires a configured write policy,
 [release checks](docs/operations/live-write-runbook.md), and approval from an authorized reviewer.

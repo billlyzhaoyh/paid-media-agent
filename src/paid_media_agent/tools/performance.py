@@ -28,6 +28,10 @@ NOT_ROWS = (
 )
 
 
+class NotEnoughHistory(ComputeError):
+    """A window the source has no data for at all: nothing to compute, not a fault."""
+
+
 @dataclass
 class AccountRead:
     """Every row read for one platform account, from one artifact or several."""
@@ -143,7 +147,7 @@ def before_the_data(read: AccountRead, label: str, start: date, end: date) -> Co
     first = read.first_day.isoformat()
     if read.requested_from is not None and read.requested_from <= start:
         # The read asked for these days and the source had none: re-reading cannot help.
-        return ComputeError(
+        return NotEnoughHistory(
             f"{read.platform}/{read.account}: the source has no data before {first}, so the "
             f"{label} window {span} is not available; say so, and compare only windows from "
             f"{first} on"

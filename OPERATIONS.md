@@ -96,7 +96,9 @@ in the shared tools and skills, not tool-specific message renderers.
 `PAID_MEDIA_JOB_HOUR_UTC` (default 6): a daily sync of the trailing `PAID_MEDIA_SYNC_DAYS` (28), a
 weekly report on Mondays, and a monthly report on the 1st. Add `backup` for a daily Parquet export
 of the state file. Each account's sync ends on its own yesterday, in its timezone. A server started after the hour still
-runs that day's jobs; a failed job waits for its next slot. `POST /jobs/{name}` runs one now, and
+runs that day's jobs; a failed job waits for its next slot. A report whose windows reach back
+before the stored history (a monthly report needs 56 days) is recorded as `skipped`, with the
+reason, rather than failed. `POST /jobs/{name}` runs one now, and
 `GET /jobs` lists recent runs. With `serve` running, `paid-media-agent sync` asks it to run the
 job over the API (it needs `PAID_MEDIA_API_TOKENS`); `backfill` and `history` need `serve` stopped.
 The agent itself reads history through its `query_history` tool.

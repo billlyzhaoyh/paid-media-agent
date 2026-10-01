@@ -171,3 +171,29 @@ async def test_the_api_runs_the_real_sync_job_into_the_state_file(
         transport=httpx.ASGITransport(without), base_url="http://test"
     ) as client:
         assert (await client.post("/jobs/sync", headers=auth)).status_code == 404
+
+
+async def test_a_report_longer_than_the_history_is_skipped_not_failed(
+    settings: Settings, project_root: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    from paid_media_agent.runtime.self_hosted import build_self_hosted_runtime
+
+    configured = settings.model_copy(
+        update={"paid_media_data_mode": "sample", "paid_media_jobs": "sync"}
+    )
+    runtime = build_self_hosted_runtime(
+        configured,
+        project_root=project_root,
+        model=ScriptedChatModel(steps=[]),
+        store=Store(tmp_path / "state.duckdb"),
+    )
+    clock = Clock(datetime(2026, 8, 29, 7))
+    scheduler = Scheduler(runtime.store, build_jobs(runtime, clock=clock), clock=clock)
+    await scheduler.run_now("sync")
+    # Two 28-day windows need 56 days; the sample accounts have 28.
+    monthly = await scheduler.run_now("report_monthly")
+    assert monthly.status == "skipped" and "before the data" in monthly.detail["skipped"], monthly
+    assert "Traceback" not in caplog.text and "failed" not in caplog.text
+    weekly = await scheduler.run_now("report_weekly")
+    assert weekly.status == "ok", weekly
+    runtime.store.close()

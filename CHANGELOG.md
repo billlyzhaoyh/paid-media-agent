@@ -4,6 +4,36 @@
 
 ### Added
 
+- Answers whose figures come from code, checked before they are sent.
+  - **Arithmetic.** A `calculate` tool evaluates labelled expressions over figures from earlier
+    results (exact decimals; names, powers and thousands separators refused). Prose arithmetic is
+    not allowed.
+  - **Verdicts.** Changes are marked better or worse; tools return rankings, window presets
+    (`last_week`, `last_n_days_of_data`, `month_to_date`, `last_month`) with the dates they
+    resolved to, `days_ago`, days over budget, account-to-account comparisons both ways, and
+    incremental CPA against the target CPA.
+  - **Answer check.** Every final answer runs the eval's grounding rule. An answer with figures
+    no tool returned is sent back once, then marked unverified (`PAID_MEDIA_ANSWER_REPAIR`).
+  - **Evidence the host keeps.**
+    - Failed reads are listed as unavailable without the model naming them.
+    - Reads follow provider pages, and summaries merge pages and per-day reads.
+    - `query_history` and `read_artifact` total rows by account, campaign, day or week.
+    - Empty reads, days before the data, and conversion days an anomaly check skipped are named.
+  - **Proposals.** The reviewer always sees the summary written from the record. A
+    recommendation is applied by its `bandit_run_id`, so the budget is never retyped. A proposal
+    a turn leaves unpaused is paused by the runtime.
+  - **Cost.**
+    - Every authorized read tool is bound while they fit a token budget.
+    - The accounts and goals are in the system prompt.
+    - An explicit cache breakpoint covers the shared tools and instructions.
+    - The judge skips answers that already failed a check.
+
+    Sonnet 5.5 costs about $0.057 per measured answer, down from $0.096.
+  - **Budget model.** The pooled elasticity has a weak prior, so short, barely varied histories
+    stay plausible.
+  - **Jobs.** A scheduled report longer than the stored history is recorded as skipped, not
+    failed.
+
 - Review fixes and eval-driven answer quality.
   - **Approvals.** Approving or rejecting a proposal decides only its own paused call, and a
     stale approval can no longer execute a newer proposal. The review card shows the paused
