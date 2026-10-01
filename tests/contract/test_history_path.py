@@ -273,3 +273,64 @@ def test_a_report_window_the_data_does_not_cover_fails_cleanly(
     )
     assert result.exit_code == 1 and "Traceback" not in result.output
     assert "FAIL report:" in result.output and "previous window starts" in result.output
+
+
+async def test_totals_come_from_the_tools_and_match_the_summary_exactly(
+    settings: Settings, project_root: Path
+) -> None:
+    from paid_media_agent.harness.tools import ToolContext
+    from paid_media_agent.tools.summary import SummarizeWindowArgs, run_summarize_window
+
+    runtime, _ = build_runtime(settings, project_root, [])
+    read = await runtime.components.read_dispatcher.execute(
+        "google_ads__get_campaign_performance",
+        {ACCOUNT_ALIAS_ARG: "demo-google", "start_date": "2026-08-15", "end_date": "2026-08-28"},
+    )
+    week = {"start_date": "2026-08-22", "end_date": "2026-08-28"}
+    summary = run_summarize_window(
+        runtime.profile.artifacts,
+        SummarizeWindowArgs(artifact_ids=[read.artifact_id], **week),  # type: ignore[arg-type]
+    )
+    (headline,) = summary["headline"]
+    tools = runtime.components.dispatcher.tools
+    context = ToolContext("h-2", "local-user")
+
+    def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
+        return json.loads(tools[name].handler(args, context))  # type: ignore[arg-type]
+
+    grouped = call(
+        "query_history",
+        {"view": "daily", "account_alias": "demo-google", "group_by": ["account"], **week},
+    )
+    (account,) = grouped["rows"]
+    assert grouped["grouped_by"] == ["account"] and account["days"] == 7
+    assert f"{account['spend']:.2f}" == headline["spend"] and account["currency"] == "USD"
+    assert account["cpa"] == float(headline["cpa"]), "the ratio of the sums, as the summary has it"
+
+    weekly = call(
+        "query_history",
+        {"view": "daily", "account_alias": "demo-google", "group_by": ["entity", "week"],
+         "fields": ["entity_ref", "week", "spend"], "start_date": "2026-08-15"},
+    )  # fmt: skip
+    assert set(weekly["rows"][0]) == {"entity_ref", "week", "spend"}
+    assert {r["week"] for r in weekly["rows"]} <= {"2026-08-10", "2026-08-17", "2026-08-24"}
+    assert call("query_history", {"view": "settings", "group_by": ["day"]})["error"] is True
+    unknown = call("query_history", {"view": "daily", "fields": ["nope"], "limit": 1})
+    assert unknown["error"] is True and "unknown fields nope" in unknown["detail"]
+
+    total = call("read_artifact", {"artifact_id": read.artifact_id, "group_by": "total", **week})
+    (row,) = total["rows"]
+    assert row["spend"] == headline["spend"] and row["cpa"] == headline["cpa"]
+    assert row["day_coverage"] == 7 and row["currency"] == "USD"
+    per_day = call(
+        "read_artifact",
+        {"artifact_id": read.artifact_id, "group_by": "day", "entity_ref": "g-101", **week},
+    )
+    assert [r["day"] for r in per_day["rows"]] == [f"2026-08-{d}" for d in range(22, 29)]
+    raw = call(
+        "read_artifact",
+        {"artifact_id": read.artifact_id, "entity_ref": "g-102", "fields": ["day", "spend"]},
+    )
+    assert raw["row_count"] == 14 and set(raw["rows"][0]) == {"day", "spend"}
+    paged = call("read_artifact", {"artifact_id": summary["artifact_id"], "group_by": "total"})
+    assert paged["error"] is True and "performance_rows" in paged["detail"]

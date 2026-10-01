@@ -36,12 +36,15 @@ class ConversationStore:
         self._store = store
 
     def append(self, thread_id: str, message: Message) -> None:
-        tool_calls = provider_state = tool_call_id = tool_name = status = None
+        tool_calls = provider_state = tool_call_id = tool_name = None
+        status: str | None = None
         if isinstance(message, AssistantMessage):
             tool_calls = _calls_json(message.tool_calls)
             provider_state = json.dumps(message.provider_state) if message.provider_state else None
         elif isinstance(message, ToolMessage):
             tool_call_id, tool_name, status = message.tool_call_id, message.name, message.status
+        elif message.origin == "host":
+            status = "host"  # a user row has no status; a host note is marked there
         # The next sequence number is computed inside the insert, under the store's write lock.
         self._store.write(
             "INSERT INTO messages SELECT ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ?, ?, ?, ?, ?, ? "
@@ -69,7 +72,7 @@ class ConversationStore:
         loaded: list[Message] = []
         for role, content, calls, call_id, name, status, state in rows:
             if role == "user":
-                loaded.append(UserMessage(content))
+                loaded.append(UserMessage(content, origin="host" if status == "host" else "user"))
             elif role == "assistant":
                 loaded.append(
                     AssistantMessage(content, _calls(calls), json.loads(state) if state else None)

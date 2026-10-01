@@ -53,8 +53,10 @@ recommendations.
    move budget", call `what_if_budgets` for that account; quote its reading, its ranges, and its
    flags (`capped`: the campaign cannot spend more; `outside_history`: treat as a guess;
    `step_advice`: how many changes it takes). For period-over-period change, call
-   `compare_periods` with the artifact ids and both windows. List any failed read in
-   `unavailable_sources` so it stays visible and suppresses the cross-platform total.
+   `compare_periods` with the artifact ids and both windows. Pass every artifact a read returned
+   (`artifact_ids` when it had several pages). The host lists failed reads under
+   `unavailable_sources` itself; name them in the answer. For totals over raw rows, use
+   `query_history` or `read_artifact` with `group_by`; never add rows up.
 7. Read the `analysis_summary`. Quote its values verbatim; never recompute from previews or rows.
    A figure the tools did not return (a difference, a share, a monthly amount) comes from
    `calculate`, never from arithmetic in prose. Quote the tools' verdicts:

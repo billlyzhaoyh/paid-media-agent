@@ -8,6 +8,7 @@ configured daily budget. All arithmetic is here so the model never derives a fig
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
@@ -20,12 +21,13 @@ from paid_media_agent.domain.analysis import verdict
 from paid_media_agent.domain.common import JsonValue
 from paid_media_agent.domain.metrics import PerformanceRow
 from paid_media_agent.domain.windows import PRESET_HELP, WindowPreset, resolve_preset
-from paid_media_agent.harness.tools import ToolContext, ToolSpec, parameters_for
+from paid_media_agent.harness.tools import FailedRead, ToolContext, ToolSpec, parameters_for
 from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.tools.artifacts import ArtifactError, ArtifactStore
 from paid_media_agent.tools.compute import ComputeError, aggregate
 from paid_media_agent.tools.goal_check import against_goals
-from paid_media_agent.tools.normalize import NormalizationError, rows_from_payload
+from paid_media_agent.tools.normalize import NormalizationError
+from paid_media_agent.tools.performance import AccountRead, load_reads, require_days, uncovered
 
 SUMMARIZE_WINDOW_TOOL = "summarize_window"
 SUMMARY_SCHEMA_VERSION = "window-summary/2"
@@ -35,7 +37,10 @@ _RATIO = Decimal("0.0001")
 
 class SummarizeWindowArgs(BaseModel):
     artifact_ids: list[str] = Field(
-        description="performance_rows artifact ids, one per platform and account."
+        description=(
+            "performance_rows artifact ids from platform reads; several for one account (pages, "
+            "or one call per day) are merged."
+        )
     )
     window: WindowPreset | None = Field(
         default=None,
@@ -197,7 +202,7 @@ def summarize_rows(
 
 
 def _window(
-    artifacts: ArtifactStore, args: SummarizeWindowArgs, today: date
+    reads: list[AccountRead], args: SummarizeWindowArgs, today: date
 ) -> tuple[date, date, str]:
     if args.window is None:
         if args.start_date is None or args.end_date is None:
@@ -206,13 +211,9 @@ def _window(
     if args.start_date is not None or args.end_date is not None:
         raise ComputeError("give a window preset or dates, not both")
     ends = []
-    for artifact_id in args.artifact_ids:
-        rows = rows_from_payload(artifacts.read(artifact_id).payload)
-        complete = [r.window.start for r in rows if r.window.is_complete]
-        if rows:
-            ends.append(max(complete or [r.window.start for r in rows]))
-    if not ends:
-        raise ComputeError("no rows to resolve the window from")
+    for read in reads:
+        complete = [r.window.start for r in read.rows if r.window.is_complete]
+        ends.append(max(complete or [r.window.start for r in read.rows]))
     through = min(ends)
     (start, end), _ = resolve_preset(args.window, today=today, data_through=through, days=args.days)
     return start, end, f"{args.window}, data through {through.isoformat()}"
@@ -267,8 +268,13 @@ def run_summarize_window(
     *,
     goals: GoalLookup | None = None,
     today: date | None = None,
+    failures: Sequence[FailedRead] = (),
 ) -> dict[str, Any]:
-    start, end, rule = _window(artifacts, args, today or datetime.now(UTC).date())
+    """`failures` are this turn's failed reads; those for accounts no artifact covers are listed
+    as unavailable, never shown as zero."""
+    reads = load_reads(artifacts, args.artifact_ids)
+    unavailable = uncovered(reads, failures)
+    start, end, rule = _window(reads, args, today or datetime.now(UTC).date())
     if end < start:
         raise ComputeError("window end precedes start")
     budgets: dict[tuple[str, str], dict[str, Decimal]] = {}
@@ -286,38 +292,24 @@ def run_summarize_window(
         budgets.setdefault(scope, {}).update(budgets_from_payload(record.payload))
     platforms: dict[str, dict[str, Any]] = {}
     by_account: dict[str, list[PerformanceRow]] = {}
-    for artifact_id in args.artifact_ids:
-        record = artifacts.read(artifact_id)
-        if record.metadata.kind != "performance_rows":
-            raise ComputeError(
-                f"{artifact_id} is a {record.metadata.kind} artifact, not performance rows: pass "
-                "the artifact_id of a platform performance read (read_result with "
-                "artifact_kind performance_rows); for stored history use query_history, "
-                "explain_change, or check_pacing instead"
-            )
-        rows = rows_from_payload(record.payload)
-        if not rows:
-            raise ComputeError(f"{artifact_id} contains no rows")
-        platform = record.metadata.platform or rows[0].platform.value
-        account = record.metadata.account_ref or rows[0].account_ref
-        by_account.setdefault(account, []).extend(rows)
-        accounts = platforms.setdefault(platform, {})
-        if account in accounts:
-            raise ComputeError(f"provide one performance_rows artifact for {platform}/{account}")
+    for read in reads:
+        platform, account = read.platform, read.account
+        by_account.setdefault(account, []).extend(read.rows)
+        require_days(read, max(start, read.first_day), min(end, read.last_day))
         summary = summarize_rows(
-            rows,
+            read.rows,
             start=start,
             end=end,
             budgets=budgets.get((platform, account), {}),
         )
-        summary["source_artifact"] = artifact_id
+        summary["source_artifacts"] = read.artifact_ids
         if summary["over_budget_days"]:
             # A day over budget can be the platform's own allowance, not overspend.
             allowance = rules_for(platform).pacing_note()
             if allowance:
                 summary["over_budget_note"] = allowance
-        summary["missing_fields"] = list(record.payload.get("missing_fields") or [])
-        accounts[account] = summary
+        summary["missing_fields"] = list(read.missing_fields)
+        platforms.setdefault(platform, {})[account] = summary
     metadata = artifacts.write_json(
         "analysis",
         {"schema_version": SUMMARY_SCHEMA_VERSION, "platforms": platforms},
@@ -350,6 +342,13 @@ def run_summarize_window(
         {h["platform"] for h in headline},
         {h["covered_window"] for h in headline},
     )
+    if unavailable:
+        caveats.append(
+            "Unavailable (the read failed): "
+            + "; ".join(unavailable)
+            + ". Its numbers are missing, not zero, and it is in no total or comparison."
+        )
+        result["unavailable_sources"] = unavailable
     if caveats:
         result["caveats"] = caveats
     result["artifact_id"] = metadata.artifact_id
@@ -360,10 +359,12 @@ def run_summarize_window(
 def build_summarize_window_tool(
     artifacts: ArtifactStore, goals: GoalLookup | None = None
 ) -> ToolSpec:
-    def _run(kwargs: dict[str, Any], _context: ToolContext) -> str:
+    def _run(kwargs: dict[str, Any], context: ToolContext) -> str:
         try:
             args = SummarizeWindowArgs.model_validate(kwargs)
-            return json.dumps(run_summarize_window(artifacts, args, goals=goals))
+            return json.dumps(
+                run_summarize_window(artifacts, args, goals=goals, failures=context.failed_reads())
+            )
         except (
             ArtifactError,
             ComputeError,

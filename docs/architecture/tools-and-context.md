@@ -72,6 +72,11 @@ A result over `PAID_MEDIA_RESULT_OFFLOAD_CHARS` becomes an artifact and a stub.
 - The core tool `read_artifact(artifact_id, offset)` pages through any artifact, 5,000
   characters at a time. It reads by id only, is never offloaded itself, and is how the model
   reads the rest.
+- For a platform read's rows, `read_artifact` instead filters (`entity_ref`, `start_date`,
+  `end_date`, `fields`) and totals (`group_by`: entity, day, or total) with `compute.aggregate`,
+  the same arithmetic as `summarize_window`. `query_history` takes `group_by` (account, entity,
+  day, week) for the daily and signals views, with CPA, ROAS, CTR and CVR from the sums, and
+  `fields`. The model never adds rows up.
 - The first eval run showed why: a cross-platform summary's preview showed only Google, and the
   model reported it as the total for every platform.
 
@@ -125,6 +130,37 @@ Tools return the judgements an answer needs, not only the figures, because model
   currencies.
 - **Offloading.** A stub keeps these fields (`against_goals`, `comparisons`, the resolved
   windows, `budget_totals`, `flags`) ahead of the notes.
+
+## Evidence the host keeps
+
+The model does not keep the books on what it read or what it proposed; the host does.
+- **Failed reads.** A platform read that is refused, errors, or times out is found in the
+  thread's current turn (`harness/tools.py` `failed_reads`); a later successful read of the same
+  tool and account clears it. `compare_periods` and `summarize_window` list those accounts under
+  `unavailable_sources`, suppress any cross-platform total, and say the numbers are missing, not
+  zero. The model passes nothing.
+- **Pages.** A platform read follows the provider's pages itself, up to 20, and returns every
+  page's artifact; more pages than that is an error, never a partial read. The summary tools
+  merge several artifacts for one account (pages, or one call per day): rows are keyed by entity
+  and day, the newest artifact wins an overlap, totals reconcile against the provider's when
+  that is still exact, and a day no artifact covers is named.
+- **Proposals.** A paused proposal always shows the summary written from its record
+  (`proposal_summary`), on every surface, in place of the model's text. To apply a budget
+  recommendation the model passes `propose_change` the run's `bandit_run_id` and the campaign:
+  the budget, reason, and plans come from the stored decision, and a stale, ineligible, foreign,
+  or already-proposed decision is refused.
+
+## Answer check
+
+Every final answer is checked with the eval's grounding rule (`paid_media_agent/grounding.py`,
+also used by `evals/checks.py`): its figures must be in the thread's tool results, the payloads
+those results name, `calculate` results built on sourced figures, or the user's own words.
+- When it fails (any money figure missing, or under 80% of figures found), the draft is kept for
+  the record and a host note naming the figures sends it back once; that one extra model call is
+  logged with purpose `repair`. Surfaces show only the answer that follows.
+- If the second answer still fails, it is shown with a closing line naming the unverified
+  figures.
+- `PAID_MEDIA_ANSWER_REPAIR=false` turns it off. A grounded answer costs nothing extra.
 
 ## Context budget and caching
 

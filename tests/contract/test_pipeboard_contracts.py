@@ -499,3 +499,61 @@ async def test_summaries_use_budgets_in_currency_not_provider_units(
             if ref in shown:
                 assert shown[ref] == budget, (alias, ref, shown[ref])
         assert any(ref in shown for ref in budgets), f"{alias}: a budgeted campaign is shown"
+
+
+async def test_reads_follow_their_pages_and_per_day_reads_summarise_as_one_account(
+    settings: Settings, tmp_path: Path
+) -> None:
+    from paid_media_agent.harness.tools import ToolContext
+    from paid_media_agent.tools.compute import ComputeError
+    from paid_media_agent.tools.reads import build_platform_read_tools
+    from paid_media_agent.tools.summary import SummarizeWindowArgs, run_summarize_window
+
+    wired = await _wire(settings, tmp_path, FakePipeboard())
+    tools = {t.name: t for t in build_platform_read_tools(wired.catalog, wired.dispatcher)}
+    context = ToolContext("t", "local-user")
+
+    async def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
+        result = tools[name].handler({"account_alias": "meta-us", **args}, context)
+        return json.loads(await result)  # type: ignore[misc]
+
+    campaigns = await call("meta_ads__get_campaigns", {})
+    assert campaigns["pages"] == 2 and len(campaigns["artifact_ids"]) == 2
+    assert campaigns["next_page"] is None and "Pass all artifact_ids" in campaigns["note"]
+    assert [a.get("after") for n, a in wired.client.calls if n == "get_campaigns"] == [
+        None,
+        "QVFIUm",
+    ], "the tool followed the cursor itself"
+
+    async def day(offset: int) -> str:
+        on = (END - timedelta(days=offset)).isoformat()
+        body = await call(
+            "meta_ads__get_insights",
+            {"level": "campaign", "time_range": {"since": on, "until": on}},
+        )
+        return str(body["artifact_id"])
+
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    days = [await day(2), await day(1)]
+    out = run_summarize_window(
+        artifacts,
+        SummarizeWindowArgs(
+            artifact_ids=days,
+            start_date=END - timedelta(days=2),
+            end_date=END - timedelta(days=1),
+            budgets_artifact_ids=campaigns["artifact_ids"],
+        ),
+    )
+    (meta,) = out["headline"]
+    assert meta["days_covered"] == 2 and meta["spend"] == "125.44", "two days, one account"
+    (account,) = out["platforms"]["meta_ads"].values()
+    assert account["source_artifacts"] == days
+    with pytest.raises(ComputeError, match=r"no rows for .*read those days too"):
+        run_summarize_window(
+            artifacts,
+            SummarizeWindowArgs(
+                artifact_ids=[days[0], await day(0)],
+                start_date=END - timedelta(days=2),
+                end_date=END,
+            ),
+        )

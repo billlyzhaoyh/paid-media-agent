@@ -145,9 +145,9 @@ async def run_cadence_report(
             current_end=windows.current.end,
             previous_start=windows.previous.start,
             previous_end=windows.previous.end,
-            unavailable_sources=unavailable,
         ),
         goals=goals,
+        unavailable=unavailable,
     )
     analysis_id = str(summary["artifact_id"])
     report_payload: dict[str, JsonValue] | None = None

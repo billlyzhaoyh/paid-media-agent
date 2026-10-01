@@ -2149,6 +2149,7 @@ def _echo_eval(run: dict[str, Any], results: list[dict[str, Any]], against: Any)
         f"passed {t['passed']}/{t['attempts']} attempts ({(t['pass_rate'] or 0):.0%}); judge passed "
         f"{t['judge_passed']}/{t['judged']}"
         + (f" ({t['judge_skipped']} not judged: a check failed)" if t.get("judge_skipped") else "")
+        + (f"; {t['repaired']} answers repaired once" if t.get("repaired") else "")
         + f"; cost {cost}{judge_cost}; {t['model_calls']} model "
         f"calls, {hit} of input from cache; p50 {t['p50_seconds']}s, max {t['max_seconds']}s"
     )

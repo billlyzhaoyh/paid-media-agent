@@ -102,8 +102,8 @@ async def test_report_reconciles_and_shows_missing_platforms(
             current_end=date(2026, 8, 28),
             previous_start=date(2026, 8, 1),
             previous_end=date(2026, 8, 14),
-            unavailable_sources=["meta_ads"],
         ),
+        unavailable=["meta_ads"],
     )
     assert summary["cross_platform_total"] is None and "meta_ads" in summary["unavailable_sources"]
     reddit = next(p for p in summary["platforms"] if p["platform"] == "reddit_ads")

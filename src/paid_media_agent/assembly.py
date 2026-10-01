@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -13,10 +14,12 @@ from paid_media_agent.analytics.changes import ChangeRecorder
 from paid_media_agent.analytics.goals import GoalStore, account_today
 from paid_media_agent.analytics.ingest import AnalyticsRecorder
 from paid_media_agent.bandit.live import live_config
+from paid_media_agent.bandit.proposals import propose_decision
 from paid_media_agent.config import Settings
 from paid_media_agent.domain.presentation import ProposalView, proposal_summary
+from paid_media_agent.grounding import answer_check
 from paid_media_agent.harness.files import build_file_tools
-from paid_media_agent.harness.loop import Agent, ApprovalGate, PauseSummary
+from paid_media_agent.harness.loop import Agent, AnswerCheck, ApprovalGate, PauseSummary
 from paid_media_agent.harness.messages import ToolCall
 from paid_media_agent.harness.models import ChatModel, cache_session, resolve_model
 from paid_media_agent.harness.skills import discover_skills, skills_prompt
@@ -115,6 +118,8 @@ class AgentComponents:
     read_tools_budget_tokens: int = 6000
     prompt_context: Callable[[], str] | None = None
     """Per-call additions to the system prompt: the accounts and their goals."""
+    check_answer: AnswerCheck | None = None
+    """Grounds each final answer's figures in the thread's tool results."""
 
 
 def host_operations(runtime: RuntimeProfile) -> dict[str, HostOperation]:
@@ -234,7 +239,7 @@ def build_agent_components(
     ]
     tools = (
         *core,
-        *build_write_tools(service, executor),
+        *build_write_tools(service, executor, partial(propose_decision, runtime.store, service)),
         *build_file_tools(project_root),
         *build_platform_read_tools(catalog, read_dispatcher),
     )
@@ -276,6 +281,7 @@ def build_agent_components(
         context_budget_tokens=settings.paid_media_context_budget_tokens,
         read_tools_budget_tokens=settings.paid_media_read_tools_budget_tokens,
         prompt_context=lambda: account_lines(runtime.accounts, goals),
+        check_answer=answer_check(runtime.artifacts) if settings.paid_media_answer_repair else None,
     )
 
 
@@ -299,6 +305,7 @@ def build_agent(
         pause_summary=_pause_summary(components.proposal_service),
         read_tools_budget_tokens=components.read_tools_budget_tokens,
         prompt_context=components.prompt_context,
+        check_answer=components.check_answer,
     )
 
 

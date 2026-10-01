@@ -182,10 +182,10 @@ def build_recommend_budgets_tool(
         result["note"] = (
             "These are recommendations; nothing has changed. Moves are at most 25% per change "
             "and campaigns changed in the last 7 days are held. Explain them with the readings. "
-            "To apply one, only when the user asks, call propose_change for that campaign's "
-            "daily_budget with the recommended value and put the run_id in the reason; it then "
-            "waits for approval like any change. expected_conversions is the model's estimate, "
-            "not a promise."
+            "To apply one, only when the user asks, call propose_change with account_alias, the "
+            "campaign as target_ref, and this run_id as bandit_run_id; the host takes the "
+            "recommended budget from the run, so never type it. It then waits for approval like "
+            "any change. expected_conversions is the model's estimate, not a promise."
         )
         return json.dumps(result)
 

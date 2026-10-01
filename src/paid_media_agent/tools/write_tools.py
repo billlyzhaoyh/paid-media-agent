@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from paid_media_agent.domain.common import JsonValue
 from paid_media_agent.domain.presentation import ProposalView, ReceiptView
-from paid_media_agent.domain.proposals import ProposalState
+from paid_media_agent.domain.proposals import ProposalRecord, ProposalState
 from paid_media_agent.harness.messages import ToolCall
 from paid_media_agent.harness.tools import ToolContext, ToolSpec, parameters_for
 from paid_media_agent.tools.discovery import _NoArgs
@@ -28,18 +28,46 @@ from paid_media_agent.tools.writes import (
 
 class ProposeChangeArgs(BaseModel):
     account_alias: str = Field(description="Configured account alias from list_accounts.")
-    tool_name: str = Field(
-        description="Admitted mutation from discover_write_operations, e.g. google_ads__update_campaign_budget."
-    )
     target_ref: str = Field(
         description="Provider entity id being changed, e.g. a campaign id from a read."
     )
-    changes: dict[str, JsonValue] = Field(
-        description="Field -> new value. Only fields the policy admits."
+    bandit_run_id: UUID | None = Field(
+        default=None,
+        description=(
+            "To apply a recommend_budgets recommendation: its run_id. The host takes the "
+            "campaign's recommended budget, reason, and plans from the run; leave tool_name and "
+            "changes out."
+        ),
     )
-    reason: str = Field(min_length=1, max_length=2000)
+    tool_name: str | None = Field(
+        default=None,
+        description="Admitted mutation from discover_write_operations, e.g. google_ads__update_campaign_budget.",
+    )
+    changes: dict[str, JsonValue] | None = Field(
+        default=None, description="Field -> new value. Only fields the policy admits."
+    )
+    reason: str = Field(
+        default="",
+        max_length=2000,
+        description="Why. Required unless bandit_run_id is given, where it is optional context.",
+    )
     measurement_plan: str = Field(default="", max_length=800)
     reversal_plan: str = Field(default="", max_length=800)
+
+    @model_validator(mode="after")
+    def _one_source(self) -> ProposeChangeArgs:
+        if self.bandit_run_id is not None:
+            if self.tool_name or self.changes:
+                raise ValueError(
+                    "with bandit_run_id, leave tool_name and changes out: the run sets them"
+                )
+        elif not self.tool_name or not self.changes or not self.reason.strip():
+            raise ValueError("tool_name, changes, and reason are required without bandit_run_id")
+        return self
+
+
+ProposeFromRun = Callable[..., Awaitable[ProposalRecord]]
+"""`bandit.proposals.propose_decision` bound to the store and service."""
 
 
 class ProposalIdArgs(BaseModel):
@@ -51,6 +79,12 @@ class ExecuteChangeArgs(BaseModel):
     revision: int = Field(
         ge=1, description="Revision number of the proposal exactly as you presented it."
     )
+
+
+def _first_error(exc: ValidationError) -> str:
+    error = exc.errors()[0]
+    where = ".".join(str(part) for part in error.get("loc", ()))
+    return f"{where}: {error['msg']}" if where else str(error["msg"])
 
 
 NEVER_AVAILABLE = (
@@ -88,28 +122,52 @@ def build_execute_gate(service: ProposalService) -> Callable[[ToolCall, ToolCont
     return gate
 
 
-def build_write_tools(service: ProposalService, executor: WriteExecutor) -> list[ToolSpec]:
+def build_write_tools(
+    service: ProposalService, executor: WriteExecutor, from_run: ProposeFromRun | None = None
+) -> list[ToolSpec]:
     async def _propose(args: dict[str, Any], context: ToolContext) -> str:
-        parsed = ProposeChangeArgs.model_validate(args)
         try:
-            record = await service.propose(
-                thread_id=context.thread_id,
-                requester_ref=context.caller_ref,
-                account_alias=parsed.account_alias,
-                tool_name=parsed.tool_name,
-                target_ref=parsed.target_ref,
-                changes=parsed.changes,
-                reason=parsed.reason,
-                measurement_plan=parsed.measurement_plan,
-                reversal_plan=parsed.reversal_plan,
+            parsed = ProposeChangeArgs.model_validate(args)
+        except ValidationError as exc:
+            return json.dumps(
+                {"denied": True, "reason": "invalid_arguments", "detail": _first_error(exc)}
             )
+        try:
+            if parsed.bandit_run_id is not None:
+                if from_run is None:
+                    raise WriteDenied("unavailable", "budget recommendations are not set up")
+                record = await from_run(
+                    thread_id=context.thread_id,
+                    requester_ref=context.caller_ref,
+                    account_alias=parsed.account_alias,
+                    run_id=parsed.bandit_run_id,
+                    entity_ref=parsed.target_ref,
+                    note=parsed.reason,
+                )
+            else:
+                assert parsed.tool_name and parsed.changes  # noqa: S101 - the validator checked
+                record = await service.propose(
+                    thread_id=context.thread_id,
+                    requester_ref=context.caller_ref,
+                    account_alias=parsed.account_alias,
+                    tool_name=parsed.tool_name,
+                    target_ref=parsed.target_ref,
+                    changes=parsed.changes,
+                    reason=parsed.reason,
+                    measurement_plan=parsed.measurement_plan,
+                    reversal_plan=parsed.reversal_plan,
+                )
         except WriteDenied as exc:
             return json.dumps({"denied": True, "reason": exc.reason, "detail": exc.detail})
         view = ProposalView.from_record(record)
         return json.dumps(
             {
                 "proposal": view.model_dump(mode="json"),
-                "next_step": "Write the proposal summary and call execute_change with proposal_id and revision in the same message. The runtime pauses for human approval.",
+                "next_step": (
+                    "Call execute_change with proposal_id and revision, with no message text: "
+                    "the runtime shows the reviewer this proposal's summary from the record and "
+                    "pauses for human approval."
+                ),
             }
         )
 

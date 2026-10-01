@@ -8,7 +8,8 @@ over weekdays; these pseudo-samples join the campaign's history in its local mod
 
 Two global models exist. By default a pooled regression runs locally: a level per campaign,
 weekday effects, and one spend elasticity shared by all campaigns, with recent days weighted more
-(half-life `half_life_days`; CBS section 6.1). TabPFN (`PAID_MEDIA_PREDICTOR=tabpfn`) assumes no
+(half-life `half_life_days`; CBS section 6.1) and a weak prior on the elasticity at the local
+model's prior mean. TabPFN (`PAID_MEDIA_PREDICTOR=tabpfn`) assumes no
 shape. It sees each campaign as context (its log cost per conversion) plus the weekday and the
 spend in cost-per-conversion units, log(spend / cost per conversion + 1), so the spend effect is
 on one scale across campaigns, as in the local model. It returns the predictive mean (the average
@@ -28,12 +29,20 @@ from datetime import date
 import numpy as np
 
 from paid_media_agent.bandit.arms import Arm
+from paid_media_agent.bandit.posterior import PRIOR_KAPPA2
 from paid_media_agent.predict.protocol import PredictionRequest, Predictor, PredictorUnavailable
 
 POOLED = "pooled"
 MAX_GRID = 64
 """Pseudo-samples beyond this many spends are carried as weights on a 64-point grid."""
 RIDGE = 1e-3
+SLOPE_PRIOR_PRECISION = 1.0
+"""Pull on the shared elasticity toward `PRIOR_KAPPA2`, worth about one well-spread day of data.
+
+A few weeks of spend that varies by 10% barely identify the slope, and demand moving spend and
+conversions together then reads as returns above 1 (the sample data gave 1.07 to 1.46). On 30
+simulated cutoffs this prior cut the slope's mean absolute error from 0.19 to 0.12; a weaker or
+stronger one did worse."""
 MIN_ROWS = 10
 _COLUMNS = ("log_cost_per_conversion", "weekday", "log_spend_units")
 MEAN_QUANTILES = tuple(round(0.05 * k, 2) for k in range(1, 20))
@@ -86,11 +95,15 @@ def _pooled(
         return GlobalPredictions(
             np.full(len(queries), np.nan),
             POOLED,
-            "pooled-loglog/1",
+            "pooled-loglog/2",
             [f"{len(rows)} settled campaign-days; the global model needs {MIN_ROWS}"],
         )
     x, y, w = np.asarray(rows), np.asarray(targets), np.asarray(weights)
-    beta = np.linalg.solve((x.T * w) @ x + RIDGE * np.eye(x.shape[1]), (x.T * w) @ y)
+    precision = RIDGE * np.eye(x.shape[1])
+    precision[-1, -1] = SLOPE_PRIOR_PRECISION
+    mean = np.zeros(x.shape[1])
+    mean[-1] = PRIOR_KAPPA2
+    beta = np.linalg.solve((x.T * w) @ x + precision, (x.T * w) @ y + precision @ mean)
     values = np.empty(len(queries))
     for j, query in enumerate(queries):
         arm = arms[query.arm]
@@ -99,7 +112,7 @@ def _pooled(
             values[j] = np.nan
             continue
         values[j] = beta[query.arm] + weekday + beta[-1] * math.log(query.spend / arm.unit + 1.0)
-    return GlobalPredictions(values, POOLED, "pooled-loglog/1")
+    return GlobalPredictions(values, POOLED, "pooled-loglog/2")
 
 
 def _features(arm: Arm, spend: float, weekday: int) -> list[float]:

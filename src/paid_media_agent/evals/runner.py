@@ -10,7 +10,6 @@ any provider mutation, and the model calls' usage.
 from __future__ import annotations
 
 import asyncio
-import json
 import shutil
 import time
 from collections.abc import Sequence
@@ -23,13 +22,13 @@ from typing import Any
 from paid_media_agent.analytics.goals import GoalStore
 from paid_media_agent.analytics.sync import run_sync
 from paid_media_agent.config import Settings
-from paid_media_agent.evals.checks import CallRecord, Transcript
-from paid_media_agent.harness.messages import AssistantMessage, Message, ToolMessage
+from paid_media_agent.evals.checks import Transcript
+from paid_media_agent.grounding import artifact_sources, calls_of
+from paid_media_agent.harness.messages import AssistantMessage, Message, UserMessage
 from paid_media_agent.harness.models import ChatModel, ToolSchema
 from paid_media_agent.runtime.local import LocalRuntime, build_local_runtime
 from paid_media_agent.runtime.profiles import fixture_profile
 from paid_media_agent.store import Store
-from paid_media_agent.tools.artifacts import ArtifactError
 from paid_media_agent.tools.catalog import StaticCatalogProvider
 from paid_media_agent.tools.fixtures import FakeWriteProvider, FixtureState, build_fixture_catalog
 
@@ -39,7 +38,6 @@ GOALS = {
     "demo-google": {"target_cpa": 30, "monthly_budget": 25_000},
     "demo-meta": {"target_roas": 3},
 }
-MAX_SOURCE_CHARS = 200_000
 
 
 def eval_dates(today: date | None = None) -> tuple[date, date]:
@@ -144,51 +142,21 @@ def sandbox(project_root: Path, root: Path) -> Path:
     return root
 
 
-def _artifact_sources(runtime: LocalRuntime, calls: list[CallRecord]) -> list[str]:
-    """Payloads of artifacts the results named: offloaded results and referenced reads."""
-    ids: list[str] = []
-    for call in calls:
-        try:
-            body = json.loads(call.result)
-        except ValueError:
-            continue
-        if isinstance(body, dict):
-            for key in ("artifact_id",):
-                if isinstance(body.get(key), str):
-                    ids.append(body[key])
-    sources, size = [], 0
-    for artifact_id in dict.fromkeys(ids):
-        try:
-            text = json.dumps(runtime.profile.artifacts.read(artifact_id).payload, default=str)
-        except (ArtifactError, OSError, ValueError):
-            continue
-        if size + len(text) > MAX_SOURCE_CHARS:
-            break
-        sources.append(text)
-        size += len(text)
-    return sources
-
-
 def transcript_of(
     question_id: str, messages: Sequence[Message], runtime: LocalRuntime
 ) -> Transcript:
-    results = {m.tool_call_id: m for m in messages if isinstance(m, ToolMessage)}
-    calls = [
-        CallRecord(
-            name=call.name,
-            args=call.args,
-            result=results[call.id].content if call.id in results else "",
-            status=results[call.id].status if call.id in results else "pending",
-        )
-        for m in messages
-        if isinstance(m, AssistantMessage)
-        for call in m.tool_calls
-    ]
+    calls = calls_of(messages)
     answers = [m.content for m in messages if isinstance(m, AssistantMessage) and m.content]
     transcript = Transcript(
         question_id=question_id, answer=answers[-1] if answers else "", calls=calls
     )
-    transcript.extra_sources = _artifact_sources(runtime, calls)
+    # A runtime repair leaves the first draft, then a host note, then the answer.
+    for i, message in enumerate(messages):
+        if isinstance(message, UserMessage) and message.origin == "host" and i > 0:
+            before = messages[i - 1]
+            transcript.repaired = True
+            transcript.draft = before.content if isinstance(before, AssistantMessage) else ""
+    transcript.extra_sources = artifact_sources(runtime.profile.artifacts, calls)
     return transcript
 
 

@@ -111,6 +111,65 @@ _QUERIES: dict[HistoryView, tuple[str, str, str]] = {
 }
 
 
+GroupKey = Literal["account", "entity", "day", "week"]
+GROUPABLE: tuple[HistoryView, ...] = ("daily", "signals")
+_GROUP_COLUMNS: dict[GroupKey, tuple[tuple[str, str], ...]] = {
+    # (output name, SQL expression)
+    "account": (("account_alias", "account_alias"), ("platform", "platform")),
+    "entity": (
+        ("account_alias", "account_alias"), ("platform", "platform"), ("entity_ref", "entity_ref"),
+    ),
+    "day": (("day", "day"),),
+    "week": (("week", "CAST(date_trunc('week', day) AS DATE)"),),
+}  # fmt: skip
+_GROUPED: dict[HistoryView, tuple[str, str]] = {
+    # (aggregates, source). Ratios come from the sums, never from averaging daily ratios, at the
+    # precision `compute.aggregate` uses, so every tool states the same figure.
+    "daily": (
+        "count(DISTINCT day) AS days, sum(spend) AS spend, sum(impressions) AS impressions, "
+        "sum(clicks) AS clicks, sum(conversions) AS conversions, "
+        "sum(conversion_value) AS conversion_value, "
+        "count(*) - count(conversions) AS rows_missing_conversions, "
+        "sum(conversions_matured) AS conversions_matured, "
+        "count(*) FILTER (WHERE pacing_ratio > 1) AS over_budget_days, "
+        "ROUND(sum(spend) / NULLIF(sum(conversions), 0), 6) AS cpa, "
+        "ROUND(sum(conversion_value) / NULLIF(sum(spend), 0), 6) AS roas, "
+        "ROUND(sum(clicks) / NULLIF(sum(impressions), 0), 6) AS ctr, "
+        "ROUND(sum(conversions) / NULLIF(sum(clicks), 0), 6) AS cvr",
+        "entity_daily_panel",
+    ),
+    "signals": (
+        "count(DISTINCT day) AS days, ROUND(avg(impression_share), 4) AS impression_share, "
+        "ROUND(avg(budget_lost_share), 4) AS budget_lost_share, "
+        "ROUND(avg(rank_lost_share), 4) AS rank_lost_share",
+        "entity_daily_signals_latest",
+    ),
+}
+
+
+def _grouped_query(view: HistoryView, group_by: list[GroupKey]) -> tuple[str, str, str]:
+    """(select and source, date column, order) summing `view` by the given keys."""
+    if view not in _GROUPED:
+        raise ValueError(f"group_by works on {' and '.join(GROUPABLE)}, not {view}")
+    keys: dict[str, str] = {}
+    for key in group_by:
+        for name, expression in _GROUP_COLUMNS[key]:
+            keys.setdefault(name, expression)
+    if view == "daily":
+        keys.setdefault("currency", "currency")  # never add up different currencies
+    selected = [name if e == name else f"{e} AS {name}" for name, e in keys.items()]
+    if view == "daily" and "entity" in group_by:
+        selected.append("any_value(entity_name) AS entity_name")
+    aggregates, source = _GROUPED[view]
+    newest_first = [f"{n} DESC" for n in keys if n in ("week", "day")]
+    order = [*newest_first, *(n for n in keys if n not in ("week", "day"))]
+    return (
+        f"SELECT {', '.join(selected)}, {aggregates} FROM {source}",  # noqa: S608 - constants
+        "day",
+        f"GROUP BY {', '.join(keys.values())} ORDER BY {', '.join(order)}",
+    )
+
+
 def _json_ready(value: Any) -> Any:
     if isinstance(value, Decimal):
         return float(value)
@@ -132,9 +191,14 @@ def query_history(
     start: date | None = None,
     end: date | None = None,
     limit: int = 100,
+    group_by: list[GroupKey] | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """Rows of one view, newest first, and whether more rows matched than `limit`."""
-    select, day_column, order = _QUERIES[view]
+    """Rows of one view, newest first, and whether more rows matched than `limit`.
+
+    `group_by` sums `daily` (or averages `signals`) per account, entity, day, or week, with CPA,
+    ROAS, CTR, and CVR from the sums.
+    """
+    select, day_column, order = _grouped_query(view, group_by) if group_by else _QUERIES[view]
     clauses: list[str] = []
     params: list[Any] = []
     if account_alias is not None and view == "usage":

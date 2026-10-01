@@ -78,6 +78,11 @@ The code is in `src/paid_media_agent/evals/`.
   - **When it fails.** The check fails when too few checked numbers are found, or when any
     money figure is not found: it was either invented or computed in prose. A money figure has a
     currency symbol (`$ € £ ¥`), an ISO code ("7,400 USD"), or two decimals.
+  - **The same rule runs on every answer.** The code is `paid_media_agent/grounding.py`; the
+    runtime sends an answer that fails it back once ([Answer check](tools-and-context.md#answer-check)).
+    The transcript records `repaired` and the first `draft`, and the repair call counts in the
+    question's model calls and cost. Ids and dates are skipped in the answer as in the sources,
+    so a proposal id's "979b" is not 979 billion.
 - **writes**: no provider mutation, and `expect_pause` questions are left waiting for approval.
 
 ## Judge

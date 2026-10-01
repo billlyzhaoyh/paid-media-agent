@@ -443,3 +443,21 @@ async def test_an_answer_that_failed_a_check_is_not_judged_unless_asked(
         "q08_pipeline": True,
         "q16_why_cpa": False,
     }, "a skipped judgement regrades on the checks alone"
+
+
+def test_a_repaired_answer_is_stored_with_its_draft_and_counted() -> None:
+    from paid_media_agent.evals.report import totals
+    from paid_media_agent.evals.store import EvalStore
+    from paid_media_agent.store import Store
+
+    store = EvalStore(store=Store())
+    run_id = store.start_run(
+        model="m", judge_model=None, anchor=date(2026, 8, 28), questions_sha="x",
+        git_sha="y", settings={},
+    )  # fmt: skip
+    base = {"category": "c", "passed": True, "checks": [], "judge": None, "answer": "a"}
+    store.add_result(run_id, {**base, "question_id": "q01", "draft": "Budgets total $950.00."})
+    store.add_result(run_id, {**base, "question_id": "q02"})
+    rows = store.results(run_id)
+    assert [r["draft"] for r in rows] == ["Budgets total $950.00.", None]
+    assert totals(rows)["repaired"] == 1

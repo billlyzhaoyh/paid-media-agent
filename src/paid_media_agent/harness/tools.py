@@ -13,14 +13,20 @@ import asyncio
 import inspect
 import json
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
 import jsonschema
 from pydantic import BaseModel
 
-from paid_media_agent.harness.messages import ToolCall, ToolMessage
+from paid_media_agent.harness.messages import (
+    AssistantMessage,
+    Message,
+    ToolCall,
+    ToolMessage,
+    UserMessage,
+)
 from paid_media_agent.harness.models import ToolSchema
 from paid_media_agent.redaction import redact, sanitize_exception
 from paid_media_agent.tools.artifacts import ArtifactStore
@@ -34,6 +40,19 @@ OFFLOAD_SCHEMA_VERSION = "tool-result/1"
 PREVIEW_CHARS = 400
 
 
+@dataclass(frozen=True)
+class FailedRead:
+    """A platform read in this turn that failed and was not later retried successfully."""
+
+    source: str
+    """The account alias it asked for, or the tool's name when it named none."""
+    tool: str
+    reason: str
+
+    def text(self) -> str:
+        return f"{self.source}: {self.reason}"
+
+
 @dataclass
 class ToolContext:
     """What a tool may know about the run that called it."""
@@ -42,6 +61,51 @@ class ToolContext:
     caller_ref: str
     activate: Callable[[Sequence[str]], None] = lambda _names: None
     """Bind these read tools to later model calls in this thread (used by discover_tools)."""
+    failed_reads: Callable[[], tuple[FailedRead, ...]] = lambda: ()
+    """Platform reads that failed this turn, found by the host, so the model never lists them."""
+
+
+def _failure(message: ToolMessage) -> str | None:
+    """Why a read's result is a failure, or None when it returned data."""
+    if message.content.startswith("Tool failed"):
+        return message.content.removeprefix("Tool failed:").strip() or "failed"
+    try:
+        body = json.loads(message.content)
+    except ValueError:
+        return "failed" if message.status == "error" else None
+    if isinstance(body, dict):
+        if body.get("denied"):
+            return str(body.get("reason") or "denied")
+        if body.get("error"):
+            return str(body.get("detail") or body.get("error"))
+    return "failed" if message.status == "error" else None
+
+
+def failed_reads(
+    messages: Sequence[Message], read_tools: Collection[str]
+) -> tuple[FailedRead, ...]:
+    """Reads in the current turn (after the last user message) that failed, newest outcome wins.
+
+    A later successful call of the same tool for the same account clears a failure, so a retry
+    that worked does not suppress anything.
+    """
+    start = 0
+    for i, message in enumerate(messages):
+        if isinstance(message, UserMessage) and message.origin == "user":
+            start = i + 1
+    args: dict[str, dict[str, Any]] = {}
+    outcome: dict[tuple[str, str], FailedRead | None] = {}
+    for message in messages[start:]:
+        if isinstance(message, AssistantMessage):
+            args.update({call.id: call.args for call in message.tool_calls})
+        elif isinstance(message, ToolMessage) and message.name in read_tools:
+            alias = args.get(message.tool_call_id, {}).get("account_alias")
+            source = str(alias) if alias else message.name
+            reason = _failure(message)
+            key = (message.name, source)
+            outcome.pop(key, None)
+            outcome[key] = FailedRead(source, message.name, reason[:200]) if reason else None
+    return tuple(f for f in outcome.values() if f is not None)
 
 
 SyncHandler = Callable[[dict[str, Any], ToolContext], str]
@@ -86,6 +150,7 @@ KEPT_FIELDS = (
     "resolved_window",
     "resolved_windows",
     "budget_totals",
+    "unavailable_sources",
     "flags",
     "caveats",
     "notes",

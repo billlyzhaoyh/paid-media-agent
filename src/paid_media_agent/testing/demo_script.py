@@ -62,11 +62,6 @@ def _read_all(messages: Sequence[Message], *, anchor: date) -> AssistantMessage:
 
 def _compare(messages: Sequence[Message], *, anchor: date) -> AssistantMessage:
     reads = [r for r in last_tool_results(messages) if r.get("kind") == "read_result"]
-    unavailable = [
-        r.get("_tool_name", "unknown")
-        for r in last_tool_results(messages)
-        if r.get("denied") or r.get("error")
-    ]
     return tool_call_message(
         "compare_periods",
         {
@@ -75,7 +70,6 @@ def _compare(messages: Sequence[Message], *, anchor: date) -> AssistantMessage:
             "current_end": anchor.isoformat(),
             "previous_start": (anchor - timedelta(days=27)).isoformat(),
             "previous_end": (anchor - timedelta(days=14)).isoformat(),
-            "unavailable_sources": unavailable,
         },
     )
 

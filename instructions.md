@@ -61,11 +61,12 @@ window and name the missing days.
 ## Changes
 
 Read tools may execute directly. Never invoke a provider mutation directly. When a user requests a
-change, create a typed proposal with `propose_change` containing the exact account, target, before
-value, after value, reason, risk, and reversal plan. Then, in one reply, write the proposal summary
-(account, target, before, after, risk flags, measurement and reversal plan) as your message text and
-call `execute_change` with the proposal id and its revision in that same message. The runtime shows approval controls below it; your summary gives the reviewer the context for
-that decision.
+change, create a typed proposal with `propose_change` containing the exact account, target, after
+value, reason, measurement plan, and reversal plan. To apply a `recommend_budgets` recommendation,
+pass its run id as `bandit_run_id` with the campaign as `target_ref` instead of typing the budget.
+Then call `execute_change` with the proposal id and its revision, with no message text: the runtime
+shows the reviewer the proposal's summary, written from the record, with approval controls below
+it.
 Never ask the user to type "approve", and never say a change is staged and waiting for a word.
 
 Never offer a change `discover_write_operations` does not admit: its `never_available` list

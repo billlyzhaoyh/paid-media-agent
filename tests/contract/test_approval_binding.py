@@ -147,7 +147,7 @@ async def test_only_the_requester_or_an_approver_can_edit_or_reject(
     assert rejected.status_code == 200
 
 
-async def test_a_silent_pause_still_gives_the_reviewer_the_summary(
+async def test_a_pause_always_gives_the_reviewer_the_code_written_summary(
     settings: Settings, project_root: Path
 ) -> None:
     from paid_media_agent.harness.messages import AssistantMessage
@@ -166,7 +166,7 @@ async def test_a_silent_pause_still_gives_the_reviewer_the_summary(
 
     def narrated(messages: Any) -> Any:
         call = execute_step(messages)
-        return AssistantMessage("My own summary of the change.", tool_calls=call.tool_calls)
+        return AssistantMessage("Proposing a cut to 230 a day.", tool_calls=call.tool_calls)
 
     runtime, _ = build_runtime(
         settings, project_root, [propose_step(), narrated, final_step],
@@ -174,7 +174,8 @@ async def test_a_silent_pause_still_gives_the_reviewer_the_summary(
     )  # fmt: skip
     conversation = await runtime.agent.send("t", "local-user", "cut the PMax budget to 240")
     last = [m for m in conversation.messages if isinstance(m, AssistantMessage)][-1]
-    assert last.content == "My own summary of the change.", "a model's own text is kept"
+    assert last.content.startswith("Proposed change for review"), "the record, not a retyping"
+    assert "230" not in last.content and "-> 240" in last.content
 
 
 def _proposals(messages: Any) -> list[dict[str, Any]]:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -19,7 +20,7 @@ from paid_media_agent.domain.windows import (
     resolve_preset,
     span_text,
 )
-from paid_media_agent.harness.tools import ToolContext, ToolSpec, parameters_for
+from paid_media_agent.harness.tools import FailedRead, ToolContext, ToolSpec, parameters_for
 from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.tools.artifacts import ArtifactError, ArtifactStore
 from paid_media_agent.tools.compute import (
@@ -29,7 +30,8 @@ from paid_media_agent.tools.compute import (
     summarize,
 )
 from paid_media_agent.tools.goal_check import against_goals
-from paid_media_agent.tools.normalize import NormalizationError, rows_from_payload
+from paid_media_agent.tools.normalize import NormalizationError
+from paid_media_agent.tools.performance import load_reads, require_days, uncovered
 from paid_media_agent.tools.summary import cross_platform_caveats
 
 COMPARE_PERIODS_TOOL = "compare_periods"
@@ -37,7 +39,10 @@ COMPARE_PERIODS_TOOL = "compare_periods"
 
 class ComparePeriodsArgs(BaseModel):
     artifact_ids: list[str] = Field(
-        description="performance_rows artifact ids returned by platform reads."
+        description=(
+            "performance_rows artifact ids returned by platform reads; several for one account "
+            "(pages, or one call per day) are merged."
+        )
     )
     window: WindowPreset | None = Field(default=None, description=PRESET_HELP)
     days: int = Field(default=7, ge=1, le=90, description="For last_n_days_of_data.")
@@ -46,10 +51,6 @@ class ComparePeriodsArgs(BaseModel):
     previous_start: date | None = None
     previous_end: date | None = None
     entity_type: EntityType = EntityType.CAMPAIGN
-    unavailable_sources: list[str] = Field(
-        default_factory=list,
-        description="Platforms or accounts whose read failed. They stay visible and suppress totals.",
-    )
 
 
 def data_through(rows_by_artifact: list[list[PerformanceRow]]) -> date:
@@ -89,25 +90,16 @@ def run_compare_periods(
     *,
     goals: GoalLookup | None = None,
     today: date | None = None,
+    unavailable: Sequence[str] = (),
+    failures: Sequence[FailedRead] = (),
 ) -> dict[str, Any]:
-    if not args.artifact_ids:
-        raise ComputeError("at least one artifact id is required")
-    loaded: list[tuple[str, Any, list[PerformanceRow]]] = []
-    for artifact_id in args.artifact_ids:
-        record = artifacts.read(artifact_id)
-        if record.metadata.kind != "performance_rows":
-            raise ComputeError(
-                f"{artifact_id} is a {record.metadata.kind} artifact, not performance rows: pass "
-                "the artifact_id of a platform performance read (read_result with "
-                "artifact_kind performance_rows); for stored history use query_history, "
-                "explain_change, or check_pacing instead"
-            )
-        rows = rows_from_payload(record.payload)
-        if not rows:
-            raise ComputeError(f"{artifact_id} contains no rows")
-        loaded.append((artifact_id, record, rows))
+    """`unavailable` names sources the host knows are missing; `failures` are this turn's failed
+    reads, and those for accounts no artifact covers join them. Either suppresses the
+    cross-platform total and stays visible."""
+    reads = load_reads(artifacts, args.artifact_ids)
+    unavailable = [*unavailable, *uncovered(reads, failures)]
     (cur_start, cur_end), (prev_start, prev_end), rule = resolve_comparison(
-        args, [rows for _, _, rows in loaded], today or datetime.now(UTC).date()
+        args, [read.rows for read in reads], today or datetime.now(UTC).date()
     )
     if cur_end < cur_start or prev_end < prev_start:
         raise ComputeError("window end precedes start")
@@ -117,33 +109,30 @@ def run_compare_periods(
         raise ComputeError("comparison windows must have the same day count")
     platforms: list[PlatformComparison] = []
     by_account: dict[str, list[PerformanceRow]] = {}
-    for artifact_id, record, rows in loaded:
-        first = min(r.window.start for r in rows)
-        latest = max(r.window.start for r in rows)
+    for read in reads:
+        rows, first, latest = read.rows, read.first_day, read.last_day
+        source = ", ".join(read.artifact_ids)
         for label, window in (("current", current), ("previous", previous)):
             if window.start < first:
                 # The read did not cover this window; a partial total would look like a drop.
                 raise ComputeError(
-                    f"{artifact_id}: the {label} window starts {window.start.isoformat()} but the "
+                    f"{source}: the {label} window starts {window.start.isoformat()} but the "
                     f"read begins {first.isoformat()}; re-read the union of both windows"
                 )
             if not any(window.start <= r.window.start <= window.end for r in rows):
                 # An empty window is unavailable data, never zero spend.
                 raise ComputeError(
-                    f"{artifact_id}: no rows in the {label} window "
+                    f"{source}: no rows in the {label} window "
                     f"{window.start.isoformat()}..{window.end.isoformat()}; "
                     f"the source has data through {latest.isoformat()}"
                 )
-        platform = Platform(record.metadata.platform or rows[0].platform.value)
-        account_ref = record.metadata.account_ref or rows[0].account_ref
-        by_account.setdefault(account_ref, []).extend(rows)
-        provider_totals = record.payload.get("provider_totals") or None
-        missing = tuple(str(m) for m in record.payload.get("missing_fields", []))
+            require_days(read, window.start, min(window.end, latest))
+        by_account.setdefault(read.account, []).extend(rows)
         tz = rows[0].window.timezone
         platforms.append(
             compare_platform(
-                platform=platform,
-                account_ref=account_ref,
+                platform=Platform(read.platform),
+                account_ref=read.account,
                 rows=rows,
                 current_window=MetricWindow(
                     start=current.start, end=current.end, timezone=tz, is_complete=True
@@ -152,16 +141,16 @@ def run_compare_periods(
                     start=previous.start, end=previous.end, timezone=tz, is_complete=True
                 ),
                 entity_type=args.entity_type,
-                source_artifacts=[artifact_id],
-                provider_totals=provider_totals,
-                missing_fields=missing,
+                source_artifacts=read.artifact_ids,
+                provider_totals=read.provider_totals,
+                missing_fields=read.missing_fields,
             )
         )
     comparison = compare_periods(
         platforms=platforms,
         requested_current=current,
         requested_previous=previous,
-        unavailable_sources=tuple(args.unavailable_sources),
+        unavailable_sources=tuple(unavailable),
     )
     flags: set[DataQualityFlag] = set()
     for platform_comparison in platforms:
@@ -199,10 +188,12 @@ def run_compare_periods(
 def build_compare_periods_tool(
     artifacts: ArtifactStore, goals: GoalLookup | None = None
 ) -> ToolSpec:
-    def _run(kwargs: dict[str, Any], _context: ToolContext) -> str:
+    def _run(kwargs: dict[str, Any], context: ToolContext) -> str:
         try:
             args = ComparePeriodsArgs.model_validate(kwargs)
-            return json.dumps(run_compare_periods(artifacts, args, goals=goals))
+            return json.dumps(
+                run_compare_periods(artifacts, args, goals=goals, failures=context.failed_reads())
+            )
         except (ComputeError, ArtifactError, NormalizationError, ValueError) as exc:
             return json.dumps({"error": True, "detail": sanitize_exception(exc)})
 
@@ -212,7 +203,8 @@ def build_compare_periods_tool(
             "Deterministically compare a current window with a previous window of equal length across "
             "performance_rows artifacts. Returns a compact summary with an analysis artifact id. "
             "Missing metrics stay missing; a cross-platform total appears only when sources are compatible. "
-            "against_goals judges the current window against each account's target CPA/ROAS."
+            "against_goals judges the current window against each account's target CPA/ROAS. "
+            "Reads that failed this turn are listed under unavailable_sources by the host."
         ),
         parameters=parameters_for(ComparePeriodsArgs),
         handler=_run,

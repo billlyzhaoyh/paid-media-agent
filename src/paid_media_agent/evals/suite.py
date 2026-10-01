@@ -111,6 +111,7 @@ async def run_suite(
             "max_model_calls": settings.paid_media_max_model_calls,
             "repeat": repeat,
             "judge_all": judge_all,
+            "answer_repair": settings.paid_media_answer_repair,
         },
     )
     recorder = LlmCallRecorder(store.store)
@@ -172,6 +173,7 @@ async def run_suite(
             "judge_cost_usd": verdict.cost_usd if verdict is not None else None,
             "seconds": transcript.seconds,
             "error": transcript.error,
+            "draft": transcript.draft if transcript.repaired else None,
         }
         refused = provider_refusal(
             transcript.error,

@@ -70,6 +70,8 @@ def entity_type_for(tool_name: str, declared: JsonValue | None = None) -> Entity
 
 
 AUDIT_LIMIT = 500
+MAX_PAGES = 20
+"""Pages one model-facing read follows before it calls itself incomplete (as sync does)."""
 """Reads kept in the in-memory audit trail; the demo prints it, long-running servers do not."""
 
 
@@ -102,7 +104,8 @@ class ReadResult(BaseModel):
     quality_flags: tuple[DataQualityFlag, ...]
     preview: dict[str, JsonValue]
     next_page: dict[str, JsonValue] | None = None
-    """Arguments for the next page when the provider paged the result; call the tool again."""
+    """Arguments for the next page when the provider paged the result. The model-facing tool
+    follows them itself; host jobs page on their own."""
     note: str = "Rows are stored in the artifact. Use compare_periods for numbers; do not compute from previews."
 
 
@@ -443,6 +446,27 @@ def build_platform_read_tools(
     ]
 
 
+def _paged_json(pages: Sequence[ReadResult]) -> str:
+    """One page as is; several as the first page's summary with every page's artifact."""
+    if len(pages) == 1:
+        return pages[0].model_dump_json()
+    body = pages[0].model_dump(mode="json")
+    windows = [p.actual_window.split("..") for p in pages if p.actual_window]
+    counts = [p.row_count for p in pages]
+    body.update(
+        artifact_ids=[p.artifact_id for p in pages],
+        pages=len(pages),
+        row_count=None if None in counts else sum(c for c in counts if c is not None),
+        actual_window=f"{min(w[0] for w in windows)}..{max(w[-1] for w in windows)}"
+        if windows
+        else None,
+        next_page=None,
+        note=f"The provider returned {len(pages)} pages, each in its own artifact. Pass all "
+        "artifact_ids to summarize_window or compare_periods; they merge them.",
+    )
+    return json.dumps(body, default=str)
+
+
 def _make_read_tool(
     entry: CatalogEntry, aliases: Sequence[str], dispatcher: ReadDispatcher
 ) -> ToolSpec:
@@ -451,14 +475,29 @@ def _make_read_tool(
 
     async def _run(kwargs: dict[str, Any], _context: ToolContext) -> str:
         try:
-            result = await dispatcher.execute(name, kwargs, selection_schema_hash=schema_hash)
+            pages = [await dispatcher.execute(name, kwargs, selection_schema_hash=schema_hash)]
+            while (following := pages[-1].next_page) is not None:
+                if len(pages) >= MAX_PAGES:
+                    return json.dumps(
+                        {
+                            "error": True,
+                            "detail": f"more than {MAX_PAGES} pages; the read is incomplete. "
+                            "Read a shorter window or fewer entities.",
+                        }
+                    )
+                alias = {ACCOUNT_ALIAS_ARG: kwargs.get(ACCOUNT_ALIAS_ARG)}
+                pages.append(
+                    await dispatcher.execute(
+                        name, {**alias, **following}, selection_schema_hash=schema_hash
+                    )
+                )
         except ReadDenied as exc:
             return json.dumps({"denied": True, "reason": exc.reason, "detail": exc.detail})
         except ProviderTimeout:
             raise  # the dispatcher retries an idempotent read once
         except ProviderError as exc:
             return json.dumps({"error": True, "detail": sanitize_exception(exc)})
-        return result.model_dump_json()
+        return _paged_json(pages)
 
     description = f"[{entry.platform.value}] {entry.description}".strip()
     return ToolSpec(

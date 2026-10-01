@@ -29,7 +29,7 @@ from paid_media_agent.harness.messages import (
     UserMessage,
 )
 from paid_media_agent.harness.models import ChatModel, ModelError, ToolSchema
-from paid_media_agent.harness.tools import ToolContext, ToolDispatcher
+from paid_media_agent.harness.tools import FailedRead, ToolContext, ToolDispatcher, failed_reads
 from paid_media_agent.harness.usage import CallLog, CallRecord
 from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.store.conversations import ConversationStore
@@ -66,6 +66,27 @@ EventHandler = Callable[[RunEvent], Awaitable[None]]
 ApprovalGate = Callable[[ToolCall, ToolContext], bool]
 PauseSummary = Callable[[Sequence[ToolCall], ToolContext], str]
 """What a reviewer needs to read beside a pause, written by code from the proposals."""
+AnswerCheck = Callable[[Sequence[Message], str], Sequence[str]]
+"""The figures in a final answer no tool in the thread returned, when there are enough to fail
+the grounding rule; empty when it passes (`grounding.answer_check`)."""
+MODEL_FAILED = "Model call failed"
+
+
+def repair_note(figures: Sequence[str]) -> str:
+    return (
+        "Check before answering: no tool result in this conversation contains "
+        + ", ".join(figures[:8])
+        + ". Get each figure from a tool, compute it with `calculate` from figures a tool "
+        "returned, or leave it out. Then write the whole answer again."
+    )
+
+
+def unsourced_line(figures: Sequence[str]) -> str:
+    return (
+        "Note: these figures were not found in any tool result, so treat them as unverified: "
+        + ", ".join(figures[:8])
+        + "."
+    )
 
 
 async def _emit(handler: EventHandler | None, event: RunEvent) -> None:
@@ -137,6 +158,7 @@ class Agent:
         pause_summary: PauseSummary | None = None,
         read_tools_budget_tokens: int = 6000,
         prompt_context: Callable[[], str] | None = None,
+        check_answer: AnswerCheck | None = None,
     ) -> None:
         self.model = model
         self.system_prompt = system_prompt
@@ -152,6 +174,7 @@ class Agent:
         self._context_budget = context_budget_tokens
         self._pause_summary = pause_summary
         self._prompt_context = prompt_context
+        self._check_answer = check_answer
         reads = [spec.schema for spec in dispatcher.tools.values() if spec.kind == "read"]
         self.all_reads_bound = estimate_tokens("", [], reads) <= read_tools_budget_tokens
         """Every authorized read is bound on every call when they fit the budget, so the tool
@@ -296,7 +319,14 @@ class Agent:
                     thread_id, (current + known)[-self._max_active_reads :]
                 )
 
-        return ToolContext(thread_id=thread_id, caller_ref=caller_ref, activate=activate)
+        reads = {name for name, spec in self.dispatcher.tools.items() if spec.kind == "read"}
+
+        def failed() -> tuple[FailedRead, ...]:
+            return failed_reads(self.conversations.messages(thread_id), reads)
+
+        return ToolContext(
+            thread_id=thread_id, caller_ref=caller_ref, activate=activate, failed_reads=failed
+        )
 
     def _system(self) -> str:
         parts = [self.system_prompt, calendar_lines(self._clock().date())]
@@ -318,11 +348,14 @@ class Agent:
         status: str,
         reply: AssistantMessage | None = None,
         error: BaseException | None = None,
+        purpose: str = "agent",
     ) -> None:
         if self._call_log is None:
             return
         try:
-            self._log_call(thread_id, caller_ref, view, attempt, started, status, reply, error)
+            self._log_call(
+                thread_id, caller_ref, view, attempt, started, status, reply, error, purpose
+            )
         except Exception:
             logger.warning("could not record a model call", exc_info=True)
 
@@ -336,13 +369,14 @@ class Agent:
         status: str,
         reply: AssistantMessage | None,
         error: BaseException | None,
+        purpose: str = "agent",
     ) -> None:
         assert self._call_log is not None  # noqa: S101 - checked by the caller
         self._call_log.record(
             CallRecord(
                 thread_id=thread_id,
                 caller_ref=caller_ref,
-                purpose="agent",
+                purpose=purpose,
                 provider=getattr(self.model, "provider", None),
                 model=self.model.name,
                 attempt=attempt + 1,
@@ -357,7 +391,9 @@ class Agent:
             )
         )
 
-    async def _complete(self, thread_id: str, caller_ref: str = "") -> AssistantMessage:
+    async def _complete(
+        self, thread_id: str, caller_ref: str = "", purpose: str = "agent"
+    ) -> AssistantMessage:
         system = self._system()
         tools = self.bound_tools(thread_id)
         view = fit_to_budget(
@@ -376,7 +412,7 @@ class Agent:
                 status = "timeout" if isinstance(exc, TimeoutError) else "error"
                 self._record(
                     thread_id, caller_ref, view, attempt=attempt, started=started,
-                    status=status, error=exc,
+                    status=status, error=exc, purpose=purpose,
                 )  # fmt: skip
                 if isinstance(exc, ModelError) and not exc.transient:
                     break
@@ -384,29 +420,28 @@ class Agent:
                 last = exc
                 self._record(
                     thread_id, caller_ref, view, attempt=attempt, started=started,
-                    status="error", error=exc,
+                    status="error", error=exc, purpose=purpose,
                 )  # fmt: skip
                 break
             else:
                 self._record(
                     thread_id, caller_ref, view, attempt=attempt, started=started,
-                    status="ok", reply=reply,
+                    status="ok", reply=reply, purpose=purpose,
                 )  # fmt: skip
                 return reply
             if attempt + 1 < self._model_attempts:
                 await asyncio.sleep(BACKOFF_SECONDS[min(attempt, len(BACKOFF_SECONDS) - 1)])
         attempts = attempt + 1
         detail = sanitize_exception(last or RuntimeError("unknown"))
-        return AssistantMessage(
-            content=f"Model call failed after {attempts} attempts with {detail}"
-        )
+        return AssistantMessage(content=f"{MODEL_FAILED} after {attempts} attempts with {detail}")
 
     def _with_pause_summary(
         self, reply: AssistantMessage, context: ToolContext
     ) -> AssistantMessage:
-        """A reply that pauses for approval with no text of its own gets the code-written
-        summary, so every model leaves the reviewer the before, after, risk, and reversal."""
-        if reply.content.strip() or self._pause_summary is None:
+        """A reply that pauses for approval shows the code-written summary in place of its own
+        text, so the reviewer reads the before, after, risk, and reversal from the record, never a
+        retyped copy of it."""
+        if self._pause_summary is None:
             return reply
         paused = [
             call
@@ -424,6 +459,18 @@ class Agent:
             return reply
         return replace(reply, content=summary) if summary else reply
 
+    def _unsourced(self, thread_id: str, reply: AssistantMessage) -> Sequence[str]:
+        """Figures in a final answer no tool returned; nothing when there is no check to run."""
+        if self._check_answer is None or not reply.content.strip():
+            return ()
+        if reply.content.startswith(MODEL_FAILED):
+            return ()
+        try:
+            return self._check_answer(self.conversations.messages(thread_id), reply.content)
+        except Exception:
+            logger.warning("could not check the answer's figures", exc_info=True)
+            return ()
+
     async def _run_tool(
         self, thread_id: str, call: ToolCall, context: ToolContext, on_event: EventHandler | None
     ) -> None:
@@ -437,9 +484,25 @@ class Agent:
         self, thread_id: str, caller_ref: str, on_event: EventHandler | None
     ) -> Conversation:
         context = self._context(thread_id, caller_ref)
+        repaired = False
+        purpose = "agent"
         for _ in range(self._max_model_calls):
-            reply = await self._complete(thread_id, caller_ref)
+            reply = await self._complete(thread_id, caller_ref, purpose)
             reply = self._with_pause_summary(reply, context)
+            if not reply.tool_calls:
+                unsourced = self._unsourced(thread_id, reply)
+                if unsourced and not repaired:
+                    # The draft stays for the record; the model sees why and answers again. A
+                    # surface shows only what follows, so no one reads the draft.
+                    self.conversations.append(thread_id, reply)
+                    note = UserMessage(repair_note(unsourced), origin="host")
+                    self.conversations.append(thread_id, note)
+                    repaired, purpose = True, "repair"
+                    continue
+                if unsourced:
+                    reply = replace(
+                        reply, content=f"{reply.content.rstrip()}\n\n{unsourced_line(unsourced)}"
+                    )
             self.conversations.append(thread_id, reply)
             if reply.content:
                 await _emit(on_event, RunEvent("text", text=reply.content))

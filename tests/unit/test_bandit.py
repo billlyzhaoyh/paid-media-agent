@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from paid_media_agent.bandit.allocate import allocate
+from paid_media_agent.bandit.arms import Arm
 from paid_media_agent.bandit.policy import GUARD_Z, draw_thompson
 from paid_media_agent.bandit.posterior import A0, PowerCurve, fit_posterior
 from paid_media_agent.bandit.prior import MAX_GRID, pseudo_samples
@@ -171,7 +172,7 @@ async def test_a_recommendation_respects_every_bound_and_is_recorded(account: St
     config = BanditConfig()
     run = await recommend(account, None, as_of=AS_OF, config=config, mode="simulate", seed=1)
     assert run.data_checks.passed and not run.fallback_used
-    assert run.prior_source == "pooled:pooled-loglog/1"
+    assert run.prior_source == "pooled:pooled-loglog/2"
     total = 0.0
     for d in run.decisions:
         current = float(d.arm.current_budget or 0)
@@ -428,3 +429,52 @@ async def test_target_cpa_reached_is_judged_on_the_budgets_recommended(account: 
         assert run.target_cpa_reached == (run.expected_cpa <= target * 1.005)
         if not run.target_cpa_reached:
             assert any("recommended budgets' expected CPA" in n for n in run.notes)
+
+
+def _panel(power: float, spread: float, seed: int = 3) -> list[Arm]:
+    """Three campaigns whose conversions are exactly `power` in log spend, spend varying by
+    about `spread` around 200 a day."""
+    rng = np.random.default_rng(seed)
+    days = [AS_OF - timedelta(days=d) for d in range(28, 0, -1)]
+    arms = []
+    for i in range(3):
+        spend = 200 * np.exp(rng.normal(0, spread, len(days)))
+        conversions = 5 * (spend / 200) ** power
+        arms.append(
+            Arm(
+                "google_ads",
+                "p",
+                "a",
+                f"c-{i}",
+                f"c-{i}",
+                "USD",
+                days=days,
+                spend=spend,
+                conversions=conversions,
+                unit=40.0,
+            )  # fmt: skip
+        )
+    return arms
+
+
+def _shared_slope(arms: list[Arm]) -> float:
+    from paid_media_agent.bandit.prior import Query, _pooled
+
+    low, high = 180.0, 220.0
+    values = _pooled(arms, [Query(0, low, 0), Query(0, high, 0)], AS_OF, 28.0).values
+    return float((values[1] - values[0]) / (math.log(high / 40 + 1) - math.log(low / 40 + 1)))
+
+
+def test_a_barely_varied_spend_leans_on_the_prior_and_a_varied_one_does_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from paid_media_agent.bandit import prior
+
+    narrow, wide = _panel(1.6, 0.05), _panel(0.7, 0.4)
+    with_prior = _shared_slope(narrow), _shared_slope(wide)
+    monkeypatch.setattr(prior, "SLOPE_PRIOR_PRECISION", prior.RIDGE)
+    without = _shared_slope(narrow), _shared_slope(wide)
+    # Spend that moves 5% cannot tell returns above 1 from demand moving both together.
+    assert without[0] > 1 and 0.4 < with_prior[0] < 0.8
+    # Spend that moves 40% can: the data, not the prior, sets the slope.
+    assert abs(with_prior[1] - without[1]) < 0.05

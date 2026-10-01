@@ -56,6 +56,7 @@ def totals(results: list[dict[str, Any]]) -> dict[str, Any]:
         "judge_passed": sum(1 for r in judged if r["judge"]["passed"]),
         "judged": len(judged),
         "judge_skipped": skipped,
+        "repaired": sum(1 for r in results if r.get("draft") is not None),
         "mean_scores": {
             k: round(statistics.mean(r["judge"]["scores"][k] for r in judged), 2)
             for k in ("correct", "grounded", "complete", "clear")

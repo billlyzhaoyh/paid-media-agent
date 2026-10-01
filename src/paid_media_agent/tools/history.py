@@ -15,7 +15,7 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 
 from paid_media_agent.analytics.goals import account_today
-from paid_media_agent.analytics.history import MAX_ROWS, ModelHistoryView, query_history
+from paid_media_agent.analytics.history import MAX_ROWS, GroupKey, ModelHistoryView, query_history
 from paid_media_agent.analytics.pacing import ACTIVE_STATUSES
 from paid_media_agent.config import AccountRegistry
 from paid_media_agent.domain.windows import days_ago
@@ -46,6 +46,18 @@ class QueryHistoryArgs(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     limit: int = Field(default=100, ge=1, le=MAX_ROWS)
+    group_by: list[GroupKey] | None = Field(
+        default=None,
+        description=(
+            "daily or signals only: one row per account, entity, day, and/or week instead of per "
+            "entity-day. daily sums spend, conversions, clicks, impressions, and value, with CPA, "
+            "ROAS, CTR, and CVR from the sums; signals averages the shares. Use it instead of "
+            "adding up rows."
+        ),
+    )
+    fields: list[str] | None = Field(
+        default=None, description="Only these columns in each row, e.g. ['day', 'spend']."
+    )
 
 
 FIELD_NOTES: dict[str, dict[str, str]] = {
@@ -83,6 +95,7 @@ def run_query_history(
         start=args.start_date,
         end=args.end_date,
         limit=args.limit,
+        group_by=args.group_by,
     )
     note = (
         "History holds only what was pulled; missing days were never read. Matured conversions "
@@ -96,9 +109,21 @@ def run_query_history(
         result["budget_totals"] = _budget_totals(rows)
     if args.view in DATED:
         _add_days_ago(rows, accounts, DATED[args.view])
+    if args.group_by:
+        result["grouped_by"] = args.group_by
     result["note"] = note
-    result["rows"] = rows
+    result["rows"] = _project(rows, args.fields) if args.fields else rows
     return result
+
+
+def _project(rows: list[dict[str, Any]], fields: list[str]) -> list[dict[str, Any]]:
+    known = {name for row in rows for name in row}
+    unknown = [f for f in fields if rows and f not in known]
+    if unknown:
+        raise ValueError(
+            f"unknown fields {', '.join(unknown)}; rows have {', '.join(sorted(known))}"
+        )
+    return [{f: row[f] for f in fields if f in row} for row in rows]
 
 
 DATED = {"changes": "occurred_at", "settings": "valid_from"}
@@ -156,7 +181,8 @@ def build_query_history_tool(store: Store, accounts: AccountRegistry) -> ToolSpe
             "Query stored history instead of re-reading a platform: coverage, daily rows with "
             "budgets, pacing and matured conversions, settings versions, the change log, and "
             "the conversion lag curve. Use it for trends longer than one read, what changed and "
-            "when, and whether recent conversions are still incomplete."
+            "when, and whether recent conversions are still incomplete. For totals per account, "
+            "campaign, day, or week, set group_by rather than adding up rows."
         ),
         parameters=parameters_for(QueryHistoryArgs),
         handler=_run,

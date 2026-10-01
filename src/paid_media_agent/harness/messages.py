@@ -21,6 +21,9 @@ class ToolCall:
 class UserMessage:
     content: str
     role: Literal["user"] = "user"
+    origin: Literal["user", "host"] = "user"
+    """`host` for a note the runtime adds within a turn (an answer repair). The model reads it;
+    people never see it, and it does not start a new turn."""
 
 
 @dataclass(frozen=True)

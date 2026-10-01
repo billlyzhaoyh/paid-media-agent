@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,7 +59,9 @@ def execute_step(messages: Sequence[Message]) -> AssistantMessage:
 
 def final_step(messages: Sequence[Message]) -> AssistantMessage:
     results = last_tool_results(messages)
-    return AssistantMessage(content=f"done: {results[-1] if results else 'no results'}")
+    return AssistantMessage(
+        content=f"done: {json.dumps(results[-1], default=str) if results else 'no results'}"
+    )
 
 
 def build_runtime(

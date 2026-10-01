@@ -584,6 +584,11 @@ ALTER TABLE eval_results ADD COLUMN call_usage JSON;
 """Per answer, what was written to the prompt cache and each model call's input, cached, and
 written tokens: where a cache miss happens, not only how many."""
 
+EVAL_REPAIR = """
+ALTER TABLE eval_results ADD COLUMN draft VARCHAR;
+"""
+"""The first answer when the runtime's grounding check sent it back once; NULL when it passed."""
+
 MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("0001_operational", OPERATIONAL),
     ("0002_conversations", CONVERSATIONS),
@@ -598,6 +603,7 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("0011_llm_calls", LLM_CALLS),
     ("0012_evals", EVALS),
     ("0013_eval_cache", EVAL_CACHE),
+    ("0014_eval_repair", EVAL_REPAIR),
 )
 
 

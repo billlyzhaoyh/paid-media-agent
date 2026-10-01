@@ -42,6 +42,14 @@ Algorithm 1.
    TabPFN requests small.
    - **By default** the model is a pooled regression: a level per campaign, weekday effects, and
      one elasticity shared by all campaigns, with a 28-day half-life on older days (CBS §6.1).
+     The shared elasticity has a weak prior (precision 1) at the local model's prior mean, 0.5.
+     Without it, a few weeks of spend moving 10% left the slope to noise and to demand moving
+     spend and conversions together: the sample accounts gave 1.07 (Google), 1.40 (Meta) and
+     1.46 (Reddit), so every campaign lost its pseudo-samples. With it they give 0.68, 0.67 and
+     0.52. On 30 simulated cutoffs the slope's mean absolute error fell from 0.19 to 0.12
+     (precision 0.5: 0.13; 2: 0.12 with more bias), and closed-loop regret was unchanged within
+     noise (Thompson, seeds 1–3: 10.5, 2.9, 8.9 before; 7.3, 3.7, 10.5 after). Giving demand- or
+     target-limited campaigns their own slope did not help on the simulator, so it was left out.
    - **With `PAID_MEDIA_PREDICTOR=tabpfn`** (or `--predictor tabpfn`), TabPFN predicts the mean
      from the campaign's log cost per conversion, the weekday, and spend in cost-per-conversion
      units (see the results below for why).

@@ -168,6 +168,9 @@ class Settings(BaseSettings):
     """Every authorized read tool is bound on every call while their schemas fit this many
     tokens, so the prompt cache holds; a larger catalog is bound as discover_tools finds tools."""
     paid_media_result_offload_chars: int = Field(default=6000, ge=500)
+    paid_media_answer_repair: bool = True
+    """Check each final answer's figures against the tool results; send an answer with figures no
+    tool returned back once, then mark any that remain. Costs a model call only when it fires."""
 
     pipeboard_api_token: SecretStr | None = None
     pipeboard_google_ads_mcp_url: str = "https://google-ads.mcp.pipeboard.co/"

@@ -358,3 +358,45 @@ async def test_turn_locks_are_released_with_their_threads(tmp_path: Path) -> Non
         await agent.send(thread, "local-user", "hello")
     gc.collect()
     assert len(agent._turns) == 0, "an idle thread keeps no lock"
+
+
+def test_failed_reads_come_from_the_current_turn_and_clear_on_a_good_retry() -> None:
+    from paid_media_agent.harness.messages import UserMessage
+    from paid_media_agent.harness.tools import failed_reads
+
+    def call(cid: str, name: str, alias: str | None) -> AssistantMessage:
+        args = {"account_alias": alias} if alias else {}
+        return AssistantMessage(tool_calls=(ToolCall(cid, name, args),))
+
+    read = "meta_ads__get_campaign_performance"
+    messages = [
+        UserMessage("earlier question"),
+        call("0", read, "demo-meta"),
+        ToolMessage("0", read, "Tool failed: provider call timed out", status="error"),
+        UserMessage("this question"),
+        call("1", read, "demo-meta"),
+        ToolMessage("1", read, '{"error": true, "detail": "account not found"}'),
+        call("2", "google_ads__get_campaign_performance", "demo-google"),
+        ToolMessage(
+            "2",
+            "google_ads__get_campaign_performance",
+            '{"denied": true, "reason": "platform_scope"}',
+        ),
+        call("3", "google_ads__list_campaigns", None),
+        ToolMessage("3", "google_ads__list_campaigns", '{"kind": "read_result"}'),
+        call("4", "calculate", None),
+        ToolMessage("4", "calculate", '{"error": true}'),
+        UserMessage("fix your answer", origin="host"),
+    ]
+    reads = {read, "google_ads__get_campaign_performance", "google_ads__list_campaigns"}
+    found = failed_reads(messages, reads)
+    assert [f.text() for f in found] == [
+        "demo-meta: account not found",
+        "demo-google: platform_scope",
+    ], "only this turn, only reads; a host note does not start a turn"
+    retried = [
+        *messages,
+        call("5", read, "demo-meta"),
+        ToolMessage("5", read, '{"kind": "read_result"}'),
+    ]
+    assert [f.source for f in failed_reads(retried, reads)] == ["demo-google"]

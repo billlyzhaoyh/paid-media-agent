@@ -56,7 +56,7 @@ def test_the_cli_simulates_and_evaluates(tmp_path: Path, monkeypatch: pytest.Mon
     assert made.exit_code == 0, made.output
     report = json.loads(made.output)
     assert report["decisions"] == 2 and report["violations"] == []
-    assert report["global_model"] == ["pooled:pooled-loglog/1"]
+    assert report["global_model"] == ["pooled:pooled-loglog/2"]
     assert {r["entity_ref"] for r in report["rows"]} == {"sim-001", "sim-002", "sim-003"}
     assert Path(report["path"]).name == "sim-cli.duckdb"
     again = runner.invoke(main, ["bandit", "simulate", "--scenario", "cli", *small])

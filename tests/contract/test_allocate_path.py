@@ -245,6 +245,7 @@ async def test_the_agent_recommends_budgets_without_changing_anything(
     )
     assert "loosen the target rather than the budget" in readings["g-103"]
     assert "cannot spend more of their budget" in " ".join(known["notes"])
+    assert "outside 0 to 1" not in " ".join(known["notes"]), "the shared elasticity is plausible"
     from paid_media_agent.analytics.history import query_history
 
     kinds, _ = query_history(runtime.profile.store, "constraints", account_alias="demo-google")
@@ -329,3 +330,89 @@ def test_the_cli_allocates_proposes_and_lists(
     listed = json.loads(runner.invoke(main, ["proposals", "list", "--json"]).output)
     assert {p["proposal_id"] for p in listed["proposals"]} == ids
     assert runner.invoke(main, ["allocate", "--alias", "nobody"]).exit_code != 0
+
+
+async def test_the_agent_applies_a_recommendation_by_its_run_not_by_retyping_it(
+    settings: Settings, project_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import secrets
+
+    from paid_media_agent.bandit.proposals import propose_decision
+    from paid_media_agent.tools.writes import WriteDenied
+    from tests.contract.helpers import execute_step
+
+    monkeypatch.setattr(secrets, "randbits", lambda _bits: 7)
+    picked: dict[str, Any] = {}
+
+    def propose(args: dict[str, Any]) -> Any:
+        def step(messages: Any) -> AssistantMessage:
+            if not picked:
+                (run,) = [r for r in last_tool_results(messages) if "run_id" in r]
+                moved = next(c for c in run["campaigns"] if c["eligible"] and c["change"])
+                picked.update(run_id=run["run_id"], campaign=moved)
+            base = {
+                "target_ref": picked["campaign"]["entity_ref"],
+                "bandit_run_id": picked["run_id"],
+            }
+            return tool_call_message("propose_change", {**base, **args})
+
+        return step
+
+    steps = [
+        lambda _m: tool_call_message("recommend_budgets", {"account_alias": "demo-google"}),
+        propose({"account_alias": "demo-google", "changes": {"daily_budget": 1}}),
+        propose({"account_alias": "demo-meta"}),
+        propose({"account_alias": "demo-google", "reason": "The user asked to apply it."}),
+        execute_step,
+    ]
+    runtime, _, provider = await _synced(settings, project_root, steps)
+    conversation = await runtime.agent.send("a-2", "local-user", "Apply the recommendation")
+    assert conversation.awaiting_approval
+    typed, foreign, proposed = [
+        json.loads(m.content)
+        for m in conversation.messages
+        if getattr(m, "name", "") == "propose_change"
+    ]
+    assert (
+        typed["reason"] == "invalid_arguments"
+        and "leave tool_name and changes out" in typed["detail"]
+    )
+    assert foreign["reason"] == "account_mismatch"
+    proposal = proposed["proposal"]
+    campaign = picked["campaign"]
+    (after,) = proposal["after"]
+    assert after["value"] == pytest.approx(round(campaign["final_budget"], 2)), "the run's budget"
+    assert proposal["tool_name"] == "google_ads__update_campaign_budget"
+    assert picked["run_id"] in proposal["reason"] and "The user asked" in proposal["reason"]
+    assert proposal["reversal_plan"].startswith("Restore the daily budget to")
+    store = runtime.profile.store
+    assert store.fetch(
+        "SELECT proposal_id::VARCHAR FROM bandit_decisions WHERE run_id = ? AND entity_ref = ?",
+        [picked["run_id"], campaign["entity_ref"]],
+    ) == [(proposal["proposal_id"],)]
+    paused = [m for m in conversation.messages if isinstance(m, AssistantMessage)][-1]
+    assert paused.content.startswith("Proposed change for review")
+    assert provider.mutation_calls == []
+
+    service = runtime.components.proposal_service
+    run_id = picked["run_id"]
+
+    async def again(**overrides: Any) -> str:
+        kwargs = {
+            "thread_id": "a-3", "requester_ref": "local-user", "account_alias": "demo-google",
+            "run_id": run_id, "entity_ref": campaign["entity_ref"], **overrides,
+        }  # fmt: skip
+        try:
+            await propose_decision(store, service, **kwargs)
+        except WriteDenied as exc:
+            return exc.reason
+        return "proposed"
+
+    assert await again() == "already_proposed"
+    assert await again(today=TODAY + timedelta(days=3)) == "stale_recommendation"
+    assert await again(entity_ref="g-999") == "unknown_recommendation"
+    store.write(
+        "UPDATE bandit_decisions SET eligible = false WHERE run_id = ? AND entity_ref = ?",
+        [run_id, campaign["entity_ref"]],
+    )
+    assert await again() == "ineligible"

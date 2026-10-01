@@ -43,8 +43,8 @@ class EvalStore:
         self.store.write(
             "INSERT INTO eval_results (run_id, question_id, passed, checks, judge, answer, calls, "
             "model_calls, input_tokens, output_tokens, cached_tokens, cost_usd, judge_cost_usd, "
-            "seconds, error, cache_write_tokens, call_usage) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "seconds, error, cache_write_tokens, call_usage, draft) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 run_id,
                 row["question_id"],
@@ -63,6 +63,7 @@ class EvalStore:
                 row.get("error"),
                 row.get("cache_write_tokens"),
                 json.dumps(row["call_usage"]) if row.get("call_usage") is not None else None,
+                row.get("draft"),
             ],
         )
 
