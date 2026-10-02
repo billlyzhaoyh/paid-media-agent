@@ -68,8 +68,18 @@ source, date window, and data-quality flags.
   and differences in attribution are stated, not shown as zero.
 
 **Measured.** A [30-question eval](docs/architecture/evals.md) on synthetic accounts grades each
-answer with deterministic checks and a judge model. Claude Sonnet 5.5 passed 25 of 30, at about
-$0.06 per answer with prompt caching; targeted reruns after later fixes are in the eval log.
+answer with deterministic checks and a judge model. On the current code Claude Sonnet 5.5 passed
+28 of 30:
+
+| | Result |
+| --- | --- |
+| Questions passed | 28 of 30 (93%) |
+| Judge scores, out of 5 | correct 4.5, grounded 4.2, complete 4.2, clear 4.3 |
+| Cost per answer | $0.046, with 90% of input read from the prompt cache |
+| Model calls per answer | 3.6; median 15 seconds |
+
+The first baseline, on Claude Haiku 4.5 before the answer-quality work, was 12 of 30. The eval log
+records every run and what each one found.
 
 **Status.** Tested end to end on synthetic accounts: the offline demo, the eval, and the Docker
 image. The live Pipeboard read path, live ad-account writes, and the Slack app have not yet been

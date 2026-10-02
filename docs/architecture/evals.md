@@ -405,3 +405,26 @@ current window that starts a day early.
 | q30 | fail (`86228ea8`: no attribution caveat, September unlabelled) | **pass** (`cc3edd81`) |
 
 Haiku's remaining misses are omissions the tools already state; Sonnet passes both.
+
+## Full run on the submitted code (2026-10-02)
+
+Sonnet 5.5 on all 30 questions, judged where the checks pass (`56a4fed0`, commit `ab00262`):
+
+| Measure | Result |
+| --- | --- |
+| Passed | 28 of 30 (93%); judge passed 28 of 29 |
+| Mean judge scores | correct 4.52, grounded 4.21, complete 4.21, clear 4.28 |
+| Agent cost | $1.38 ($0.046 per question); judge $0.87 |
+| Model calls | 107 (3.6 per question); 90% of input from cache, 10% written |
+| Latency | p50 15.3s, max 38.3s |
+| Answers repaired once | 1 |
+
+The same model passed 25 of 30 on 30 September at $0.10 per question; the Haiku 4.5 baseline was
+12 of 30.
+
+**The two failures.**
+- **q05 (cross-platform total).** The answer left out the two per-platform spend figures the
+  check expects (23,569.99 and 15,464.43).
+- **q28 (which lever).** The tool said to loosen the bid target rather than the budget; the
+  answer agreed the budget is not the limit but declined to recommend loosening the target, and
+  the judge marked it 3 of 5 on correctness.
