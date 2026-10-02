@@ -1,0 +1,1075 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Northwind · paid media review (simulated store)</title>
+<style>
+  :root {
+    color-scheme: light;
+    --canvas: #fdfbf6;
+    --paper: #f5f2eb;
+    --ink: #1b150f;
+    --muted: #655c53;
+    --line: #e4ddd3;
+    --card-line: #e4ddd3;
+    --current: #a5432b;
+    --previous: #787069;
+    --previous-fill: #efeae4;
+    --model: #1f6fb0;
+    --increase: #19704c;
+    --decrease: #992b57;
+    --font-family: IBM Plex Sans, -apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif;
+    --font-mono: IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, monospace;
+    --heading-weight: 600;
+    --radius-card: 14px;
+    --radius-metric: 14px;
+    --content-width: 1180px;
+    --page-gutter: 32px;
+    --section-gap: 40px;
+    --card-padding: 24px;
+    
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--canvas); color: var(--ink); font: 14px/1.5 var(--font-family); -webkit-font-smoothing: antialiased; }
+  .report { max-width: var(--content-width); margin: 0 auto; padding: 34px var(--page-gutter) 40px; counter-reset: report-section; }
+  h1, h2, h3, p { margin: 0; }
+  h1, h2, h3 { font-weight: var(--heading-weight); text-wrap: balance; }
+  h1 { margin: 14px 0 10px; font-size: 34px; line-height: 1.12; letter-spacing: -.03em; overflow-wrap: anywhere; }
+  h2 { font: var(--heading-weight) 19px/1.4 var(--font-family); letter-spacing: -.01em; }
+  h3 { font: 500 12px/1.4 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; }
+  p + p { margin-top: 8px; }
+  section { margin-top: var(--section-gap); }
+  .masthead { padding-bottom: 22px; border-bottom: 1px solid var(--line); }
+  .mast-meta { display: flex; justify-content: space-between; align-items: center; gap: 28px; color: var(--muted); font-size: 12px; }
+  .brand-logo { display: inline-flex; flex: none; }
+  .brand-logo svg { height: 28px; width: auto; }
+  .mast-meta .wordmark { color: var(--current); font: 400 10.5px/1.5 var(--font-mono); letter-spacing: .16em; text-transform: uppercase; }
+  .period { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--muted); font: 400 11px/1.6 var(--font-mono); }
+  .summary { max-width: 80ch; margin-top: 18px; font-size: 14px; line-height: 1.6; text-wrap: pretty; }
+  dt { color: var(--muted); font-size: 12px; }
+  dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+  .section-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; margin-bottom: 22px; padding-bottom: 10px; border-bottom: 1.5px solid var(--ink); }
+  .section-heading h2 { flex: 1; }
+  .section-heading h2::before { counter-increment: report-section; content: counter(report-section, decimal-leading-zero); margin-right: 14px; color: var(--current); font: 400 11px var(--font-mono); letter-spacing: .08em; }
+  .section-meta { color: var(--muted); font: 400 11px/1.5 var(--font-mono); overflow-wrap: anywhere; }
+  .note { margin: 12px 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+  .note strong { color: var(--ink); font-weight: 500; }
+  .metric-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 20px 0 24px; border: 1px solid var(--card-line); border-radius: var(--radius-metric); overflow: hidden; }
+  .metric-tile { min-width: 0; padding: 22px 24px; background: var(--canvas); border-right: 1px solid var(--line); }
+  .metric-tile:last-child { border-right: 0; }
+  .metric-tile dt { font: 400 10px/1.5 var(--font-mono); letter-spacing: .12em; text-transform: uppercase; }
+  .metric-value { margin: 8px 0; font-size: 30px; font-weight: 300; line-height: 1.15; letter-spacing: -.025em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .metric-value.unavailable { font-size: 16px; color: var(--muted); }
+  .metric-unit { font-size: .45em; letter-spacing: 0; color: var(--muted); }
+  .metric-change { color: var(--muted); font: 400 10.5px/1.5 var(--font-mono); }
+  .change { font-variant-numeric: tabular-nums; }
+  .change-increase { color: var(--increase); }
+  .change-decrease { color: var(--decrease); }
+  .chart-section { margin-top: var(--section-gap); }
+  .legend { display: flex; flex-shrink: 0; gap: 16px; color: var(--muted); font-size: 11px; }
+  .legend span { white-space: nowrap; }
+  .legend span::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 2px; background: var(--current); }
+  .legend .previous::before { background: transparent; border: 1px solid var(--previous); }
+  .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 26px; }
+  .chart { margin: 0; padding: var(--card-padding); background: var(--paper); border: 1px solid var(--card-line); border-radius: var(--radius-card); }
+  .chart h3 { margin-bottom: 18px; }
+  .chart-row, .chart-axis { display: grid; grid-template-columns: 88px minmax(0, 1fr) 106px; align-items: center; gap: 12px; }
+  .chart-row { padding: 18px 0; }
+  .chart-label { font-size: 12px; font-weight: 500; }
+  .chart-account { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; font-weight: 400; overflow-wrap: anywhere; }
+  .chart-bars { display: block; grid-column: 2; grid-row: 1; width: 100%; height: 34px; }
+  .chart-dots { display: block; grid-column: 2; grid-row: 1; width: 100%; height: 28px; overflow: visible; }
+  .chart-values { grid-column: 3; grid-row: 1; margin: 0; text-align: right; }
+  .chart-value { font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .chart-value.previous { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+  .chart-axis p { grid-column: 2; display: flex; justify-content: space-between; padding-top: 6px; border-top: 1px solid var(--line); color: var(--muted); font: 400 10px/1.5 var(--font-mono); }
+  .chart-caption { margin-top: 4px; color: var(--muted); font-size: 11px; }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; line-height: 1.45; }
+  th, td { padding: 7px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+  th { color: var(--muted); background: var(--paper); font: 400 10px/1.5 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; }
+  th:first-child, td:first-child { padding-left: 0; }
+  th:last-child, td:last-child { padding-right: 0; }
+  tbody tr:last-child td { border-bottom: 0; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .definition { display: block; margin-top: 3px; max-width: 260px; font-size: 11px; color: var(--muted); }
+  .drivers { margin-top: 20px; font-size: 12px; }
+  summary { width: fit-content; cursor: pointer; color: var(--muted); font-size: 12px; }
+  summary:hover { color: var(--ink); }
+  summary:focus-visible, .table-wrap:focus-visible { outline: 2px solid var(--current); outline-offset: 4px; border-radius: 4px; }
+  ul { margin: 10px 0 0; padding-left: 16px; }
+  li { margin: 8px 0; overflow-wrap: anywhere; }
+  .recommendation { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 24px; margin-top: 12px; padding: var(--card-padding); background: var(--paper); border: 1px solid var(--card-line); border-radius: var(--radius-card); }
+  .confidence { display: block; margin-top: 8px; font-size: 11px; color: var(--muted); }
+  .recommendation dl { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 24px; margin: 16px 0 0; }
+  .recommendation dd { font-size: 13px; }
+  .recommendation .evidence { margin: 10px 0 16px; color: var(--muted); font-size: 13px; }
+  .provenance { margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+  .keys { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 0 0 16px; color: var(--muted); font-size: 11px; }
+  .key { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .plot { display: block; width: 100%; height: auto; overflow: visible; }
+  .chart figcaption .key { margin-right: 14px; color: var(--ink); font-size: 11px; }
+  section > .table-wrap { margin-top: 22px; }
+  .finding { max-width: 76ch; margin: 0 0 12px; font-size: 18px; font-weight: 500; line-height: 1.45; text-wrap: pretty; }
+  .how-details { margin: 14px 0 18px; }
+  .how { margin: 12px 0 26px; padding: var(--card-padding); background: var(--paper); border: 1px solid var(--card-line); border-radius: var(--radius-card); }
+  .how h3 { margin: 0 0 18px; }
+  .how-steps { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 20px 40px; }
+  .how-step { min-width: 0; }
+  .how-n { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font: 500 11px/1.5 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; }
+  .how-step .how-n + .how-lead + .how-n, .how-values + .how-n, .how-step .table-wrap + .note + .how-n { margin-top: 18px; }
+  .how-n span { display: inline-block; flex: none; width: 18px; height: 18px; border-radius: 50%; background: var(--ink); color: var(--paper); font-size: 10px; line-height: 18px; letter-spacing: 0; text-align: center; }
+  .how-n.result { margin: 0 0 4px; }
+  .how-lead { margin: 0 0 12px; font-size: 13px; line-height: 1.5; }
+  .how-table { font-size: 12px; }
+  .how-table th, .how-table td { padding: 6px 10px; }
+  .how-table th { background: transparent; letter-spacing: .04em; }
+  .how-table th.num { white-space: normal; }
+  .how-table td:nth-child(2), .how-table td.move { white-space: nowrap; }
+  .how-table .answer { border-left: 1px solid var(--previous); }
+  .how-table tr.asked td { background: var(--previous-fill); font-weight: 500; }
+  .ask { display: inline-block; min-width: 16px; padding: 0 5px; border: 1px solid var(--ink); border-radius: 4px; text-align: center; }
+  .range-bar { display: block; width: 100%; max-width: 420px; height: auto; margin: 4px 0 6px; }
+  .how-values { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 0 0 4px; }
+  .how-values dt { color: var(--muted); font: 400 10px/1.5 var(--font-mono); letter-spacing: .06em; text-transform: uppercase; }
+  .how-values dd { margin: 0; font-size: 14px; font-variant-numeric: tabular-nums; }
+  .how-why { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .how-why ul { margin: 0; padding-left: 18px; }
+  .how-why li { max-width: 92ch; margin: 0 0 8px; font-size: 13px; line-height: 1.55; color: var(--muted); break-inside: avoid; }
+  .how-why li strong { color: var(--ink); font-weight: 500; }
+  .alerts { margin: 18px 0 24px; }
+  .alert-row { break-inside: avoid; display: grid; grid-template-columns: 220px minmax(0, 1fr) 220px; align-items: center; gap: 14px; padding: 7px 0; }
+  .alert-label { font-size: 13px; font-weight: 500; }
+  .alert-track { display: flex; gap: 2px; height: 16px; }
+  .alert-real, .swatch-real { background: var(--ink); border-radius: 0 3px 3px 0; }
+  .alert-false, .swatch-false { background: var(--previous-fill); border: 1px solid var(--previous); border-radius: 0 3px 3px 0; }
+  .swatch-real, .swatch-false { display: inline-block; flex: none; width: 12px; min-width: 12px; height: 12px; }
+  .alert-count { color: var(--muted); font: 400 11px/1.5 var(--font-mono); text-align: right; }
+  .alerts .keys { margin: 10px 0 0; }
+  .metric-strip.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .chart.wide { margin-top: 26px; break-inside: avoid; }
+  .chart.wide .keys { margin: 14px 0 0; }
+  .move-row { display: grid; grid-template-columns: 170px minmax(0, 1fr) 190px; align-items: center; gap: 14px; padding: 12px 0; border-top: 1px solid var(--line); break-inside: avoid; }
+  .move-cell { grid-column: 2; grid-row: 1; position: relative; height: 18px; }
+  .move-cell span { position: absolute; top: 50%; }
+  .move-line { left: 0; right: 0; height: 1px; background: var(--line); }
+  .move-span { height: 2px; margin-top: -1px; background: var(--current); }
+  .mark-start, .mark-now, .mark-next { display: inline-block; box-sizing: border-box; width: 11px; height: 11px; border-radius: 50%; }
+  .move-cell .mark-start, .move-cell .mark-now { transform: translate(-50%, -50%); }
+  .mark-start { background: var(--paper); border: 1.5px solid var(--previous); }
+  .mark-now { background: var(--current); border: 1.5px solid var(--paper); }
+  .mark-next { width: 9px; height: 9px; background: var(--paper); border: 1.5px solid var(--ink); border-radius: 0; }
+  .move-cell .mark-next { transform: translate(-50%, -50%) rotate(45deg); }
+  .keys .mark-start, .keys .mark-now { flex: none; min-width: 11px; }
+  .keys .mark-next { flex: none; min-width: 9px; transform: rotate(45deg); }
+  .move-values { grid-column: 3; grid-row: 1; margin: 0; text-align: right; }
+  .written-by { color: var(--muted); font: 400 11px/1.5 var(--font-mono); }
+  .change-card { padding: var(--card-padding); background: var(--paper); border: 1px solid var(--card-line); border-radius: var(--radius-card); }
+  .change-title { font-weight: 500; }
+  .receipt { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 13px; }
+  .details-body { margin-top: 16px; }
+  .details-body h3 { margin: 20px 0 8px; font-size: 12px; color: var(--ink); }
+  @media screen and (max-width: 680px) {
+    .report { padding: 28px 18px; }
+    h1 { font-size: 26px; }
+    .mast-meta { flex-direction: column; align-items: flex-start; gap: 20px; }
+    .metric-strip, .chart-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .metric-tile { padding: 18px; }
+    .metric-tile:nth-child(2) { border-right: 0; }
+    .metric-tile:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+    .metric-value { font-size: 24px; }
+    .section-heading { flex-direction: column; gap: 8px; }
+    .chart-grid { grid-template-columns: 1fr; }
+    .chart { padding: 20px; }
+    .chart-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    .chart-bars, .chart-dots { grid-column: 1 / -1; grid-row: 2; }
+    .chart-values { grid-column: 2; }
+    .chart-axis { display: block; }
+    .chart-label { font-size: 12px; }
+    .chart-value { font-size: 11px; }
+    .recommendation, .recommendation dl { grid-template-columns: 1fr; gap: 16px; }
+    .metric-strip.three { grid-template-columns: 1fr; }
+    .how { padding: 20px; }
+    .how-steps { grid-template-columns: minmax(0, 1fr); }
+    .alert-row, .move-row { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+    .move-cell, .move-values { grid-column: 1; }
+    .move-cell { grid-row: 2; }
+    .move-values { grid-row: 3; text-align: left; }
+    .alert-count { text-align: left; }
+    table { min-width: 450px; }
+  }
+  @media screen {
+    details:not([open]) > .details-body { display: none; }
+  }
+  @page {
+    size: A4;
+    margin: 16mm;
+    background: #fdfbf6;
+    @bottom-left { content: "Paid Media Agent"; font: 8pt IBM Plex Sans, -apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif; color: #655c53; }
+    @bottom-right { content: counter(page) " / " counter(pages); font: 8pt IBM Plex Sans, -apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif; color: #655c53; }
+  }
+  @media print {
+    body { background: var(--canvas); font-size: 9.5pt; line-height: 1.5; }
+    .report { max-width: none; padding: 0; }
+    .mast-meta, .period { font-size: 8pt; }
+    h1 { margin-top: 16pt; font-size: 22pt; }
+    h2 { font-size: 13pt; }
+    h3 { font-size: 10pt; }
+    h1, h2, h3, .section-heading { break-after: avoid; }
+    .masthead { padding-bottom: 14pt; }
+    .summary { margin-top: 14pt; font-size: 10pt; }
+    dt, .section-meta { font-size: 8pt; }
+    section { margin-top: 20pt; }
+    .section-heading { display: block; margin-bottom: 8pt; padding-bottom: 6pt; }
+    .section-heading h2 { display: inline; }
+    .section-heading .legend, .section-heading .section-meta { float: right; margin-top: 3pt; }
+    .note { font-size: 8pt; margin: 8pt 0; }
+    .metric-strip { margin: 10pt 0 14pt; break-inside: avoid; }
+    .metric-tile { padding: 9pt; }
+    .metric-value { font-size: 18pt; }
+    .metric-value.unavailable { font-size: 11pt; }
+    .metric-change { font-size: 8pt; }
+    .chart-section { margin-top: 18pt; }
+    .legend { font-size: 8pt; }
+    .chart-grid { display: block; }
+    .how { margin: 10pt 0; padding: 10pt; }
+    .how-steps { display: block; }
+    .how-step + .how-step { margin-top: 12pt; }
+    .how-table { font-size: 8pt; }
+    .how-lead, .how-why li { font-size: 9pt; }
+    .chart { margin-bottom: 8pt; padding: 8pt; break-inside: avoid; }
+    .chart-row, .chart-axis { grid-template-columns: 90pt minmax(0, 1fr) 100pt; gap: 12pt; }
+    .chart-row { padding: 4pt 0; }
+    .chart h3 { margin-bottom: 4pt; }
+    .chart-axis p { padding-top: 3pt; font-size: 7pt; }
+    .chart-values { grid-column: 3; grid-row: 1; }
+    .chart-bars, .chart-dots { grid-column: 2; grid-row: 1; align-self: center; }
+    .chart-label, .chart-value { font-size: 9pt; }
+    .chart-account, .chart-caption, .chart-value.previous { font-size: 8pt; }
+    .chart-bars { height: 20pt; }
+    .platform-header { break-inside: avoid; break-after: avoid; }
+    table { font-size: 9pt; }
+    th, td { padding: 4pt; }
+    th, .definition { font-size: 8pt; }
+    .table-wrap { overflow: visible; }
+    thead { display: table-header-group; }
+    tr, .chart-row, .recommendation, .drivers { break-inside: avoid; }
+    .drivers { margin-top: 12pt; font-size: 8.5pt; }
+    .recommendation { grid-template-columns: 90pt minmax(0, 1fr); gap: 16pt; padding: 12pt; }
+    .recommendation dl { margin-top: 8pt; gap: 10pt 16pt; }
+    .recommendation dd { font-size: 9pt; }
+    .recommendation .evidence { font-size: 9pt; }
+    .confidence, .provenance { font-size: 8pt; }
+    .provenance { margin-top: 16pt; padding-top: 8pt; }
+    details > .details-body { display: block; margin-top: 8pt; }
+    .recommendation details > .details-body { display: grid; }
+    details::details-content { content-visibility: visible; }
+    summary { list-style: none; cursor: auto; font-size: 8pt; }
+    p, li { orphans: 3; widows: 3; }
+  }
+</style>
+</head>
+<body>
+
+
+
+
+<main class="report">
+<header class="masthead">
+  <div class="mast-meta">
+    <span class="wordmark">Paid Media Agent</span>
+  </div>
+  <h1>Northwind · paid media review (simulated store)</h1>
+  <p class="period"><span>Jul 27-Aug 9, 2026</span><span>Compared with Jul 13-26, 2026</span><span>1 account · USD</span></p>
+  <p class="summary">This is a simulated account, so results are scored against the simulation&#39;s truth, not real sales. Over 8 weeks, the agent&#39;s weekly budget moves produced 39.6 conversions a day against 37.3 with budgets left alone. That is +6.1% at the same total budget, and it captured 86% of the available gain. TabPFN raised 4 alerts on unusual days and 3 were real problems. The ±50% day-over-day rule raised 24 alerts and 22 were false alarms. Next, move budget toward Retargeting and investigate the flagged days.</p>
+  
+</header>
+<dl class="metric-strip" aria-label="Key metrics">
+
+  <div class="metric-tile">
+    <dt>Spend</dt>
+    <dd class="metric-value">30,077.93 <span class="metric-unit">USD</span></dd>
+    <dd class="metric-change"><span class="change change-decrease">-0.0%</span> vs previous</dd>
+  </div>
+
+  <div class="metric-tile">
+    <dt>Conversions</dt>
+    <dd class="metric-value">468</dd>
+    <dd class="metric-change"><span class="change change-decrease">-21.1%</span> vs previous</dd>
+  </div>
+
+  <div class="metric-tile">
+    <dt>CPA</dt>
+    <dd class="metric-value">64.27 <span class="metric-unit">USD</span></dd>
+    <dd class="metric-change"><span class="change change-increase">+26.7%</span> vs previous</dd>
+  </div>
+
+  <div class="metric-tile">
+    <dt>ROAS</dt>
+    <dd class="metric-value">1.21</dd>
+    <dd class="metric-change"><span class="change change-decrease">-22.8%</span> vs previous</dd>
+  </div>
+
+</dl>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<section aria-labelledby="ranges-title">
+  <div class="section-heading"><h2 id="ranges-title">What was unusual</h2><p class="section-meta">TabPFN, 95% expected range · recorded answers</p></div>
+  <p class="finding">TabPFN raised 4 alerts; 3 were real problems. A ±50% day-over-day rule raised 24 for the same days, 22 of them false alarms.</p>
+  
+  
+  
+  <details class="how-details"><summary id="how-ranges">How TabPFN is applied: one real day, step by step</summary><div class="details-body">
+  <figure class="how" aria-labelledby="how-ranges">
+    <div class="how-steps">
+      <div class="how-step">
+        <p class="how-n"><span>1</span>What goes in</p>
+        <p class="how-lead">A table with one row per campaign per day: 320 rows of history with the spend known, and 56 rows to judge. Three of them:</p>
+        <div class="table-wrap" tabindex="0" role="region" aria-label="Rows given to the model">
+  <table class="how-table">
+    <thead><tr><th scope="col">Campaign</th><th scope="col">Day</th><th scope="col" class="num">Usual of last 7 days</th><th scope="col" class="num">A week before</th><th scope="col" class="num">Budget</th><th scope="col" class="num answer">Spend</th></tr></thead>
+    <tbody>
+    
+    <tr>
+      <td>Retargeting</td><td>Fri, Jul 24</td><td class="num">282</td><td class="num">250</td><td class="num">325</td>
+      <td class="num answer">302</td>
+    </tr>
+    
+    <tr>
+      <td>Retargeting</td><td>Sat, Jul 25</td><td class="num">287</td><td class="num">287</td><td class="num">325</td>
+      <td class="num answer">319</td>
+    </tr>
+    
+    <tr class="asked">
+      <td>Retargeting</td><td>Wed, Aug 5</td><td class="num">227</td><td class="num">244</td><td class="num">183</td>
+      <td class="num answer"><span class="ask">?</span></td>
+    </tr>
+    
+    </tbody>
+  </table>
+  </div>
+        <p class="note">Each row also carries the platform; the day number, for trend; a simple estimate: the usual level scaled by the budget change. One request per metric: 2 for this page.</p>
+      </div>
+      <div class="how-step">
+        <p class="how-n"><span>2</span>What comes out</p>
+        <p class="how-lead">For each row to judge, a range: where 95 in 100 normal days would land. For Retargeting on Aug 5:</p>
+        <svg class="range-bar" viewBox="0 0 360.0 86.0" role="img" aria-label="Retargeting on Aug 5: spent 301, against an expected 170 and a range of 134 to 206; outside the range.">
+          <line x1="12" y1="47.0" x2="348.0" y2="47.0" stroke="#e4ddd3" stroke-width="1" />
+          <rect x="48.0" y="40.0" width="113.71000000000001" height="14.0" rx="3" fill="#1f6fb0" fill-opacity=".2" stroke="#1f6fb0" stroke-width="1" />
+          <line x1="104.07" y1="37.0" x2="104.07" y2="57.0" stroke="#1f6fb0" stroke-width="2" />
+          <text x="104.07" y="32.0" text-anchor="middle" font-family="IBM Plex Sans, system-ui, sans-serif" font-size="11" fill="#1b150f">expected 170</text>
+          <text x="48.0" y="71.0" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">134</text>
+          <text x="161.71" y="71.0" text-anchor="start" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">206</text>
+          <circle cx="312.0" cy="47.0" r="4" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5" />
+          <circle cx="312.0" cy="47.0" r="8" fill="none" stroke="#1b150f" stroke-width="2" />
+          <text x="312.0" y="12" text-anchor="end" font-family="IBM Plex Sans, system-ui, sans-serif" font-size="11" fill="#1b150f" font-weight="500">spent 301</text>
+        </svg>
+        <dl class="how-values">
+          <div><dt>Low (2.5%)</dt><dd>134.29</dd></div>
+          <div><dt>Expected</dt><dd>169.61</dd></div>
+          <div><dt>High (97.5%)</dt><dd>205.92</dd></div>
+        </dl>
+        <p class="how-n"><span>3</span>The verdict</p>
+        <p class="how-lead">Retargeting spent 300.59 USD, above the top of the range: an alert. In the simulation this day was: <strong>spend spike, caught</strong>.</p>
+      </div>
+    </div>
+    <div class="how-why">
+      <p class="how-n">Why a range per row beats a fixed rule</p>
+      <ul>
+        
+        <li><strong>The range moves with the budget.</strong> On Jul 27 Retargeting's budget went from 325 to 244, and the expected spend went from 299 to 224 with it. No alert: the budget is in the row, so a deliberate change is not mistaken for a problem.</li>
+        
+        
+        <li><strong>The range is as wide as the campaign is noisy.</strong> Retargeting went from 1 to 5 conversions on Aug 2 (+400%), so the ±50% rule alerts. The model's range for that day was 0.6 to 12.6: no alert, and nothing was planted there. The rule raised 19 more alerts like it.</li>
+        
+        <li><strong>Nothing to train or tune.</strong> TabPFN is a model pretrained on synthetic tables. The history rows and the rows to judge go to it in one request and the ranges come back; nothing is trained or tuned for this account.</li>
+      </ul>
+    </div>
+  </figure>
+  </div></details>
+  <p class="how-n result">The result, on the same days</p>
+  
+  
+  <div class="alerts">
+    
+    <div class="alert-row">
+      <p class="alert-label">TabPFN, 95% expected range</p>
+      <div class="alert-track" aria-hidden="true">
+        <span class="alert-real" style="width: 12.5%"></span>
+        <span class="alert-false" style="width: 4.17%"></span>
+      </div>
+      <p class="alert-count">3 real of 3 · 1 false alarm</p>
+    </div>
+    
+    <div class="alert-row">
+      <p class="alert-label">Local model, 95% expected range</p>
+      <div class="alert-track" aria-hidden="true">
+        <span class="alert-real" style="width: 12.5%"></span>
+        <span class="alert-false" style="width: 20.83%"></span>
+      </div>
+      <p class="alert-count">3 real of 3 · 5 false alarms</p>
+    </div>
+    
+    <div class="alert-row">
+      <p class="alert-label">±50% day-over-day rule</p>
+      <div class="alert-track" aria-hidden="true">
+        <span class="alert-real" style="width: 8.33%"></span>
+        <span class="alert-false" style="width: 91.67%"></span>
+      </div>
+      <p class="alert-count">2 real of 3 · 22 false alarms</p>
+    </div>
+    
+    <p class="keys"><span class="key"><span class="swatch-real"></span>Real problem caught</span><span class="key"><span class="swatch-false"></span>False alarm</span></p>
+  </div>
+  
+  <p class="keys">
+    <span class="key"><svg width="22" height="10" aria-hidden="true"><line x1="0" y1="5" x2="22" y2="5" stroke="#a5432b" stroke-width="2" /><circle cx="11" cy="5" r="3" fill="#a5432b" /></svg>Observed</span>
+    <span class="key"><svg width="22" height="10" aria-hidden="true"><rect x="0" y="0" width="22" height="10" fill="#1f6fb0" fill-opacity=".14" /><line x1="0" y1="5" x2="22" y2="5" stroke="#1f6fb0" stroke-width="1.5" /></svg>Expected, with its range</span>
+    <span class="key"><svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="#1b150f" stroke-width="2" /></svg>Flagged</span>
+    <span class="key"><svg width="14" height="12" aria-hidden="true"><path d="M7 1 L13 11 L1 11 Z" fill="#1b150f" /></svg>Planted in the simulation</span>
+  </p>
+  <div class="chart-grid">
+  
+  <figure class="chart" aria-labelledby="band-1">
+    <h3 id="band-1">Shopping · conversions</h3>
+    <svg class="plot" viewBox="0 0 560.0 230.0" role="img" aria-label="Shopping, conversions: 14 days, 2 outside the expected range">
+      
+  <line x1="52.0" y1="127.15" x2="546.0" y2="127.15" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="130.65" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">20</text>
+  
+  <line x1="52.0" y1="41.6" x2="546.0" y2="41.6" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="45.1" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">40</text>
+  
+  <line x1="52.0" y1="200.0" x2="546.0" y2="200.0" stroke="#787069" stroke-width="1" />
+  
+  <text x="52.0" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">Jul 23</text>
+  
+  <text x="166.0" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">Jul 26</text>
+  
+  <text x="280.0" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">Jul 29</text>
+  
+  <text x="394.0" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">Aug 1</text>
+  
+  <text x="508.0" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">Aug 4</text>
+  
+  
+      <path d="M52.0,62.56 L90.0,64.06 L128.0,61.24 L166.0,59.44 L204.0,64.4 L242.0,71.2 L280.0,58.03 L318.0,65.0 L356.0,52.08 L394.0,43.49 L432.0,40.02 L470.0,24.97 L508.0,46.35 L546.0,63.33 L546.0,159.87 L508.0,153.93 L470.0,152.39 L432.0,150.68 L394.0,144.09 L356.0,148.62 L318.0,165.78 L280.0,149.99 L242.0,165.56 L204.0,156.92 L166.0,161.67 L128.0,152.47 L90.0,153.8 L52.0,152.47 Z" fill="#1f6fb0" fill-opacity=".14" />
+      <polyline points="52.0,105.76 90.0,108.93 128.0,105.38 166.0,110.98 204.0,109.02 242.0,118.55 280.0,102.39 318.0,117.19 356.0,100.5 394.0,94.69 432.0,96.18 470.0,91.35 508.0,101.92 546.0,112.57" fill="none" stroke="#1f6fb0" stroke-width="1.5" stroke-linejoin="round" />
+      <polyline points="52.0,67.27 90.0,80.1 128.0,75.82 166.0,110.04 204.0,131.43 242.0,122.87 280.0,67.27 318.0,187.03 356.0,101.49 394.0,127.15 432.0,152.82 470.0,122.87 508.0,92.93 546.0,144.26" fill="none" stroke="#a5432b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+      <path d="M318.0 191.0 L323.0 199.0 L313.0 199.0 Z" fill="#1b150f"><title>Jul 30: 6.0; expected 22.3 (11.0 to 34.5); flagged; planted tracking outage</title></path>
+      <circle cx="52.0" cy="67.27" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 23: 34.0; expected 25.0 (14.1 to 35.1)</title></circle><circle cx="90.0" cy="80.1" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 24: 31.0; expected 24.3 (13.8 to 34.8)</title></circle><circle cx="128.0" cy="75.82" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 25: 32.0; expected 25.1 (14.1 to 35.4)</title></circle><circle cx="166.0" cy="110.04" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 26: 24.0; expected 23.8 (11.9 to 35.8)</title></circle><circle cx="204.0" cy="131.43" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 27: 19.0; expected 24.2 (13.0 to 34.7)</title></circle><circle cx="242.0" cy="122.87" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 28: 21.0; expected 22.0 (11.0 to 33.1)</title></circle><circle cx="280.0" cy="67.27" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 29: 34.0; expected 25.8 (14.7 to 36.2)</title></circle><circle cx="318.0" cy="187.03" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 30: 6.0; expected 22.3 (11.0 to 34.5); flagged; planted tracking outage</title></circle><circle cx="356.0" cy="101.49" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 31: 26.0; expected 26.2 (15.0 to 37.5)</title></circle><circle cx="394.0" cy="127.15" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Aug 1: 20.0; expected 27.6 (16.0 to 39.6)</title></circle><circle cx="432.0" cy="152.82" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Aug 2: 14.0; expected 27.2 (14.5 to 40.4); flagged</title></circle><circle cx="470.0" cy="122.87" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Aug 3: 21.0; expected 28.4 (14.1 to 43.9)</title></circle><circle cx="508.0" cy="92.93" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Aug 4: 28.0; expected 25.9 (13.7 to 38.9)</title></circle><circle cx="546.0" cy="144.26" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Aug 5: 16.0; expected 23.4 (12.3 to 34.9)</title></circle>
+      <circle cx="318.0" cy="187.03" r="8" fill="none" stroke="#1b150f" stroke-width="2"><title>Jul 30: 6.0; expected 22.3 (11.0 to 34.5); flagged; planted tracking outage</title></circle><circle cx="432.0" cy="152.82" r="8" fill="none" stroke="#1b150f" stroke-width="2"><title>Aug 2: 14.0; expected 27.2 (14.5 to 40.4); flagged</title></circle>
+      <text x="306.0" y="190.53" text-anchor="end" font-family="IBM Plex Sans, system-ui, sans-serif" font-size="11" fill="#1b150f" stroke="#f5f2eb" stroke-width="3" stroke-linejoin="round" aria-hidden="true">tracking outage, caught</text><text x="306.0" y="190.53" text-anchor="end" font-family="IBM Plex Sans, system-ui, sans-serif" font-size="11" fill="#1b150f">tracking outage, caught</text><text x="420.0" y="156.32" text-anchor="end" font-family="IBM Plex Sans, system-ui, sans-serif" font-size="11" fill="#1b150f" stroke="#f5f2eb" stroke-width="3" stroke-linejoin="round" aria-hidden="true">false alarm</text><text x="420.0" y="156.32" text-anchor="end" font-family="IBM Plex Sans, system-ui, sans-serif" font-size="11" fill="#1b150f">false alarm</text>
+    </svg>
+  </figure>
+  
+  <figure class="chart" aria-labelledby="band-2">
+    <h3 id="band-2">Brand Search · conversions</h3>
+    <svg class="plot" viewBox="0 0 560.0 230.0" role="img" aria-label="Brand Search, conversions: 14 days, 1 outside the expected range">
+      
+  <line x1="52.0" y1="200.0" x2="546.0" y2="200.0" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="203.5" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">0</text>
+  
+  <line x1="52.0" y1="143.21" x2="546.0" y2="143.21" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="146.71" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">2</text>
+  
+  <line x1="52.0" y1="86.42" x2="546.0" y2="86.42" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="89.92" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">4</text>
+  
+  <line x1="52.0" y1="29.63" x2="546.0" y2="29.63" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="33.129999999999995" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">6</text>
+  
+  <line x1="52.0" y1="200.0" x2="546.0" y2="200.0" stroke="#787069" stroke-width="1" />
+  
+  <text x="52.0" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">Jul 23</text>
+  
+  <text x="166.0" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">Jul 26</text>
+  
+  <text x="280.0" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">Jul 29</text>
+  
+  <text x="394.0" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">Aug 1</text>
+  
+  <text x="508.0" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">Aug 4</text>
+  
+  
+      <path d="M52.0,58.88 L90.0,58.02 L128.0,58.31 L166.0,58.59 L204.0,85.0 L242.0,84.71 L280.0,83.86 L318.0,73.07 L356.0,59.16 L394.0,59.73 L432.0,59.44 L470.0,85.0 L508.0,94.94 L546.0,79.04 L546.0,200.0 L508.0,200.0 L470.0,200.0 L432.0,200.0 L394.0,200.0 L356.0,200.0 L318.0,200.0 L280.0,200.0 L242.0,200.0 L204.0,200.0 L166.0,200.0 L128.0,200.0 L90.0,200.0 L52.0,200.0 Z" fill="#1f6fb0" fill-opacity=".14" />
+      <polyline points="52.0,171.04 90.0,171.04 128.0,171.89 166.0,172.17 204.0,173.88 242.0,173.31 280.0,173.02 318.0,172.74 356.0,171.89 394.0,171.89 432.0,172.17 470.0,173.31 508.0,175.3 546.0,176.72" fill="none" stroke="#1f6fb0" stroke-width="1.5" stroke-linejoin="round" />
+      <polyline points="52.0,114.81 90.0,143.21 128.0,143.21 166.0,114.81 204.0,171.6 242.0,171.6 280.0,200.0 318.0,200.0 356.0,200.0 394.0,29.63 432.0,171.6 470.0,171.6 508.0,200.0 546.0,171.6" fill="none" stroke="#a5432b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+      <path d="M394.0 191.0 L399.0 199.0 L389.0 199.0 Z" fill="#1b150f"><title>Aug 1: 6.0; expected 1.0 (-0.8 to 4.9); flagged; planted conversion surge</title></path>
+      <circle cx="52.0" cy="114.81" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 23: 3.0; expected 1.0 (-0.6 to 5.0)</title></circle><circle cx="90.0" cy="143.21" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 24: 2.0; expected 1.0 (-0.7 to 5.0)</title></circle><circle cx="128.0" cy="143.21" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 25: 2.0; expected 1.0 (-0.9 to 5.0)</title></circle><circle cx="166.0" cy="114.81" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 26: 3.0; expected 1.0 (-1.0 to 5.0)</title></circle><circle cx="204.0" cy="171.6" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 27: 1.0; expected 0.9 (-1.8 to 4.0)</title></circle><circle cx="242.0" cy="171.6" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 28: 1.0; expected 0.9 (-1.5 to 4.1)</title></circle><circle cx="280.0" cy="200.0" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 29: 0.0; expected 0.9 (-1.4 to 4.1)</title></circle><circle cx="318.0" cy="200.0" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 30: 0.0; expected 1.0 (-1.3 to 4.5)</title></circle><circle cx="356.0" cy="200.0" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 31: 0.0; expected 1.0 (-0.8 to 5.0)</title></circle><circle cx="394.0" cy="29.63" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Aug 1: 6.0; expected 1.0 (-0.8 to 4.9); flagged; planted conversion surge</title></circle><circle cx="432.0" cy="171.6" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Aug 2: 1.0; expected 1.0 (-1.0 to 5.0)</title></circle><circle cx="470.0" cy="171.6" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Aug 3: 1.0; expected 0.9 (-1.6 to 4.0)</title></circle><circle cx="508.0" cy="200.0" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Aug 4: 0.0; expected 0.9 (-1.2 to 3.7)</title></circle><circle cx="546.0" cy="171.6" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Aug 5: 1.0; expected 0.8 (-1.4 to 4.3)</title></circle>
+      <circle cx="394.0" cy="29.63" r="8" fill="none" stroke="#1b150f" stroke-width="2"><title>Aug 1: 6.0; expected 1.0 (-0.8 to 4.9); flagged; planted conversion surge</title></circle>
+      <text x="382.0" y="33.129999999999995" text-anchor="end" font-family="IBM Plex Sans, system-ui, sans-serif" font-size="11" fill="#1b150f" stroke="#f5f2eb" stroke-width="3" stroke-linejoin="round" aria-hidden="true">conversion surge, caught</text><text x="382.0" y="33.129999999999995" text-anchor="end" font-family="IBM Plex Sans, system-ui, sans-serif" font-size="11" fill="#1b150f">conversion surge, caught</text>
+    </svg>
+  </figure>
+  
+  <figure class="chart" aria-labelledby="band-3">
+    <h3 id="band-3">Retargeting · spend · USD</h3>
+    <svg class="plot" viewBox="0 0 560.0 230.0" role="img" aria-label="Retargeting, spend: 14 days, 1 outside the expected range">
+      
+  <line x1="52.0" y1="126.8" x2="546.0" y2="126.8" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="130.3" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">200</text>
+  
+  <line x1="52.0" y1="47.09" x2="546.0" y2="47.09" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="50.59" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">300</text>
+  
+  <line x1="52.0" y1="200.0" x2="546.0" y2="200.0" stroke="#787069" stroke-width="1" />
+  
+  <text x="52.0" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">Jul 26</text>
+  
+  <text x="166.0" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">Jul 29</text>
+  
+  <text x="280.0" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">Aug 1</text>
+  
+  <text x="394.0" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">Aug 4</text>
+  
+  <text x="508.0" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">Aug 7</text>
+  
+  
+      <path d="M52.0,24.97 L90.0,82.5 L128.0,81.93 L166.0,79.02 L204.0,79.36 L242.0,83.52 L280.0,82.13 L318.0,82.25 L356.0,122.52 L394.0,122.76 L432.0,122.08 L470.0,122.4 L508.0,109.64 L546.0,124.57 L546.0,179.69 L508.0,187.03 L470.0,178.98 L432.0,179.17 L394.0,178.62 L356.0,178.18 L318.0,133.37 L280.0,135.58 L242.0,136.2 L204.0,132.1 L166.0,132.75 L128.0,135.14 L90.0,133.76 L52.0,74.31 Z" fill="#1f6fb0" fill-opacity=".14" />
+      <polyline points="52.0,47.95 90.0,107.91 128.0,108.19 166.0,106.57 204.0,106.37 242.0,109.44 280.0,108.56 318.0,107.67 356.0,150.77 394.0,151.08 432.0,151.02 470.0,151.08 508.0,148.51 546.0,151.83" fill="none" stroke="#1f6fb0" stroke-width="1.5" stroke-linejoin="round" />
+      <polyline points="52.0,62.3 90.0,108.73 128.0,103.33 166.0,91.95 204.0,98.99 242.0,105.15 280.0,108.78 318.0,93.88 356.0,140.38 394.0,154.0 432.0,46.62 470.0,149.31 508.0,153.95 546.0,145.03" fill="none" stroke="#a5432b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+      <path d="M432.0 191.0 L437.0 199.0 L427.0 199.0 Z" fill="#1b150f"><title>Aug 5: 300.59 USD; expected 169.61 USD (134.29 USD to 205.92 USD); flagged; planted spend spike</title></path>
+      <circle cx="52.0" cy="62.3" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 26: 280.91 USD; expected 298.91 USD (265.85 USD to 327.75 USD)</title></circle><circle cx="90.0" cy="108.73" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 27: 222.66 USD; expected 223.69 USD (191.26 USD to 255.57 USD)</title></circle><circle cx="128.0" cy="103.33" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 28: 229.44 USD; expected 223.34 USD (189.53 USD to 256.29 USD)</title></circle><circle cx="166.0" cy="91.95" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 29: 243.72 USD; expected 225.38 USD (192.53 USD to 259.94 USD)</title></circle><circle cx="204.0" cy="98.99" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 30: 234.89 USD; expected 225.62 USD (193.35 USD to 259.51 USD)</title></circle><circle cx="242.0" cy="105.15" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Jul 31: 227.16 USD; expected 221.77 USD (188.20 USD to 254.29 USD)</title></circle><circle cx="280.0" cy="108.78" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Aug 1: 222.60 USD; expected 222.88 USD (188.98 USD to 256.03 USD)</title></circle><circle cx="318.0" cy="93.88" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Aug 2: 241.29 USD; expected 224.00 USD (191.75 USD to 255.89 USD)</title></circle><circle cx="356.0" cy="140.38" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Aug 3: 182.96 USD; expected 169.92 USD (135.54 USD to 205.36 USD)</title></circle><circle cx="394.0" cy="154.0" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Aug 4: 165.87 USD; expected 169.53 USD (134.99 USD to 205.07 USD)</title></circle><circle cx="432.0" cy="46.62" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Aug 5: 300.59 USD; expected 169.61 USD (134.29 USD to 205.92 USD); flagged; planted spend spike</title></circle><circle cx="470.0" cy="149.31" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Aug 6: 171.76 USD; expected 169.54 USD (134.54 USD to 205.51 USD)</title></circle><circle cx="508.0" cy="153.95" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Aug 7: 165.93 USD; expected 172.76 USD (124.43 USD to 221.52 USD)</title></circle><circle cx="546.0" cy="145.03" r="3.5" fill="#a5432b" stroke="#f5f2eb" stroke-width="1.5"><title>Aug 8: 177.13 USD; expected 168.60 USD (133.65 USD to 202.79 USD)</title></circle>
+      <circle cx="432.0" cy="46.62" r="8" fill="none" stroke="#1b150f" stroke-width="2"><title>Aug 5: 300.59 USD; expected 169.61 USD (134.29 USD to 205.92 USD); flagged; planted spend spike</title></circle>
+      <text x="420.0" y="50.12" text-anchor="end" font-family="IBM Plex Sans, system-ui, sans-serif" font-size="11" fill="#1b150f" stroke="#f5f2eb" stroke-width="3" stroke-linejoin="round" aria-hidden="true">spend spike, caught</text><text x="420.0" y="50.12" text-anchor="end" font-family="IBM Plex Sans, system-ui, sans-serif" font-size="11" fill="#1b150f">spend spike, caught</text>
+    </svg>
+  </figure>
+  
+  </div>
+  <p class="note">Spend checked Jul 26-Aug 8, 2026; Conversions checked Jul 23-Aug 5, 2026.
+  Conversions are checked on earlier days because recent ones are still arriving. 5 campaign charts with nothing flagged or planted are not shown. These are the model&#39;s answers recorded earlier for this same account and replayed; no call was made.</p>
+  <p class="note"><strong>Across three simulated accounts of about 450 campaign-days each:</strong> TabPFN's 95% range had precision 0.34 and 21 false alarms per account; the local model 0.24 and 33; the ±50% day-over-day rule 0.07 and 169.</p>
+  
+</section>
+
+
+
+
+<section aria-labelledby="budgets-title">
+  <div class="section-heading"><h2 id="budgets-title">What the budget moves bought</h2><p class="section-meta">TabPFN as the global model · recorded answers</p></div>
+  <p class="finding">Over 8 weeks the agent&#39;s weekly reallocations produced 39.6 conversions a day, against 37.3 with the budgets left alone: +6.1% at the same total budget. The best possible split would have produced 40.0, so the agent captured 86% of the gain there was to have.</p>
+  
+  
+  <p class="note">Each week the model predicts how many conversions each campaign would get at budgets it has not tried, and the agent moves budget to where the next unit of spend buys the most, at most 25% per campaign per week. All three lines are scored by the simulation's true curves, not by any fitted model.</p>
+  <dl class="metric-strip three">
+    
+    <div class="metric-tile">
+      <dt>Budgets left alone</dt>
+      <dd class="metric-value">37.3<span class="metric-unit"> conversions a day</span></dd>
+      <dd class="metric-change">the comparison</dd>
+    </div>
+    
+    <div class="metric-tile">
+      <dt>The agent, with TabPFN</dt>
+      <dd class="metric-value">39.6<span class="metric-unit"> conversions a day</span></dd>
+      <dd class="metric-change">+6.1% against budgets left alone</dd>
+    </div>
+    
+    <div class="metric-tile">
+      <dt>Best possible</dt>
+      <dd class="metric-value">40.0<span class="metric-unit"> conversions a day</span></dd>
+      <dd class="metric-change">+7.1%, knowing the true curves</dd>
+    </div>
+    
+  </dl>
+  <figure class="chart wide" aria-labelledby="trial-title">
+    <h3 id="trial-title">Conversions per week</h3>
+    <svg class="plot" viewBox="0 0 900.0 250.0" role="img" aria-label="Conversions per week: Budgets left alone 37.3 a day; The agent, with TabPFN 39.6 a day; Best possible 40.0 a day">
+      
+  <line x1="52.0" y1="190.88" x2="750.0" y2="190.88" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="194.38" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">260</text>
+  
+  <line x1="52.0" y1="133.39" x2="750.0" y2="133.39" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="136.89" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">270</text>
+  
+  <line x1="52.0" y1="75.9" x2="750.0" y2="75.9" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="79.4" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">280</text>
+  
+  <line x1="52.0" y1="18.41" x2="750.0" y2="18.41" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="21.91" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">290</text>
+  
+  <line x1="52.0" y1="220.0" x2="750.0" y2="220.0" stroke="#787069" stroke-width="1" />
+  
+  <text x="52.0" y="236.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">Jun 15</text>
+  
+  <text x="151.71" y="236.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">Jun 22</text>
+  
+  <text x="251.43" y="236.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">Jun 29</text>
+  
+  <text x="351.14" y="236.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">Jul 6</text>
+  
+  <text x="450.86" y="236.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">Jul 13</text>
+  
+  <text x="550.57" y="236.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">Jul 20</text>
+  
+  <text x="650.29" y="236.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">Jul 27</text>
+  
+  <text x="750.0" y="236.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">Aug 3</text>
+  
+  <text x="750.0" y="248.0" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">week starting</text>
+      
+      <polyline points="52.0,188.64 151.71,196.0 251.43,183.01 351.14,190.6 450.86,178.35 550.57,193.87 650.29,180.19 750.0,156.68" fill="none" stroke="#787069" stroke-width="2" stroke-linejoin="round" />
+      <circle cx="750.0" cy="156.68" r="4" fill="#787069" stroke="#f5f2eb" stroke-width="2"><title>Budgets left alone: 37.3 a day</title></circle>
+      
+      <polyline points="52.0,164.26 151.71,139.08 251.43,90.27 351.14,66.64 450.86,44.05 550.57,81.76 650.29,82.51 750.0,65.61" fill="none" stroke="#a5432b" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" />
+      
+      <circle cx="750.0" cy="65.61" r="4" fill="#a5432b" stroke="#f5f2eb" stroke-width="2"><title>The agent, with TabPFN: 39.6 a day</title></circle>
+      
+      <polyline points="52.0,164.26 151.71,130.23 251.43,82.91 351.14,51.7 450.86,36.0 550.57,63.94 650.29,46.35 750.0,40.89" fill="none" stroke="#1b150f" stroke-width="1.5" stroke-dasharray="4 3" />
+      
+      <circle cx="750.0" cy="40.89" r="4" fill="#1b150f" stroke="#f5f2eb" stroke-width="2"><title>Best possible: 40.0 a day</title></circle>
+      
+      <text x="760.0" y="44.39" text-anchor="start" font-family="IBM Plex Sans, system-ui, sans-serif" font-size="11" fill="#1b150f">Best possible</text><text x="760.0" y="69.11" text-anchor="start" font-family="IBM Plex Sans, system-ui, sans-serif" font-size="11" fill="#1b150f">The agent, with TabPFN</text><text x="760.0" y="160.18" text-anchor="start" font-family="IBM Plex Sans, system-ui, sans-serif" font-size="11" fill="#1b150f">Budgets left alone</text>
+    </svg>
+    <p class="keys">
+      <span class="key"><svg width="22" height="10" aria-hidden="true"><line x1="0" y1="5" x2="22" y2="5" stroke="#787069" stroke-width="2" /></svg>Budgets left alone</span>
+      <span class="key"><svg width="22" height="10" aria-hidden="true"><line x1="0" y1="5" x2="22" y2="5" stroke="#a5432b" stroke-width="2.5" /></svg>The agent's weekly moves</span>
+      <span class="key"><svg width="22" height="10" aria-hidden="true"><line x1="0" y1="5" x2="22" y2="5" stroke="#1b150f" stroke-width="1.5" stroke-dasharray="4 3" /></svg>Best possible</span>
+    </p>
+  </figure>
+  <figure class="chart wide" aria-labelledby="moves-title">
+    <h3 id="moves-title">Daily budget by campaign · USD</h3>
+    
+    <div class="move-row">
+      <p class="chart-label">Brand Search<span class="chart-account">limited by budget</span></p>
+      <div class="move-cell" aria-hidden="true">
+        <span class="move-line"></span>
+        <span class="move-span" style="left: 2.65%; width: 23.82%"></span>
+        <span class="mark-start" style="left: 26.47%"></span>
+        <span class="mark-next" style="left: 1.99%"></span>
+        <span class="mark-now" style="left: 2.65%"></span>
+      </div>
+      <p class="move-values"><span class="chart-value">424 → 42 · -90%</span><span class="chart-value previous">next week 32</span></p>
+    </div>
+    
+    <div class="move-row">
+      <p class="chart-label">Non-Brand Search<span class="chart-account">limited by budget</span></p>
+      <div class="move-cell" aria-hidden="true">
+        <span class="move-line"></span>
+        <span class="move-span" style="left: 30.46%; width: 6.390000000000001%"></span>
+        <span class="mark-start" style="left: 36.85%"></span>
+        <span class="mark-next" style="left: 28.47%"></span>
+        <span class="mark-now" style="left: 30.46%"></span>
+      </div>
+      <p class="move-values"><span class="chart-value">590 → 488 · -17%</span><span class="chart-value previous">next week 456</span></p>
+    </div>
+    
+    <div class="move-row">
+      <p class="chart-label">Shopping<span class="chart-account">limited by budget</span></p>
+      <div class="move-cell" aria-hidden="true">
+        <span class="move-line"></span>
+        <span class="move-span" style="left: 43.0%; width: 57.0%"></span>
+        <span class="mark-start" style="left: 43.0%"></span>
+        <span class="mark-next" style="left: 99.8%"></span>
+        <span class="mark-now" style="left: 100.0%"></span>
+      </div>
+      <p class="move-values"><span class="chart-value">688 → 1,601 · +133%</span><span class="chart-value previous">next week 1,598</span></p>
+    </div>
+    
+    <div class="move-row">
+      <p class="chart-label">Retargeting<span class="chart-account">limited by budget</span></p>
+      <div class="move-cell" aria-hidden="true">
+        <span class="move-line"></span>
+        <span class="move-span" style="left: 11.43%; width: 26.79%"></span>
+        <span class="mark-start" style="left: 38.22%"></span>
+        <span class="mark-next" style="left: 14.29%"></span>
+        <span class="mark-now" style="left: 11.43%"></span>
+      </div>
+      <p class="move-values"><span class="chart-value">612 → 183 · -70%</span><span class="chart-value previous">next week 229</span></p>
+    </div>
+    
+    <p class="keys">
+      <span class="key"><span class="mark-start static"></span>Before the agent</span>
+      <span class="key"><span class="mark-now static"></span>Now, after 8 weekly moves</span>
+      <span class="key"><span class="mark-next static"></span>Recommended next</span>
+    </p>
+  </figure>
+  
+  
+  
+  <details class="how-details"><summary id="how-budgets">How TabPFN is applied: one real campaign, step by step</summary><div class="details-body">
+  <figure class="how" aria-labelledby="how-budgets">
+    <div class="how-steps">
+      <div class="how-step">
+        <p class="how-n"><span>1</span>What goes in</p>
+        <p class="how-lead">A table with one row per campaign per day, from all 4 campaigns together: 348 rows with the conversions known. Each row carries the campaign's cost per conversion, the weekday, and the spend.</p>
+        <p class="how-n"><span>2</span>What it is asked, and answers</p>
+        <p class="how-lead">What would each campaign get at 64 spend levels, averaged over weekdays? For Shopping, two of its days and two of the questions:</p>
+        <div class="table-wrap" tabindex="0" role="region" aria-label="Rows given to the model, and two of its answers">
+  <table class="how-table">
+    <thead><tr><th scope="col">Campaign</th><th scope="col">Day</th><th scope="col" class="num">Spend</th><th scope="col" class="num answer">Conversions</th></tr></thead>
+    <tbody>
+    
+    <tr>
+      <td>Shopping</td><td>Sun, Aug 2</td><td class="num">1,341</td>
+      <td class="num answer">14</td>
+    </tr>
+    
+    <tr>
+      <td>Shopping</td><td>Mon, Aug 3</td><td class="num">1,475</td>
+      <td class="num answer">21</td>
+    </tr>
+    
+    <tr class="asked">
+      <td>Shopping</td><td>any weekday</td><td class="num">1,006</td>
+      <td class="num answer"><span class="ask">?</span> → 19.5 predicted</td>
+    </tr>
+    
+    <tr class="asked">
+      <td>Shopping</td><td>any weekday</td><td class="num">1,677</td>
+      <td class="num answer"><span class="ask">?</span> → 29.9 predicted</td>
+    </tr>
+    
+    </tbody>
+  </table>
+  </div>
+        <p class="note">The answers join the campaign's own days when its spend curve is fitted, so the curve is not drawn from that campaign's few days alone.</p>
+      </div>
+      <div class="how-step">
+        <p class="how-n"><span>3</span>What the predictions decide</p>
+        <p class="how-lead">Budget goes to where the next 100 a day buys the most. Before the agent that was Shopping: 1.81 more conversions a day by the fitted curve, 1.78 by the true one.</p>
+        
+        
+        <div class="table-wrap" tabindex="0" role="region" aria-label="What a little more spend would buy in each campaign">
+        <table class="how-table">
+          <thead><tr><th scope="col">Next 100 a day buys</th><th scope="col" class="num">Before the agent (true)</th><th scope="col" class="num">Now (true)</th><th scope="col">So far</th><th scope="col">Next</th></tr></thead>
+          <tbody>
+          
+          <tr>
+            <td>Brand Search</td>
+            <td class="num">0.81 (1.09)</td>
+            <td class="num">1.19 (1.43)</td>
+            <td class="move">↓ cut</td>
+            <td class="move">↓ cut</td>
+          </tr>
+          
+          <tr>
+            <td>Non-Brand Search</td>
+            <td class="num">1.50 (1.07)</td>
+            <td class="num">1.55 (1.15)</td>
+            <td class="move">↓ cut</td>
+            <td class="move">↓ cut</td>
+          </tr>
+          
+          <tr>
+            <td>Shopping</td>
+            <td class="num">1.81 (1.78)</td>
+            <td class="num">1.57 (1.53)</td>
+            <td class="move">↑ raised</td>
+            <td class="move">keep</td>
+          </tr>
+          
+          <tr>
+            <td>Retargeting</td>
+            <td class="num">1.42 (1.27)</td>
+            <td class="num">1.75 (1.63)</td>
+            <td class="move">↓ cut</td>
+            <td class="move">↑ raise</td>
+          </tr>
+          
+          </tbody>
+        </table>
+        </div>
+        <p class="note">Extra conversions a day, by the curves fitted today, with the simulation's true figure in brackets. A split is balanced when the next unit buys about the same everywhere. The gap between the best and the worst campaign went from 1.00 to 0.56 (by the true curves, from 0.71 to 0.48).</p>
+      </div>
+    </div>
+    <div class="how-why">
+      <p class="how-n">Why predict at all</p>
+      <ul>
+        <li><strong>A campaign's own days do not reach far enough.</strong> Shopping had never spent more than 1,122 a day before the agent; its budget is now 1,601. Its own history could not say what that would buy. The model sees every campaign's days at once, so each borrows the response seen in the others.</li>
+        <li><strong>Nothing to train or tune.</strong> TabPFN is a model pretrained on synthetic tables. Every campaign&#39;s days and the questions go to it in one request and the predictions come back; it assumes no curve shape and nothing is trained for this account.</li>
+      </ul>
+    </div>
+  </figure>
+  </div></details>
+  
+  <details class="drivers"><summary>Each campaign's spend response curve</summary><div class="details-body">
+  <p class="note">Conversions a day against daily spend. Each curve is fitted to the campaign's own days and to points the global model predicts from every campaign's history, at spends the campaign has not tried. These are the model&#39;s answers recorded earlier for this same account and replayed; no call was made.</p>
+  <p class="keys">
+    <span class="key"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="3" fill="#787069" fill-opacity=".55" /></svg>A day of history</span>
+    <span class="key"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="3" fill="#1f6fb0" /></svg>Predicted by the global model</span>
+    <span class="key"><svg width="22" height="10" aria-hidden="true"><line x1="0" y1="5" x2="22" y2="5" stroke="#a5432b" stroke-width="2" /></svg>Fitted curve</span>
+    <span class="key"><svg width="22" height="10" aria-hidden="true"><line x1="0" y1="5" x2="22" y2="5" stroke="#787069" stroke-width="1.5" /></svg>Fitted with the pooled regression</span>
+    <span class="key"><svg width="22" height="10" aria-hidden="true"><line x1="0" y1="5" x2="22" y2="5" stroke="#1b150f" stroke-width="1.5" stroke-dasharray="4 3" /></svg>True curve (simulation)</span>
+  </p>
+  <div class="chart-grid">
+  
+  <figure class="chart" aria-labelledby="curve-1">
+    <h3 id="curve-1">Brand Search</h3>
+    <svg class="plot" viewBox="0 0 560.0 230.0" role="img" aria-label="Brand Search: conversions against daily spend, with the current and recommended budgets">
+      
+  <line x1="52.0" y1="200.0" x2="546.0" y2="200.0" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="203.5" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">0</text>
+  
+  <line x1="52.0" y1="150.26" x2="546.0" y2="150.26" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="153.76" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">2</text>
+  
+  <line x1="52.0" y1="100.53" x2="546.0" y2="100.53" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="104.03" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">4</text>
+  
+  <line x1="52.0" y1="50.79" x2="546.0" y2="50.79" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="54.29" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">6</text>
+  
+  <line x1="52.0" y1="200.0" x2="546.0" y2="200.0" stroke="#787069" stroke-width="1" />
+  
+  <text x="231.13" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">200</text>
+  
+  <text x="414.04" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">400</text>
+  
+  <text x="546.0" y="228.0" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">daily spend · USD</text>
+      <circle cx="431.8" cy="100.53" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 419 USD a day, 4.0 conversions</title></circle><circle cx="409.17" cy="200.0" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 395 USD a day, 0.0 conversions</title></circle><circle cx="417.42" cy="100.53" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 404 USD a day, 4.0 conversions</title></circle><circle cx="388.42" cy="100.53" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 372 USD a day, 4.0 conversions</title></circle><circle cx="395.43" cy="25.93" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 380 USD a day, 7.0 conversions</title></circle><circle cx="394.07" cy="75.66" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 378 USD a day, 5.0 conversions</title></circle><circle cx="400.56" cy="100.53" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 385 USD a day, 4.0 conversions</title></circle><circle cx="338.89" cy="150.26" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 318 USD a day, 2.0 conversions</title></circle><circle cx="317.84" cy="100.53" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 295 USD a day, 4.0 conversions</title></circle><circle cx="304.62" cy="50.79" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 280 USD a day, 6.0 conversions</title></circle><circle cx="320.68" cy="125.4" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 298 USD a day, 3.0 conversions</title></circle><circle cx="329.81" cy="75.66" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 308 USD a day, 5.0 conversions</title></circle><circle cx="329.81" cy="75.66" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 308 USD a day, 5.0 conversions</title></circle><circle cx="310.54" cy="125.4" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 287 USD a day, 3.0 conversions</title></circle><circle cx="255.96" cy="125.4" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 227 USD a day, 3.0 conversions</title></circle><circle cx="257.91" cy="125.4" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 229 USD a day, 3.0 conversions</title></circle><circle cx="236.91" cy="150.26" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 206 USD a day, 2.0 conversions</title></circle><circle cx="248.91" cy="150.26" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 219 USD a day, 2.0 conversions</title></circle><circle cx="252.02" cy="75.66" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 223 USD a day, 5.0 conversions</title></circle><circle cx="240.66" cy="125.4" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 210 USD a day, 3.0 conversions</title></circle><circle cx="264.73" cy="150.26" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 237 USD a day, 2.0 conversions</title></circle><circle cx="194.28" cy="100.53" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 160 USD a day, 4.0 conversions</title></circle><circle cx="198.23" cy="150.26" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 164 USD a day, 2.0 conversions</title></circle><circle cx="209.04" cy="150.26" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 176 USD a day, 2.0 conversions</title></circle><circle cx="211.72" cy="175.13" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 179 USD a day, 1.0 conversions</title></circle><circle cx="208.21" cy="175.13" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 175 USD a day, 1.0 conversions</title></circle><circle cx="194.92" cy="150.26" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 160 USD a day, 2.0 conversions</title></circle><circle cx="211.72" cy="150.26" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 179 USD a day, 2.0 conversions</title></circle><circle cx="166.96" cy="150.26" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 130 USD a day, 2.0 conversions</title></circle><circle cx="156.44" cy="125.4" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 118 USD a day, 3.0 conversions</title></circle><circle cx="164.27" cy="150.26" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 127 USD a day, 2.0 conversions</title></circle><circle cx="164.83" cy="200.0" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 128 USD a day, 0.0 conversions</title></circle><circle cx="156.14" cy="125.4" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 118 USD a day, 3.0 conversions</title></circle><circle cx="154.65" cy="200.0" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 116 USD a day, 0.0 conversions</title></circle><circle cx="152.86" cy="175.13" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 114 USD a day, 1.0 conversions</title></circle><circle cx="131.56" cy="175.13" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 91 USD a day, 1.0 conversions</title></circle><circle cx="139.37" cy="150.26" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 100 USD a day, 2.0 conversions</title></circle><circle cx="128.53" cy="150.26" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 88 USD a day, 2.0 conversions</title></circle><circle cx="132.11" cy="200.0" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 92 USD a day, 0.0 conversions</title></circle><circle cx="137.88" cy="200.0" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 98 USD a day, 0.0 conversions</title></circle><circle cx="134.91" cy="100.53" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 95 USD a day, 4.0 conversions</title></circle><circle cx="132.59" cy="175.13" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 92 USD a day, 1.0 conversions</title></circle><circle cx="113.54" cy="175.13" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 71 USD a day, 1.0 conversions</title></circle><circle cx="112.25" cy="150.26" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 70 USD a day, 2.0 conversions</title></circle><circle cx="113.48" cy="175.13" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 71 USD a day, 1.0 conversions</title></circle><circle cx="117.2" cy="125.4" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 75 USD a day, 3.0 conversions</title></circle><circle cx="110.76" cy="150.26" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 68 USD a day, 2.0 conversions</title></circle><circle cx="111.04" cy="150.26" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 69 USD a day, 2.0 conversions</title></circle><circle cx="115.71" cy="125.4" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 74 USD a day, 3.0 conversions</title></circle><circle cx="92.59" cy="175.13" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 49 USD a day, 1.0 conversions</title></circle><circle cx="98.13" cy="175.13" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 55 USD a day, 1.0 conversions</title></circle><circle cx="98.53" cy="200.0" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 55 USD a day, 0.0 conversions</title></circle><circle cx="94.52" cy="200.0" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 51 USD a day, 0.0 conversions</title></circle><circle cx="98.31" cy="200.0" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 55 USD a day, 0.0 conversions</title></circle><circle cx="95.13" cy="50.79" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 51 USD a day, 6.0 conversions</title></circle><circle cx="97.9" cy="175.13" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 54 USD a day, 1.0 conversions</title></circle><circle cx="85.68" cy="175.13" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 41 USD a day, 1.0 conversions</title></circle><circle cx="85.27" cy="200.0" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 41 USD a day, 0.0 conversions</title></circle><circle cx="85.62" cy="171.15" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 41 USD a day, 1.2 conversions</title></circle><circle cx="85.01" cy="200.0" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 40 USD a day, 0.0 conversions</title></circle>
+      <circle cx="85.66" cy="180.88" r="2.5" fill="#1f6fb0"><title>Global model: 41 USD a day, 0.8 conversions</title></circle><circle cx="87.5" cy="180.48" r="2.5" fill="#1f6fb0"><title>Global model: 43 USD a day, 0.8 conversions</title></circle><circle cx="89.33" cy="180.03" r="2.5" fill="#1f6fb0"><title>Global model: 45 USD a day, 0.8 conversions</title></circle><circle cx="91.17" cy="179.56" r="2.5" fill="#1f6fb0"><title>Global model: 47 USD a day, 0.8 conversions</title></circle><circle cx="93.0" cy="178.89" r="2.5" fill="#1f6fb0"><title>Global model: 49 USD a day, 0.8 conversions</title></circle><circle cx="94.83" cy="178.41" r="2.5" fill="#1f6fb0"><title>Global model: 51 USD a day, 0.9 conversions</title></circle><circle cx="96.66" cy="177.74" r="2.5" fill="#1f6fb0"><title>Global model: 53 USD a day, 0.9 conversions</title></circle><circle cx="98.5" cy="176.57" r="2.5" fill="#1f6fb0"><title>Global model: 55 USD a day, 0.9 conversions</title></circle><circle cx="100.33" cy="176.08" r="2.5" fill="#1f6fb0"><title>Global model: 57 USD a day, 1.0 conversions</title></circle><circle cx="102.17" cy="175.65" r="2.5" fill="#1f6fb0"><title>Global model: 59 USD a day, 1.0 conversions</title></circle><circle cx="104.0" cy="174.88" r="2.5" fill="#1f6fb0"><title>Global model: 61 USD a day, 1.0 conversions</title></circle><circle cx="105.84" cy="174.41" r="2.5" fill="#1f6fb0"><title>Global model: 63 USD a day, 1.0 conversions</title></circle><circle cx="107.66" cy="173.67" r="2.5" fill="#1f6fb0"><title>Global model: 65 USD a day, 1.1 conversions</title></circle><circle cx="109.5" cy="173.17" r="2.5" fill="#1f6fb0"><title>Global model: 67 USD a day, 1.1 conversions</title></circle><circle cx="111.33" cy="172.1" r="2.5" fill="#1f6fb0"><title>Global model: 69 USD a day, 1.1 conversions</title></circle><circle cx="113.16" cy="171.13" r="2.5" fill="#1f6fb0"><title>Global model: 71 USD a day, 1.2 conversions</title></circle><circle cx="115.0" cy="170.78" r="2.5" fill="#1f6fb0"><title>Global model: 73 USD a day, 1.2 conversions</title></circle><circle cx="116.83" cy="170.21" r="2.5" fill="#1f6fb0"><title>Global model: 75 USD a day, 1.2 conversions</title></circle><circle cx="118.67" cy="169.93" r="2.5" fill="#1f6fb0"><title>Global model: 77 USD a day, 1.2 conversions</title></circle><circle cx="120.5" cy="169.41" r="2.5" fill="#1f6fb0"><title>Global model: 79 USD a day, 1.2 conversions</title></circle><circle cx="122.33" cy="169.31" r="2.5" fill="#1f6fb0"><title>Global model: 81 USD a day, 1.2 conversions</title></circle><circle cx="124.16" cy="168.77" r="2.5" fill="#1f6fb0"><title>Global model: 83 USD a day, 1.3 conversions</title></circle><circle cx="126.0" cy="168.44" r="2.5" fill="#1f6fb0"><title>Global model: 85 USD a day, 1.3 conversions</title></circle><circle cx="127.83" cy="168.24" r="2.5" fill="#1f6fb0"><title>Global model: 87 USD a day, 1.3 conversions</title></circle><circle cx="129.67" cy="167.7" r="2.5" fill="#1f6fb0"><title>Global model: 89 USD a day, 1.3 conversions</title></circle><circle cx="131.5" cy="167.08" r="2.5" fill="#1f6fb0"><title>Global model: 91 USD a day, 1.3 conversions</title></circle><circle cx="133.34" cy="166.78" r="2.5" fill="#1f6fb0"><title>Global model: 93 USD a day, 1.3 conversions</title></circle><circle cx="135.16" cy="166.43" r="2.5" fill="#1f6fb0"><title>Global model: 95 USD a day, 1.4 conversions</title></circle><circle cx="137.0" cy="165.78" r="2.5" fill="#1f6fb0"><title>Global model: 97 USD a day, 1.4 conversions</title></circle><circle cx="138.83" cy="165.36" r="2.5" fill="#1f6fb0"><title>Global model: 99 USD a day, 1.4 conversions</title></circle><circle cx="140.67" cy="165.01" r="2.5" fill="#1f6fb0"><title>Global model: 101 USD a day, 1.4 conversions</title></circle><circle cx="142.5" cy="164.44" r="2.5" fill="#1f6fb0"><title>Global model: 103 USD a day, 1.4 conversions</title></circle>
+      <polyline points="70.3,189.61 82.02,184.86 93.75,180.33 105.48,175.93 117.21,171.63 128.94,167.42 140.66,163.3 152.39,159.24 164.12,155.21 175.85,151.26 187.58,147.33 199.31,143.45 211.03,139.6 222.76,135.79 234.49,132.01 246.22,128.26 257.95,124.53 269.68,120.82 281.41,117.14 293.13,113.49 304.86,109.85 316.59,106.25 328.32,102.64 340.05,99.06 351.77,95.51 363.51,91.95 375.23,88.42 386.97,84.91 398.69,81.41 410.41,77.92 422.15,74.47 433.87,71.01 445.61,67.55 457.33,64.12 469.06,60.69 480.79,57.28 492.51,53.88 504.25,50.5 515.97,47.11 527.7,43.76" fill="none" stroke="#1b150f" stroke-width="1.5" stroke-dasharray="4 3" />
+      <polyline points="70.3,181.25 82.02,177.37 93.75,173.59 105.48,169.91 117.21,166.33 128.94,162.8 140.66,159.34 152.39,155.93 164.12,152.6 175.85,149.32 187.58,146.09 199.31,142.88 211.03,139.72 222.76,136.61 234.49,133.55 246.22,130.49 257.95,127.49 269.68,124.53 281.41,121.57 293.13,118.66 304.86,115.77 316.59,112.91 328.32,110.08 340.05,107.24 351.77,104.46 363.51,101.7 375.23,98.94 386.97,96.2 398.69,93.49 410.41,90.81 422.15,88.14 433.87,85.48 445.61,82.85 457.33,80.24 469.06,77.63 480.79,75.04 492.51,72.48 504.25,69.92 515.97,67.36 527.7,64.84" fill="none" stroke="#787069" stroke-width="1.5" stroke-linejoin="round" />
+      <polyline points="70.3,179.63 82.02,175.73 93.75,171.95 105.48,168.27 117.21,164.69 128.94,161.18 140.66,157.75 152.39,154.37 164.12,151.06 175.85,147.83 187.58,144.62 199.31,141.46 211.03,138.35 222.76,135.29 234.49,132.29 246.22,129.3 257.95,126.34 269.68,123.43 281.41,120.55 293.13,117.69 304.86,114.85 316.59,112.07 328.32,109.28 340.05,106.55 351.77,103.81 363.51,101.13 375.23,98.44 386.97,95.8 398.69,93.17 410.41,90.56 422.15,87.95 433.87,85.38 445.61,82.82 457.33,80.29 469.06,77.78 480.79,75.26 492.51,72.78 504.25,70.29 515.97,67.83 527.7,65.39" fill="none" stroke="#a5432b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+      <circle cx="85.38" cy="174.65" r="5" fill="#f5f2eb" stroke="#1b150f" stroke-width="2"><title>Current budget 42 USD: about 41 USD spent, 1.0 conversions a day</title></circle>
+      <circle cx="76.09" cy="177.7" r="5" fill="#1b150f" stroke="#f5f2eb" stroke-width="2"><title>Recommended budget 32 USD: about 30 USD spent, 0.9 conversions a day</title></circle>
+    </svg>
+    <figcaption class="chart-caption"><span class="key"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="4" fill="#f5f2eb" stroke="#1b150f" stroke-width="2" /></svg>Now 42</span> <span class="key"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="5" fill="#1b150f" /></svg>Recommended 32</span></figcaption>
+  </figure>
+  
+  <figure class="chart" aria-labelledby="curve-2">
+    <h3 id="curve-2">Non-Brand Search</h3>
+    <svg class="plot" viewBox="0 0 560.0 230.0" role="img" aria-label="Non-Brand Search: conversions against daily spend, with the current and recommended budgets">
+      
+  <line x1="52.0" y1="200.0" x2="546.0" y2="200.0" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="203.5" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">0</text>
+  
+  <line x1="52.0" y1="145.35" x2="546.0" y2="145.35" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="148.85" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">5</text>
+  
+  <line x1="52.0" y1="90.7" x2="546.0" y2="90.7" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="94.2" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">10</text>
+  
+  <line x1="52.0" y1="36.05" x2="546.0" y2="36.05" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="39.55" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">15</text>
+  
+  <line x1="52.0" y1="200.0" x2="546.0" y2="200.0" stroke="#787069" stroke-width="1" />
+  
+  <text x="76.44" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">200</text>
+  
+  <text x="232.1" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">400</text>
+  
+  <text x="387.75" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">600</text>
+  
+  <text x="543.4" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">800</text>
+  
+  <text x="546.0" y="228.0" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">daily spend · USD</text>
+      <circle cx="296.61" cy="79.77" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 483 USD a day, 11.0 conversions</title></circle><circle cx="297.58" cy="134.42" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 484 USD a day, 6.0 conversions</title></circle><circle cx="379.97" cy="156.28" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 590 USD a day, 4.0 conversions</title></circle><circle cx="340.05" cy="145.35" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 539 USD a day, 5.0 conversions</title></circle><circle cx="323.86" cy="68.84" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 518 USD a day, 12.0 conversions</title></circle><circle cx="355.88" cy="57.91" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 559 USD a day, 13.0 conversions</title></circle><circle cx="365.99" cy="79.77" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 572 USD a day, 11.0 conversions</title></circle><circle cx="358.45" cy="145.35" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 562 USD a day, 5.0 conversions</title></circle><circle cx="338.87" cy="79.77" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 537 USD a day, 11.0 conversions</title></circle><circle cx="344.79" cy="90.7" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 545 USD a day, 10.0 conversions</title></circle><circle cx="332.69" cy="68.84" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 529 USD a day, 12.0 conversions</title></circle><circle cx="329.88" cy="57.91" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 526 USD a day, 13.0 conversions</title></circle><circle cx="335.3" cy="79.77" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 533 USD a day, 11.0 conversions</title></circle><circle cx="353.26" cy="79.77" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 556 USD a day, 11.0 conversions</title></circle><circle cx="365.11" cy="112.56" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 571 USD a day, 8.0 conversions</title></circle><circle cx="406.32" cy="25.12" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 624 USD a day, 16.0 conversions</title></circle><circle cx="388.17" cy="189.07" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 601 USD a day, 1.0 conversions</title></circle><circle cx="406.32" cy="36.05" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 624 USD a day, 15.0 conversions</title></circle><circle cx="369.8" cy="101.63" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 577 USD a day, 9.0 conversions</title></circle><circle cx="366.91" cy="101.63" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 573 USD a day, 9.0 conversions</title></circle><circle cx="373.71" cy="25.12" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 582 USD a day, 16.0 conversions</title></circle><circle cx="284.19" cy="112.56" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 467 USD a day, 8.0 conversions</title></circle><circle cx="256.03" cy="156.28" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 431 USD a day, 4.0 conversions</title></circle><circle cx="279.62" cy="79.77" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 461 USD a day, 11.0 conversions</title></circle><circle cx="293.38" cy="36.05" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 479 USD a day, 15.0 conversions</title></circle><circle cx="277.84" cy="90.7" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 459 USD a day, 10.0 conversions</title></circle><circle cx="266.63" cy="101.63" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 444 USD a day, 9.0 conversions</title></circle><circle cx="263.47" cy="178.14" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 440 USD a day, 2.0 conversions</title></circle><circle cx="228.16" cy="123.49" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 395 USD a day, 7.0 conversions</title></circle><circle cx="234.1" cy="134.42" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 403 USD a day, 6.0 conversions</title></circle><circle cx="250.16" cy="167.21" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 423 USD a day, 3.0 conversions</title></circle><circle cx="234.49" cy="90.7" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 403 USD a day, 10.0 conversions</title></circle><circle cx="268.32" cy="36.05" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 447 USD a day, 15.0 conversions</title></circle><circle cx="268.54" cy="112.56" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 447 USD a day, 8.0 conversions</title></circle><circle cx="240.46" cy="112.56" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 411 USD a day, 8.0 conversions</title></circle><circle cx="195.05" cy="178.14" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 352 USD a day, 2.0 conversions</title></circle><circle cx="204.77" cy="57.91" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 365 USD a day, 13.0 conversions</title></circle><circle cx="196.69" cy="167.21" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 354 USD a day, 3.0 conversions</title></circle><circle cx="177.03" cy="134.42" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 329 USD a day, 6.0 conversions</title></circle><circle cx="185.95" cy="145.35" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 341 USD a day, 5.0 conversions</title></circle><circle cx="169.97" cy="145.35" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 320 USD a day, 5.0 conversions</title></circle><circle cx="192.46" cy="101.63" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 349 USD a day, 9.0 conversions</title></circle><circle cx="250.64" cy="156.28" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 424 USD a day, 4.0 conversions</title></circle><circle cx="274.46" cy="134.42" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 454 USD a day, 6.0 conversions</title></circle><circle cx="242.84" cy="112.56" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 414 USD a day, 8.0 conversions</title></circle><circle cx="261.49" cy="112.56" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 438 USD a day, 8.0 conversions</title></circle><circle cx="244.7" cy="36.05" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 416 USD a day, 15.0 conversions</title></circle><circle cx="275.72" cy="112.56" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 456 USD a day, 8.0 conversions</title></circle><circle cx="239.37" cy="123.49" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 409 USD a day, 7.0 conversions</title></circle><circle cx="323.4" cy="79.77" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 517 USD a day, 11.0 conversions</title></circle><circle cx="346.68" cy="156.28" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 547 USD a day, 4.0 conversions</title></circle><circle cx="339.24" cy="112.56" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 538 USD a day, 8.0 conversions</title></circle><circle cx="340.62" cy="101.63" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 539 USD a day, 9.0 conversions</title></circle><circle cx="341.7" cy="25.12" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 541 USD a day, 16.0 conversions</title></circle><circle cx="327.71" cy="57.91" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 523 USD a day, 13.0 conversions</title></circle><circle cx="346.78" cy="57.91" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 547 USD a day, 13.0 conversions</title></circle><circle cx="251.3" cy="167.21" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 425 USD a day, 3.0 conversions</title></circle><circle cx="288.23" cy="103.81" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 472 USD a day, 8.8 conversions</title></circle><circle cx="273.65" cy="123.6" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 453 USD a day, 7.0 conversions</title></circle><circle cx="248.58" cy="117.37" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 421 USD a day, 7.6 conversions</title></circle>
+      <circle cx="172.5" cy="137.37" r="2.5" fill="#1f6fb0"><title>Global model: 323 USD a day, 5.7 conversions</title></circle><circle cx="177.84" cy="135.74" r="2.5" fill="#1f6fb0"><title>Global model: 330 USD a day, 5.9 conversions</title></circle><circle cx="183.19" cy="134.31" r="2.5" fill="#1f6fb0"><title>Global model: 337 USD a day, 6.0 conversions</title></circle><circle cx="188.54" cy="132.95" r="2.5" fill="#1f6fb0"><title>Global model: 344 USD a day, 6.1 conversions</title></circle><circle cx="193.88" cy="131.15" r="2.5" fill="#1f6fb0"><title>Global model: 351 USD a day, 6.3 conversions</title></circle><circle cx="199.23" cy="130.17" r="2.5" fill="#1f6fb0"><title>Global model: 358 USD a day, 6.4 conversions</title></circle><circle cx="204.58" cy="129.3" r="2.5" fill="#1f6fb0"><title>Global model: 365 USD a day, 6.5 conversions</title></circle><circle cx="209.92" cy="128.47" r="2.5" fill="#1f6fb0"><title>Global model: 372 USD a day, 6.5 conversions</title></circle><circle cx="215.27" cy="126.48" r="2.5" fill="#1f6fb0"><title>Global model: 378 USD a day, 6.7 conversions</title></circle><circle cx="220.63" cy="125.47" r="2.5" fill="#1f6fb0"><title>Global model: 385 USD a day, 6.8 conversions</title></circle><circle cx="225.97" cy="124.72" r="2.5" fill="#1f6fb0"><title>Global model: 392 USD a day, 6.9 conversions</title></circle><circle cx="231.32" cy="123.46" r="2.5" fill="#1f6fb0"><title>Global model: 399 USD a day, 7.0 conversions</title></circle><circle cx="236.67" cy="122.69" r="2.5" fill="#1f6fb0"><title>Global model: 406 USD a day, 7.1 conversions</title></circle><circle cx="242.01" cy="121.53" r="2.5" fill="#1f6fb0"><title>Global model: 413 USD a day, 7.2 conversions</title></circle><circle cx="247.36" cy="119.78" r="2.5" fill="#1f6fb0"><title>Global model: 420 USD a day, 7.3 conversions</title></circle><circle cx="252.71" cy="117.91" r="2.5" fill="#1f6fb0"><title>Global model: 426 USD a day, 7.5 conversions</title></circle><circle cx="258.05" cy="116.61" r="2.5" fill="#1f6fb0"><title>Global model: 433 USD a day, 7.6 conversions</title></circle><circle cx="263.4" cy="115.6" r="2.5" fill="#1f6fb0"><title>Global model: 440 USD a day, 7.7 conversions</title></circle><circle cx="268.75" cy="114.33" r="2.5" fill="#1f6fb0"><title>Global model: 447 USD a day, 7.8 conversions</title></circle><circle cx="274.1" cy="112.69" r="2.5" fill="#1f6fb0"><title>Global model: 454 USD a day, 8.0 conversions</title></circle><circle cx="279.45" cy="111.9" r="2.5" fill="#1f6fb0"><title>Global model: 461 USD a day, 8.1 conversions</title></circle><circle cx="284.79" cy="110.73" r="2.5" fill="#1f6fb0"><title>Global model: 468 USD a day, 8.2 conversions</title></circle><circle cx="290.14" cy="109.61" r="2.5" fill="#1f6fb0"><title>Global model: 475 USD a day, 8.3 conversions</title></circle><circle cx="295.49" cy="108.57" r="2.5" fill="#1f6fb0"><title>Global model: 481 USD a day, 8.4 conversions</title></circle><circle cx="300.83" cy="106.6" r="2.5" fill="#1f6fb0"><title>Global model: 488 USD a day, 8.5 conversions</title></circle><circle cx="306.18" cy="105.61" r="2.5" fill="#1f6fb0"><title>Global model: 495 USD a day, 8.6 conversions</title></circle><circle cx="311.53" cy="104.54" r="2.5" fill="#1f6fb0"><title>Global model: 502 USD a day, 8.7 conversions</title></circle><circle cx="316.88" cy="103.02" r="2.5" fill="#1f6fb0"><title>Global model: 509 USD a day, 8.9 conversions</title></circle><circle cx="322.23" cy="101.68" r="2.5" fill="#1f6fb0"><title>Global model: 516 USD a day, 9.0 conversions</title></circle><circle cx="327.57" cy="101.44" r="2.5" fill="#1f6fb0"><title>Global model: 523 USD a day, 9.0 conversions</title></circle><circle cx="332.92" cy="100.51" r="2.5" fill="#1f6fb0"><title>Global model: 530 USD a day, 9.1 conversions</title></circle><circle cx="338.27" cy="99.39" r="2.5" fill="#1f6fb0"><title>Global model: 536 USD a day, 9.2 conversions</title></circle>
+      <polyline points="70.3,144.71 82.02,142.1 93.75,139.56 105.48,137.09 117.21,134.68 128.94,132.32 140.67,130.01 152.4,127.75 164.12,125.54 175.85,123.37 187.58,121.24 199.31,119.14 211.04,117.07 222.77,115.04 234.49,113.04 246.22,111.06 257.95,109.13 269.68,107.2 281.41,105.31 293.14,103.44 304.86,101.6 316.59,99.77 328.32,97.96 340.05,96.17 351.78,94.41 363.51,92.67 375.23,90.94 386.96,89.22 398.69,87.53 410.42,85.84 422.15,84.18 433.88,82.53 445.6,80.9 457.33,79.29 469.06,77.68 480.79,76.08 492.52,74.51 504.25,72.94 515.98,71.38 527.7,69.84" fill="none" stroke="#1b150f" stroke-width="1.5" stroke-dasharray="4 3" />
+      <polyline points="70.3,154.03 82.02,151.19 93.75,148.37 105.48,145.58 117.21,142.82 128.94,140.08 140.67,137.37 152.4,134.68 164.12,132.0 175.85,129.36 187.58,126.72 199.31,124.1 211.04,121.51 222.77,118.92 234.49,116.36 246.22,113.8 257.95,111.27 269.68,108.75 281.41,106.24 293.14,103.75 304.86,101.27 316.59,98.8 328.32,96.34 340.05,93.89 351.78,91.45 363.51,89.03 375.23,86.61 386.96,84.21 398.69,81.81 410.42,79.43 422.15,77.06 433.88,74.68 445.6,72.33 457.33,69.98 469.06,67.65 480.79,65.32 492.52,62.99 504.25,60.67 515.98,58.37 527.7,56.07" fill="none" stroke="#787069" stroke-width="1.5" stroke-linejoin="round" />
+      <polyline points="70.3,153.16 82.02,150.28 93.75,147.43 105.48,144.59 117.21,141.8 128.94,139.02 140.67,136.28 152.4,133.54 164.12,130.83 175.85,128.14 187.58,125.48 199.31,122.83 211.04,120.2 222.77,117.59 234.49,114.98 246.22,112.39 257.95,109.83 269.68,107.27 281.41,104.73 293.14,102.21 304.86,99.68 316.59,97.18 328.32,94.7 340.05,92.22 351.78,89.75 363.51,87.29 375.23,84.85 386.96,82.41 398.69,79.99 410.42,77.57 422.15,75.17 433.88,72.77 445.6,70.38 457.33,68.01 469.06,65.63 480.79,63.27 492.52,60.92 504.25,58.57 515.98,56.23 527.7,53.91" fill="none" stroke="#a5432b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+      <circle cx="272.56" cy="106.65" r="5" fill="#f5f2eb" stroke="#1b150f" stroke-width="2"><title>Current budget 488 USD: about 452 USD spent, 8.5 conversions a day</title></circle>
+      <circle cx="249.57" cy="111.66" r="5" fill="#1b150f" stroke="#f5f2eb" stroke-width="2"><title>Recommended budget 456 USD: about 422 USD spent, 8.1 conversions a day</title></circle>
+    </svg>
+    <figcaption class="chart-caption"><span class="key"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="4" fill="#f5f2eb" stroke="#1b150f" stroke-width="2" /></svg>Now 488</span> <span class="key"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="5" fill="#1b150f" /></svg>Recommended 456</span></figcaption>
+  </figure>
+  
+  <figure class="chart" aria-labelledby="curve-3">
+    <h3 id="curve-3">Shopping</h3>
+    <svg class="plot" viewBox="0 0 560.0 230.0" role="img" aria-label="Shopping: conversions against daily spend, with the current and recommended budgets">
+      
+  <line x1="52.0" y1="167.44" x2="546.0" y2="167.44" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="170.94" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">10</text>
+  
+  <line x1="52.0" y1="118.44" x2="546.0" y2="118.44" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="121.94" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">20</text>
+  
+  <line x1="52.0" y1="69.45" x2="546.0" y2="69.45" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="72.95" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">30</text>
+  
+  <line x1="52.0" y1="20.46" x2="546.0" y2="20.46" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="23.96" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">40</text>
+  
+  <line x1="52.0" y1="200.0" x2="546.0" y2="200.0" stroke="#787069" stroke-width="1" />
+  
+  <text x="107.72" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">500</text>
+  
+  <text x="254.55" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">1,000</text>
+  
+  <text x="401.38" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">1,500</text>
+  
+  <text x="546.0" y="228.0" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">daily spend · USD</text>
+      <circle cx="154.09" cy="157.64" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 658 USD a day, 12.0 conversions</title></circle><circle cx="144.16" cy="162.54" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 624 USD a day, 11.0 conversions</title></circle><circle cx="156.58" cy="138.04" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 666 USD a day, 16.0 conversions</title></circle><circle cx="143.24" cy="177.24" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 621 USD a day, 8.0 conversions</title></circle><circle cx="162.58" cy="138.04" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 687 USD a day, 16.0 conversions</title></circle><circle cx="149.61" cy="138.04" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 643 USD a day, 16.0 conversions</title></circle><circle cx="149.91" cy="147.84" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 644 USD a day, 14.0 conversions</title></circle><circle cx="184.6" cy="138.04" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 762 USD a day, 16.0 conversions</title></circle><circle cx="163.0" cy="138.04" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 688 USD a day, 16.0 conversions</title></circle><circle cx="169.86" cy="138.04" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 712 USD a day, 16.0 conversions</title></circle><circle cx="178.53" cy="142.94" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 741 USD a day, 15.0 conversions</title></circle><circle cx="177.62" cy="147.84" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 738 USD a day, 14.0 conversions</title></circle><circle cx="189.6" cy="147.84" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 779 USD a day, 14.0 conversions</title></circle><circle cx="163.2" cy="128.24" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 689 USD a day, 18.0 conversions</title></circle><circle cx="215.36" cy="118.44" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 867 USD a day, 20.0 conversions</title></circle><circle cx="242.17" cy="133.14" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 958 USD a day, 17.0 conversions</title></circle><circle cx="232.89" cy="98.85" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 926 USD a day, 24.0 conversions</title></circle><circle cx="224.88" cy="108.65" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 899 USD a day, 22.0 conversions</title></circle><circle cx="218.9" cy="98.85" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 879 USD a day, 24.0 conversions</title></circle><circle cx="231.49" cy="118.44" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 921 USD a day, 20.0 conversions</title></circle><circle cx="239.23" cy="157.64" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 948 USD a day, 12.0 conversions</title></circle><circle cx="320.48" cy="108.65" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,225 USD a day, 22.0 conversions</title></circle><circle cx="302.01" cy="133.14" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,162 USD a day, 17.0 conversions</title></circle><circle cx="286.86" cy="103.75" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,110 USD a day, 23.0 conversions</title></circle><circle cx="289.36" cy="93.95" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,119 USD a day, 25.0 conversions</title></circle><circle cx="297.79" cy="103.75" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,147 USD a day, 23.0 conversions</title></circle><circle cx="296.25" cy="113.54" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,142 USD a day, 21.0 conversions</title></circle><circle cx="291.11" cy="167.44" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,124 USD a day, 10.0 conversions</title></circle><circle cx="357.18" cy="40.06" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,349 USD a day, 36.0 conversions</title></circle><circle cx="328.05" cy="93.95" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,250 USD a day, 25.0 conversions</title></circle><circle cx="354.94" cy="64.55" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,342 USD a day, 31.0 conversions</title></circle><circle cx="363.21" cy="74.35" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,370 USD a day, 29.0 conversions</title></circle><circle cx="334.46" cy="123.34" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,272 USD a day, 19.0 conversions</title></circle><circle cx="349.12" cy="98.85" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,322 USD a day, 24.0 conversions</title></circle><circle cx="328.7" cy="123.34" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,252 USD a day, 19.0 conversions</title></circle><circle cx="414.34" cy="84.15" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,544 USD a day, 27.0 conversions</title></circle><circle cx="383.67" cy="108.65" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,440 USD a day, 22.0 conversions</title></circle><circle cx="354.94" cy="84.15" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,342 USD a day, 27.0 conversions</title></circle><circle cx="388.37" cy="64.55" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,456 USD a day, 31.0 conversions</title></circle><circle cx="372.28" cy="59.65" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,401 USD a day, 32.0 conversions</title></circle><circle cx="397.53" cy="89.05" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,487 USD a day, 26.0 conversions</title></circle><circle cx="414.34" cy="59.65" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,544 USD a day, 32.0 conversions</title></circle><circle cx="328.22" cy="113.54" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,251 USD a day, 21.0 conversions</title></circle><circle cx="380.99" cy="89.05" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,431 USD a day, 26.0 conversions</title></circle><circle cx="345.2" cy="93.95" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,309 USD a day, 25.0 conversions</title></circle><circle cx="349.18" cy="49.85" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,322 USD a day, 34.0 conversions</title></circle><circle cx="338.87" cy="64.55" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,287 USD a day, 31.0 conversions</title></circle><circle cx="351.83" cy="59.65" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,331 USD a day, 32.0 conversions</title></circle><circle cx="353.87" cy="98.85" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,338 USD a day, 24.0 conversions</title></circle><circle cx="354.58" cy="123.34" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,341 USD a day, 19.0 conversions</title></circle><circle cx="317.58" cy="113.54" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,215 USD a day, 21.0 conversions</title></circle><circle cx="361.45" cy="49.85" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,364 USD a day, 34.0 conversions</title></circle><circle cx="335.1" cy="187.03" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,274 USD a day, 6.0 conversions</title></circle><circle cx="353.37" cy="89.05" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,336 USD a day, 26.0 conversions</title></circle><circle cx="375.53" cy="118.44" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,412 USD a day, 20.0 conversions</title></circle><circle cx="354.74" cy="147.84" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,341 USD a day, 14.0 conversions</title></circle><circle cx="394.09" cy="113.54" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,475 USD a day, 21.0 conversions</title></circle><circle cx="390.25" cy="65.48" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,462 USD a day, 30.8 conversions</title></circle><circle cx="368.21" cy="125.16" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,387 USD a day, 18.6 conversions</title></circle><circle cx="404.11" cy="24.97" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 1,509 USD a day, 39.1 conversions</title></circle>
+      <circle cx="256.35" cy="120.79" r="2.5" fill="#1f6fb0"><title>Global model: 1,006 USD a day, 19.5 conversions</title></circle><circle cx="262.6" cy="119.15" r="2.5" fill="#1f6fb0"><title>Global model: 1,027 USD a day, 19.9 conversions</title></circle><circle cx="268.86" cy="118.35" r="2.5" fill="#1f6fb0"><title>Global model: 1,049 USD a day, 20.0 conversions</title></circle><circle cx="275.11" cy="116.78" r="2.5" fill="#1f6fb0"><title>Global model: 1,070 USD a day, 20.3 conversions</title></circle><circle cx="281.36" cy="115.55" r="2.5" fill="#1f6fb0"><title>Global model: 1,091 USD a day, 20.6 conversions</title></circle><circle cx="287.62" cy="113.96" r="2.5" fill="#1f6fb0"><title>Global model: 1,113 USD a day, 20.9 conversions</title></circle><circle cx="293.87" cy="112.34" r="2.5" fill="#1f6fb0"><title>Global model: 1,134 USD a day, 21.2 conversions</title></circle><circle cx="300.12" cy="110.6" r="2.5" fill="#1f6fb0"><title>Global model: 1,155 USD a day, 21.6 conversions</title></circle><circle cx="306.38" cy="108.92" r="2.5" fill="#1f6fb0"><title>Global model: 1,176 USD a day, 21.9 conversions</title></circle><circle cx="312.63" cy="107.18" r="2.5" fill="#1f6fb0"><title>Global model: 1,198 USD a day, 22.3 conversions</title></circle><circle cx="318.88" cy="105.19" r="2.5" fill="#1f6fb0"><title>Global model: 1,219 USD a day, 22.7 conversions</title></circle><circle cx="325.13" cy="103.24" r="2.5" fill="#1f6fb0"><title>Global model: 1,240 USD a day, 23.1 conversions</title></circle><circle cx="331.39" cy="101.08" r="2.5" fill="#1f6fb0"><title>Global model: 1,262 USD a day, 23.5 conversions</title></circle><circle cx="337.64" cy="99.01" r="2.5" fill="#1f6fb0"><title>Global model: 1,283 USD a day, 24.0 conversions</title></circle><circle cx="343.9" cy="97.47" r="2.5" fill="#1f6fb0"><title>Global model: 1,304 USD a day, 24.3 conversions</title></circle><circle cx="350.15" cy="94.67" r="2.5" fill="#1f6fb0"><title>Global model: 1,326 USD a day, 24.9 conversions</title></circle><circle cx="356.4" cy="91.96" r="2.5" fill="#1f6fb0"><title>Global model: 1,347 USD a day, 25.4 conversions</title></circle><circle cx="362.66" cy="90.67" r="2.5" fill="#1f6fb0"><title>Global model: 1,368 USD a day, 25.7 conversions</title></circle><circle cx="368.91" cy="88.61" r="2.5" fill="#1f6fb0"><title>Global model: 1,389 USD a day, 26.1 conversions</title></circle><circle cx="375.16" cy="87.41" r="2.5" fill="#1f6fb0"><title>Global model: 1,411 USD a day, 26.3 conversions</title></circle><circle cx="381.42" cy="86.49" r="2.5" fill="#1f6fb0"><title>Global model: 1,432 USD a day, 26.5 conversions</title></circle><circle cx="387.67" cy="84.78" r="2.5" fill="#1f6fb0"><title>Global model: 1,453 USD a day, 26.9 conversions</title></circle><circle cx="393.92" cy="83.39" r="2.5" fill="#1f6fb0"><title>Global model: 1,475 USD a day, 27.2 conversions</title></circle><circle cx="400.18" cy="81.06" r="2.5" fill="#1f6fb0"><title>Global model: 1,496 USD a day, 27.6 conversions</title></circle><circle cx="406.43" cy="80.0" r="2.5" fill="#1f6fb0"><title>Global model: 1,517 USD a day, 27.8 conversions</title></circle><circle cx="412.68" cy="78.33" r="2.5" fill="#1f6fb0"><title>Global model: 1,538 USD a day, 28.2 conversions</title></circle><circle cx="418.94" cy="76.68" r="2.5" fill="#1f6fb0"><title>Global model: 1,560 USD a day, 28.5 conversions</title></circle><circle cx="425.19" cy="75.18" r="2.5" fill="#1f6fb0"><title>Global model: 1,581 USD a day, 28.8 conversions</title></circle><circle cx="431.44" cy="74.05" r="2.5" fill="#1f6fb0"><title>Global model: 1,602 USD a day, 29.1 conversions</title></circle><circle cx="437.69" cy="73.37" r="2.5" fill="#1f6fb0"><title>Global model: 1,624 USD a day, 29.2 conversions</title></circle><circle cx="443.95" cy="71.81" r="2.5" fill="#1f6fb0"><title>Global model: 1,645 USD a day, 29.5 conversions</title></circle><circle cx="450.2" cy="70.65" r="2.5" fill="#1f6fb0"><title>Global model: 1,666 USD a day, 29.8 conversions</title></circle>
+      <polyline points="70.3,173.34 82.03,169.56 93.75,165.84 105.48,162.18 117.21,158.57 128.94,155.0 140.67,151.49 152.4,148.0 164.12,144.56 175.85,141.15 187.58,137.77 199.31,134.43 211.04,131.11 222.77,127.82 234.49,124.55 246.22,121.31 257.95,118.09 269.68,114.89 281.41,111.72 293.14,108.56 304.86,105.43 316.59,102.31 328.32,99.21 340.05,96.12 351.78,93.06 363.51,90.01 375.23,86.98 386.96,83.95 398.69,80.95 410.42,77.96 422.15,74.98 433.88,72.01 445.61,69.06 457.33,66.12 469.06,63.19 480.79,60.28 492.52,57.37 504.25,54.48 515.97,51.6 527.7,48.73" fill="none" stroke="#1b150f" stroke-width="1.5" stroke-dasharray="4 3" />
+      <polyline points="70.3,169.77 82.03,166.11 93.75,162.53 105.48,159.01 117.21,155.55 128.94,152.15 140.67,148.81 152.4,145.5 164.12,142.25 175.85,139.04 187.58,135.86 199.31,132.73 211.04,129.62 222.77,126.56 234.49,123.52 246.22,120.51 257.95,117.53 269.68,114.57 281.41,111.65 293.14,108.74 304.86,105.87 316.59,103.01 328.32,100.17 340.05,97.36 351.78,94.57 363.51,91.79 375.23,89.03 386.96,86.3 398.69,83.58 410.42,80.87 422.15,78.18 433.88,75.51 445.61,72.86 457.33,70.22 469.06,67.59 480.79,64.97 492.52,62.38 504.25,59.79 515.97,57.22 527.7,54.66" fill="none" stroke="#787069" stroke-width="1.5" stroke-linejoin="round" />
+      <polyline points="70.3,171.98 82.03,168.16 93.75,164.4 105.48,160.7 117.21,157.04 128.94,153.43 140.67,149.85 152.4,146.31 164.12,142.81 175.85,139.34 187.58,135.91 199.31,132.5 211.04,129.12 222.77,125.76 234.49,122.44 246.22,119.13 257.95,115.85 269.68,112.58 281.41,109.35 293.14,106.12 304.86,102.92 316.59,99.74 328.32,96.57 340.05,93.43 351.78,90.29 363.51,87.18 375.23,84.08 386.96,80.99 398.69,77.92 410.42,74.86 422.15,71.82 433.88,68.78 445.61,65.77 457.33,62.76 469.06,59.77 480.79,56.79 492.52,53.82 504.25,50.86 515.97,47.91 527.7,44.97" fill="none" stroke="#a5432b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+      <circle cx="394.62" cy="78.98" r="5" fill="#f5f2eb" stroke="#1b150f" stroke-width="2"><title>Current budget 1,601 USD: about 1,477 USD spent, 28.1 conversions a day</title></circle>
+      <circle cx="393.74" cy="79.22" r="5" fill="#1b150f" stroke="#f5f2eb" stroke-width="2"><title>Recommended budget 1,598 USD: about 1,474 USD spent, 28.0 conversions a day</title></circle>
+    </svg>
+    <figcaption class="chart-caption"><span class="key"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="4" fill="#f5f2eb" stroke="#1b150f" stroke-width="2" /></svg>Now 1,601</span> <span class="key"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="5" fill="#1b150f" /></svg>Recommended 1,598</span></figcaption>
+  </figure>
+  
+  <figure class="chart" aria-labelledby="curve-4">
+    <h3 id="curve-4">Retargeting</h3>
+    <svg class="plot" viewBox="0 0 560.0 230.0" role="img" aria-label="Retargeting: conversions against daily spend, with the current and recommended budgets">
+      
+  <line x1="52.0" y1="200.0" x2="546.0" y2="200.0" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="203.5" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">0</text>
+  
+  <line x1="52.0" y1="151.65" x2="546.0" y2="151.65" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="155.15" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">5</text>
+  
+  <line x1="52.0" y1="103.29" x2="546.0" y2="103.29" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="106.79" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">10</text>
+  
+  <line x1="52.0" y1="54.94" x2="546.0" y2="54.94" stroke="#e4ddd3" stroke-width="1" />
+  <text x="44.0" y="58.44" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">15</text>
+  
+  <line x1="52.0" y1="200.0" x2="546.0" y2="200.0" stroke="#787069" stroke-width="1" />
+  
+  <text x="127.56" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">200</text>
+  
+  <text x="241.54" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">400</text>
+  
+  <text x="355.52" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">600</text>
+  
+  <text x="469.5" y="216.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">800</text>
+  
+  <text x="546.0" y="228.0" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="#655c53">daily spend · USD</text>
+      <circle cx="414.29" cy="141.98" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 703 USD a day, 6.0 conversions</title></circle><circle cx="424.88" cy="83.95" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 722 USD a day, 12.0 conversions</title></circle><circle cx="387.44" cy="200.0" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 656 USD a day, 0.0 conversions</title></circle><circle cx="335.98" cy="161.32" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 566 USD a day, 4.0 conversions</title></circle><circle cx="331.91" cy="74.28" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 559 USD a day, 13.0 conversions</title></circle><circle cx="339.85" cy="93.62" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 572 USD a day, 11.0 conversions</title></circle><circle cx="311.05" cy="132.3" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 522 USD a day, 7.0 conversions</title></circle><circle cx="342.75" cy="112.96" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 578 USD a day, 9.0 conversions</title></circle><circle cx="357.45" cy="74.28" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 603 USD a day, 13.0 conversions</title></circle><circle cx="327.04" cy="132.3" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 550 USD a day, 7.0 conversions</title></circle><circle cx="336.85" cy="83.95" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 567 USD a day, 12.0 conversions</title></circle><circle cx="346.59" cy="112.96" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 584 USD a day, 9.0 conversions</title></circle><circle cx="331.9" cy="64.61" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 559 USD a day, 14.0 conversions</title></circle><circle cx="329.02" cy="64.61" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 553 USD a day, 14.0 conversions</title></circle><circle cx="233.38" cy="190.33" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 386 USD a day, 1.0 conversions</title></circle><circle cx="254.16" cy="122.63" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 422 USD a day, 8.0 conversions</title></circle><circle cx="267.22" cy="64.61" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 445 USD a day, 14.0 conversions</title></circle><circle cx="243.14" cy="151.65" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 403 USD a day, 5.0 conversions</title></circle><circle cx="246.35" cy="74.28" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 408 USD a day, 13.0 conversions</title></circle><circle cx="237.59" cy="132.3" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 393 USD a day, 7.0 conversions</title></circle><circle cx="242.99" cy="122.63" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 403 USD a day, 8.0 conversions</title></circle><circle cx="230.96" cy="141.98" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 381 USD a day, 6.0 conversions</title></circle><circle cx="229.97" cy="112.96" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 380 USD a day, 9.0 conversions</title></circle><circle cx="225.31" cy="93.62" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 372 USD a day, 11.0 conversions</title></circle><circle cx="225.39" cy="112.96" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 372 USD a day, 9.0 conversions</title></circle><circle cx="211.21" cy="132.3" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 347 USD a day, 7.0 conversions</title></circle><circle cx="237.6" cy="112.96" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 393 USD a day, 9.0 conversions</title></circle><circle cx="228.71" cy="25.93" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 377 USD a day, 18.0 conversions</title></circle><circle cx="185.21" cy="141.98" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 301 USD a day, 6.0 conversions</title></circle><circle cx="194.85" cy="151.65" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 318 USD a day, 5.0 conversions</title></circle><circle cx="191.63" cy="35.6" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 312 USD a day, 17.0 conversions</title></circle><circle cx="197.88" cy="151.65" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 323 USD a day, 5.0 conversions</title></circle><circle cx="180.9" cy="132.3" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 294 USD a day, 7.0 conversions</title></circle><circle cx="178.73" cy="141.98" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 290 USD a day, 6.0 conversions</title></circle><circle cx="171.4" cy="180.66" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 277 USD a day, 2.0 conversions</title></circle><circle cx="178.68" cy="161.32" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 290 USD a day, 4.0 conversions</title></circle><circle cx="162.59" cy="132.3" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 261 USD a day, 7.0 conversions</title></circle><circle cx="181.88" cy="112.96" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 295 USD a day, 9.0 conversions</title></circle><circle cx="173.05" cy="141.98" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 280 USD a day, 6.0 conversions</title></circle><circle cx="156.11" cy="132.3" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 250 USD a day, 7.0 conversions</title></circle><circle cx="177.17" cy="132.3" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 287 USD a day, 7.0 conversions</title></circle><circle cx="171.85" cy="132.3" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 278 USD a day, 7.0 conversions</title></circle><circle cx="173.75" cy="161.32" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 281 USD a day, 4.0 conversions</title></circle><circle cx="190.69" cy="190.33" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 311 USD a day, 1.0 conversions</title></circle><circle cx="186.03" cy="161.32" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 303 USD a day, 4.0 conversions</title></circle><circle cx="174.26" cy="151.65" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 282 USD a day, 5.0 conversions</title></circle><circle cx="185.87" cy="122.63" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 302 USD a day, 8.0 conversions</title></circle><circle cx="195.21" cy="141.98" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 319 USD a day, 6.0 conversions</title></circle><circle cx="173.67" cy="151.65" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 281 USD a day, 5.0 conversions</title></circle><circle cx="140.47" cy="151.65" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 223 USD a day, 5.0 conversions</title></circle><circle cx="144.34" cy="170.99" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 229 USD a day, 3.0 conversions</title></circle><circle cx="152.48" cy="122.63" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 244 USD a day, 8.0 conversions</title></circle><circle cx="147.44" cy="132.3" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 235 USD a day, 7.0 conversions</title></circle><circle cx="143.04" cy="170.99" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 227 USD a day, 3.0 conversions</title></circle><circle cx="140.44" cy="190.33" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 223 USD a day, 1.0 conversions</title></circle><circle cx="151.09" cy="151.65" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 241 USD a day, 5.0 conversions</title></circle><circle cx="117.85" cy="161.32" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 183 USD a day, 4.0 conversions</title></circle><circle cx="108.11" cy="189.36" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 166 USD a day, 1.1 conversions</title></circle><circle cx="184.89" cy="166.25" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 301 USD a day, 3.5 conversions</title></circle><circle cx="111.47" cy="175.63" r="2.5" fill="#787069" fill-opacity=".45"><title>A day: 172 USD a day, 2.5 conversions</title></circle>
+      <circle cx="132.73" cy="162.42" r="2.5" fill="#1f6fb0"><title>Global model: 209 USD a day, 3.9 conversions</title></circle><circle cx="135.25" cy="161.67" r="2.5" fill="#1f6fb0"><title>Global model: 214 USD a day, 4.0 conversions</title></circle><circle cx="137.77" cy="160.78" r="2.5" fill="#1f6fb0"><title>Global model: 218 USD a day, 4.1 conversions</title></circle><circle cx="140.3" cy="159.95" r="2.5" fill="#1f6fb0"><title>Global model: 222 USD a day, 4.1 conversions</title></circle><circle cx="142.82" cy="159.44" r="2.5" fill="#1f6fb0"><title>Global model: 227 USD a day, 4.2 conversions</title></circle><circle cx="145.34" cy="158.45" r="2.5" fill="#1f6fb0"><title>Global model: 231 USD a day, 4.3 conversions</title></circle><circle cx="147.86" cy="157.4" r="2.5" fill="#1f6fb0"><title>Global model: 236 USD a day, 4.4 conversions</title></circle><circle cx="150.39" cy="157.0" r="2.5" fill="#1f6fb0"><title>Global model: 240 USD a day, 4.4 conversions</title></circle><circle cx="152.9" cy="156.17" r="2.5" fill="#1f6fb0"><title>Global model: 244 USD a day, 4.5 conversions</title></circle><circle cx="155.43" cy="155.59" r="2.5" fill="#1f6fb0"><title>Global model: 249 USD a day, 4.6 conversions</title></circle><circle cx="157.95" cy="154.89" r="2.5" fill="#1f6fb0"><title>Global model: 253 USD a day, 4.7 conversions</title></circle><circle cx="160.47" cy="153.88" r="2.5" fill="#1f6fb0"><title>Global model: 258 USD a day, 4.8 conversions</title></circle><circle cx="162.99" cy="153.24" r="2.5" fill="#1f6fb0"><title>Global model: 262 USD a day, 4.8 conversions</title></circle><circle cx="165.52" cy="152.58" r="2.5" fill="#1f6fb0"><title>Global model: 267 USD a day, 4.9 conversions</title></circle><circle cx="168.04" cy="152.03" r="2.5" fill="#1f6fb0"><title>Global model: 271 USD a day, 5.0 conversions</title></circle><circle cx="170.56" cy="151.36" r="2.5" fill="#1f6fb0"><title>Global model: 275 USD a day, 5.0 conversions</title></circle><circle cx="173.08" cy="151.19" r="2.5" fill="#1f6fb0"><title>Global model: 280 USD a day, 5.0 conversions</title></circle><circle cx="175.6" cy="150.28" r="2.5" fill="#1f6fb0"><title>Global model: 284 USD a day, 5.1 conversions</title></circle><circle cx="178.12" cy="149.87" r="2.5" fill="#1f6fb0"><title>Global model: 289 USD a day, 5.2 conversions</title></circle><circle cx="180.65" cy="149.1" r="2.5" fill="#1f6fb0"><title>Global model: 293 USD a day, 5.3 conversions</title></circle><circle cx="183.17" cy="148.1" r="2.5" fill="#1f6fb0"><title>Global model: 298 USD a day, 5.4 conversions</title></circle><circle cx="185.69" cy="147.69" r="2.5" fill="#1f6fb0"><title>Global model: 302 USD a day, 5.4 conversions</title></circle><circle cx="188.21" cy="147.27" r="2.5" fill="#1f6fb0"><title>Global model: 306 USD a day, 5.5 conversions</title></circle><circle cx="190.73" cy="146.39" r="2.5" fill="#1f6fb0"><title>Global model: 311 USD a day, 5.5 conversions</title></circle><circle cx="193.25" cy="146.24" r="2.5" fill="#1f6fb0"><title>Global model: 315 USD a day, 5.6 conversions</title></circle><circle cx="195.77" cy="145.21" r="2.5" fill="#1f6fb0"><title>Global model: 320 USD a day, 5.7 conversions</title></circle><circle cx="198.3" cy="144.74" r="2.5" fill="#1f6fb0"><title>Global model: 324 USD a day, 5.7 conversions</title></circle><circle cx="200.82" cy="143.66" r="2.5" fill="#1f6fb0"><title>Global model: 329 USD a day, 5.8 conversions</title></circle><circle cx="203.34" cy="142.84" r="2.5" fill="#1f6fb0"><title>Global model: 333 USD a day, 5.9 conversions</title></circle><circle cx="205.86" cy="142.51" r="2.5" fill="#1f6fb0"><title>Global model: 337 USD a day, 5.9 conversions</title></circle><circle cx="208.38" cy="141.51" r="2.5" fill="#1f6fb0"><title>Global model: 342 USD a day, 6.0 conversions</title></circle><circle cx="210.9" cy="140.55" r="2.5" fill="#1f6fb0"><title>Global model: 346 USD a day, 6.1 conversions</title></circle>
+      <polyline points="70.3,178.05 82.02,174.51 93.75,171.08 105.48,167.76 117.21,164.52 128.94,161.36 140.67,158.25 152.4,155.21 164.13,152.23 175.85,149.29 187.58,146.39 199.31,143.52 211.04,140.7 222.77,137.91 234.5,135.15 246.23,132.42 257.96,129.72 269.68,127.04 281.41,124.39 293.14,121.77 304.86,119.17 316.59,116.59 328.32,114.03 340.05,111.48 351.78,108.96 363.51,106.45 375.24,103.96 386.97,101.48 398.69,99.03 410.42,96.59 422.15,94.16 433.88,91.75 445.61,89.35 457.34,86.96 469.07,84.59 480.79,82.22 492.52,79.87 504.25,77.54 515.98,75.21 527.7,72.9" fill="none" stroke="#1b150f" stroke-width="1.5" stroke-dasharray="4 3" />
+      <polyline points="70.3,173.61 82.02,169.95 93.75,166.4 105.48,162.93 117.21,159.53 128.94,156.2 140.67,152.92 152.4,149.71 164.13,146.54 175.85,143.42 187.58,140.33 199.31,137.29 211.04,134.29 222.77,131.32 234.5,128.39 246.23,125.48 257.96,122.6 269.68,119.75 281.41,116.93 293.14,114.12 304.86,111.35 316.59,108.6 328.32,105.86 340.05,103.16 351.78,100.47 363.51,97.79 375.24,95.14 386.97,92.51 398.69,89.89 410.42,87.29 422.15,84.7 433.88,82.13 445.61,79.58 457.34,77.04 469.07,74.51 480.79,72.0 492.52,69.5 504.25,67.02 515.98,64.54 527.7,62.08" fill="none" stroke="#787069" stroke-width="1.5" stroke-linejoin="round" />
+      <polyline points="70.3,173.93 82.02,170.2 93.75,166.59 105.48,163.04 117.21,159.56 128.94,156.14 140.67,152.78 152.4,149.47 164.13,146.2 175.85,142.98 187.58,139.8 199.31,136.66 211.04,133.55 222.77,130.48 234.5,127.43 246.23,124.41 257.96,121.42 269.68,118.47 281.41,115.53 293.14,112.61 304.86,109.72 316.59,106.85 328.32,104.0 340.05,101.17 351.78,98.36 363.51,95.57 375.24,92.79 386.97,90.03 398.69,87.3 410.42,84.57 422.15,81.86 433.88,79.16 445.61,76.48 457.34,73.82 469.07,71.17 480.79,68.53 492.52,65.9 504.25,63.28 515.98,60.68 527.7,58.09" fill="none" stroke="#a5432b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+      <circle cx="111.6" cy="161.21" r="5" fill="#f5f2eb" stroke="#1b150f" stroke-width="2"><title>Current budget 183 USD: about 172 USD spent, 4.0 conversions a day</title></circle>
+      <circle cx="136.11" cy="154.08" r="5" fill="#1b150f" stroke="#f5f2eb" stroke-width="2"><title>Recommended budget 229 USD: about 215 USD spent, 4.7 conversions a day</title></circle>
+    </svg>
+    <figcaption class="chart-caption"><span class="key"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="4" fill="#f5f2eb" stroke="#1b150f" stroke-width="2" /></svg>Now 183</span> <span class="key"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="5" fill="#1b150f" /></svg>Recommended 229</span></figcaption>
+  </figure>
+  
+  </div>
+  <div class="table-wrap" tabindex="0" role="region" aria-label="Budgets by campaign">
+  <table>
+    <thead><tr><th scope="col">Campaign</th><th scope="col">Spend limited by</th><th scope="col" class="num">Budget now</th><th scope="col" class="num">Recommended</th><th scope="col" class="num">Conversions a day</th><th scope="col" class="num">Elasticity (true)</th></tr></thead>
+    <tbody>
+    
+    <tr>
+      <td>Brand Search</td><td>budget</td>
+      <td class="num">42.43</td><td class="num">31.82</td>
+      <td class="num">1.0 → 0.9</td>
+      <td class="num">0.72 (0.88)</td>
+    </tr>
+    
+    <tr>
+      <td>Non-Brand Search</td><td>budget</td>
+      <td class="num">487.65</td><td class="num">455.78</td>
+      <td class="num">8.5 → 8.1</td>
+      <td class="num">0.82 (0.61)</td>
+    </tr>
+    
+    <tr>
+      <td>Shopping</td><td>budget</td>
+      <td class="num">1,600.90</td><td class="num">1,597.64</td>
+      <td class="num">28.1 → 28.0</td>
+      <td class="num">0.82 (0.83)</td>
+    </tr>
+    
+    <tr>
+      <td>Retargeting</td><td>budget</td>
+      <td class="num">182.96</td><td class="num">228.70</td>
+      <td class="num">4.0 → 4.7</td>
+      <td class="num">0.79 (0.80)</td>
+    </tr>
+    
+    </tbody>
+  </table>
+  </div>
+  <p class="note">Budgets total 2,313.94 now and 2,313.94 as recommended (USD a day). Global model: tabpfn:v3.5 (recorded). Nothing has been changed.</p>
+  <p class="note">In this project's tests across simulated accounts, the simpler pooled regression has so far been the better budget predictor than TabPFN, which is why it is the default; both do far better than leaving budgets alone. The grey curve is the pooled fit, for comparison.</p>
+  
+  </div></details>
+</section>
+
+
+
+
+
+
+
+<section aria-labelledby="recommendations-title">
+  <div class="section-heading"><h2 id="recommendations-title">Next steps</h2><p class="section-meta">Written by the agent (anthropic/claude-sonnet-5.5), recorded</p></div>
+  
+  <article class="recommendation">
+    <div><h3>Retargeting daily budget</h3><span class="confidence">Medium confidence</span></div>
+    <div><p>Raise the daily budget from 182.96 USD to the recommended 228.70 USD, an increase of 45.74 USD (25.0%). Submit it as a proposal for approval, funded by the cuts below so the total stays at 2313.94 USD.</p><p class="evidence">Retargeting is limited by budget and is the only campaign expected to gain. Expected conversions rise from 4.01 to 4.75 a day, about 0.74 more. The 8-week trial of this approach gained 6.1% at the same total budget.</p>
+    <details><summary>Measurement &amp; follow-up</summary><dl class="details-body">
+      <div><dt>Expected effect</dt><dd>About 0.74 more conversions a day from Retargeting. This is a model estimate, so the real gain may differ.</dd></div>
+      <div><dt>Measurement</dt><dd>Compare Retargeting conversions a day and total account conversions a day against the trial level of 39.6 over the next few weeks. Watch Retargeting spend for spikes, since one was flagged there on 2026-08-05.</dd></div>
+      <div><dt>Reversal</dt><dd>Set the Retargeting budget back to 182.96 USD through a new proposal, and restore the funding campaigns to their current budgets.</dd></div>
+    </dl></details></div>
+  </article>
+  
+  <article class="recommendation">
+    <div><h3>Brand Search and Non-Brand Search daily budgets</h3><span class="confidence">Low confidence</span></div>
+    <div><p>Lower Brand Search from 42.43 USD to 31.82 USD (-10.61 USD) and Non-Brand Search from 487.65 USD to 455.78 USD (-31.87 USD). Leave Shopping almost flat, from 1600.90 USD to 1,597.64 USD. Submit these as proposals together with the Retargeting increase.</p><p class="evidence">The result recommends these shifts at no change in total budget. Expected conversions fall by 0.46 a day for Non-Brand Search (8.54 to 8.08) and by 0.12 for Brand Search (1.02 to 0.90). Together that is 0.58 a day lost. Shopping is expected to lose 0.05 a day.</p>
+    <details><summary>Measurement &amp; follow-up</summary><dl class="details-body">
+      <div><dt>Expected effect</dt><dd>The expected net gain across all four campaigns is small, about 0.11 conversions a day. The Retargeting gain only slightly outweighs the losses elsewhere, so the benefit depends on the model being right.</dd></div>
+      <div><dt>Measurement</dt><dd>Track conversions a day for each campaign over the next few weeks and compare them with the expected values above. Confirm the account total does not fall below the current level.</dd></div>
+      <div><dt>Reversal</dt><dd>Restore Brand Search to 42.43 USD and Non-Brand Search to 487.65 USD through a new proposal if account conversions drop.</dd></div>
+    </dl></details></div>
+  </article>
+  
+  <article class="recommendation">
+    <div><h3>Unusual days: Shopping tracking, Retargeting spend, Brand Search conversions</h3><span class="confidence">High confidence</span></div>
+    <div><p>Check the Shopping conversion tracking for 2026-07-30. Check the Retargeting spend settings and change history for 2026-08-05. Review the Brand Search conversion surge on 2026-08-01 to confirm it was genuine. Keep the TabPFN 95% expected range as the alert method, and stop relying on the ±50% day-over-day rule.</p><p class="evidence">On 2026-07-30 Shopping recorded 6.0 conversions against an expected 22.33, which was a real tracking outage. On 2026-08-05 Retargeting spent 300.59 USD against an expected 169.61 USD, a real spend spike. On 2026-08-01 Brand Search recorded 6.0 conversions against an expected 0.99, a real conversion surge. The 2026-08-02 Shopping flag (14.0 against 27.24 expected) was a false alarm, so treat it as lower priority. On a real account, flags prompt an investigation and are not findings.</p>
+    <details><summary>Measurement &amp; follow-up</summary><dl class="details-body">
+      <div><dt>Expected effect</dt><dd>Catching tracking outages and spend spikes early protects the conversion data the budget moves depend on.</dd></div>
+      <div><dt>Measurement</dt><dd>Count alerts and confirmed problems each week. TabPFN had 1 false alarm among 4 alerts, against 22 among 24 for the ±50% rule.</dd></div>
+      <div><dt>Reversal</dt><dd>Alert method changes are reversible. If TabPFN misses real problems, bring back the ±50% rule alongside it.</dd></div>
+    </dl></details></div>
+  </article>
+  
+</section>
+
+
+
+
+<section aria-labelledby="change-title">
+  <div class="section-heading"><h2 id="change-title">A change, approved and verified</h2><p class="section-meta">sample account demo-google</p></div>
+  <p class="note">Nothing reaches an ad account without a person's approval: the reviewer sees a summary written from the stored proposal, approves it, and the change is applied once and read back.</p>
+  <div class="change-card">
+    <p class="change-title">Proposed change for review (demo-google, google_ads, g-103):</p>
+    <ul><li>daily_budget: 300.0 account currency per day -&gt; 240 account currency per day</li><li>Risk: medium (budget_delta)</li><li>Reason: Performance Max spend fell while CPA rose; reduce daily budget by a reversible step.</li><li>Measurement: Compare CPA and conversions after 7 complete days at the new budget.</li><li>Reversal: Restore the previous daily budget through a new proposal.</li><li>Nothing changes until a reviewer approves it.</li></ul>
+    <p class="receipt"><strong>After approval:</strong> Receipt for proposal 13c97ac0-b0ae-47f4-9bfc-2f9204063eaf revision 1: status=verified, mutation_attempted=True, readback_attempts=1, verified_state=[daily_budget=240.0], reason=readback matched the approved change</p>
+  </div>
+</section>
+
+
+<footer class="provenance">
+  <details><summary>Sources &amp; data notes</summary><div class="details-body">
+  <p>Accounts: sim-northwind · 1 platform source(s) with data</p>
+  <p>Change colors show increases and decreases, not whether a result is favorable.</p>
+  <ul><li>all sources complete and reconciled</li></ul>
+  
+  <h3>Sources</h3>
+  <p>Generated Oct 2, 2026 at 17:05 UTC · Report demo_report</p>
+  <p>Analysis artifact art_f5d94639cfd7a087 · Sources art_291f04581ac85105</p>
+  <p>Analysis compute/1.0.0 (period-comparison/1) · Report schema report/1</p>
+  </div></details>
+</footer>
+</main>
+</body>
+</html>

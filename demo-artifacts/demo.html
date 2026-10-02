@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Northwind · paid media agent demo</title>
+<style>/* The demo page. Colours are the report's tokens (reports/templates/tokens.j2). */
+:root {
+  color-scheme: light;
+  --canvas: #fdfbf6;
+  --paper: #f5f2eb;
+  --ink: #1b150f;
+  --muted: #655c53;
+  --line: #e4ddd3;
+  --agent: #a5432b;
+  --alone: #787069;
+  --fill: #efeae4;
+  --model: #1f6fb0;
+  --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--canvas); color: var(--ink); font: 15px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
+.page { max-width: 1240px; margin: 0 auto; padding: 40px 32px 72px; }
+h1, h2, h3, p, figure, ol { margin: 0; }
+ol { padding: 0; list-style: none; }
+h1 { max-width: 22ch; font-size: 46px; font-weight: 600; line-height: 1.08; letter-spacing: -.03em; text-wrap: balance; }
+h2 { display: flex; align-items: baseline; gap: 14px; margin: 0 0 22px; padding-bottom: 12px; border-bottom: 1.5px solid var(--ink); font-size: 22px; font-weight: 600; letter-spacing: -.01em; }
+h2 .num { color: var(--agent); font: 400 12px/1 var(--mono); }
+h3 { font-size: 24px; font-weight: 600; line-height: 1.2; letter-spacing: -.015em; text-wrap: balance; }
+h3 em { font-style: normal; color: var(--agent); }
+section { margin-top: 64px; }
+.eyebrow, .tag, .cap { color: var(--muted); font: 500 11px/1.5 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+.eyebrow { margin-bottom: 18px; color: var(--agent); }
+
+/* Opening */
+.hero-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 34px; border: 1px solid var(--line); border-radius: 16px; background: var(--paper); overflow: hidden; }
+.tile { padding: 22px 26px; border-right: 1px solid var(--line); }
+.tile:last-child { border-right: 0; }
+.tile .value { font-size: 44px; font-weight: 500; line-height: 1.05; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+.tile .value small { margin-left: 6px; color: var(--muted); font-size: 16px; font-weight: 400; letter-spacing: 0; }
+.tile .label { margin-top: 8px; font-size: 14px; }
+.tile .sub { margin-top: 2px; color: var(--muted); font-size: 12px; }
+
+/* Panels and charts */
+.panel { padding: 20px 22px; border: 1px solid var(--line); border-radius: 14px; background: var(--paper); }
+figcaption { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-bottom: 12px; }
+.cap.right { text-align: right; }
+.chart { display: block; width: 100%; height: auto; overflow: visible; }
+.chart text { font-family: var(--mono); font-size: 10px; fill: var(--muted); }
+.chart text.label { font-family: var(--sans); font-size: 12px; fill: var(--ink); }
+.chart text.strong { font-family: var(--sans); font-size: 12px; font-weight: 600; fill: var(--ink); }
+.keys { display: flex; flex-wrap: wrap; gap: 6px 20px; margin-top: 12px; color: var(--muted); font-size: 12px; }
+.key { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.key svg { flex: none; }
+.count, .counts { color: var(--ink); font-size: 13px; font-variant-numeric: tabular-nums; }
+.counts { display: flex; flex-wrap: wrap; gap: 4px 18px; }
+.counts b, .count b { font-weight: 600; }
+.counts .quiet, .count .quiet { color: var(--muted); }
+.toggle { display: inline-flex; padding: 3px; border: 1px solid var(--line); border-radius: 999px; background: var(--canvas); }
+.toggle button { padding: 5px 13px; border: 0; border-radius: 999px; background: transparent; color: var(--muted); font: 500 12px/1.4 var(--sans); cursor: pointer; }
+.toggle button[aria-pressed="true"] { background: var(--ink); color: var(--canvas); }
+button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--agent); outline-offset: 3px; }
+
+/* Jobs */
+.job { margin-top: 36px; }
+.job:first-of-type { margin-top: 0; }
+.job-head { margin-bottom: 18px; }
+.job-head .tag { margin-bottom: 8px; }
+.job-head .line { max-width: 70ch; margin-top: 8px; color: var(--muted); font-size: 16px; }
+.pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+
+/* Feature pipelines */
+.pipe { margin-top: 28px; }
+.pipe:first-child { margin-top: 0; }
+.pipe-title { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+.pipe-title b { font-size: 17px; font-weight: 600; }
+.pipe-row { display: grid; grid-template-columns: minmax(0, .8fr) 26px minmax(0, 2.1fr) 26px minmax(0, .8fr) 26px minmax(0, 1fr); align-items: stretch; }
+.arrow { display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 18px; }
+.stage-card { display: flex; flex-direction: column; gap: 8px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--paper); }
+.stage-card.model { justify-content: center; align-items: center; border-color: var(--model); background: #eaf1f8; text-align: center; }
+.stage-card.model b { color: var(--model); font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
+.stage-card .cap { margin-bottom: 2px; }
+.kv { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.kv span:first-child { color: var(--muted); }
+.kv.ask span:last-child { padding: 0 6px; border: 1px solid var(--ink); border-radius: 4px; }
+.small { color: var(--muted); font-size: 12px; line-height: 1.4; }
+.chips { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.chip { padding: 9px 11px; border: 1px solid var(--line); border-radius: 10px; background: var(--canvas); }
+.chip .name { color: var(--muted); font: 500 10px/1.4 var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+.chip .val { font-size: 17px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.chip .why { color: var(--muted); font-size: 11.5px; line-height: 1.35; }
+.chip.key-feature { border-color: var(--agent); }
+.chip.key-feature .name { color: var(--agent); }
+.evidence { display: grid; grid-template-columns: 1fr; gap: 6px; margin-top: 12px; padding: 14px 16px; border: 1px dashed var(--line); border-radius: 12px; }
+.ev-row { display: grid; grid-template-columns: minmax(0, 330px) minmax(0, 1fr) 70px; align-items: center; gap: 12px; font-size: 13px; }
+.ev-track { height: 12px; }
+.ev-bar { display: block; height: 12px; border-radius: 0 4px 4px 0; background: var(--alone); }
+.ev-row.good .ev-bar { background: var(--ink); }
+.ev-val { font-variant-numeric: tabular-nums; text-align: right; }
+
+/* The replay */
+.player { border: 1px solid var(--line); border-radius: 18px; background: #fffdf9; padding: 16px; }
+.controls { display: grid; grid-template-columns: 44px 190px minmax(0, 1fr) auto; align-items: center; gap: 16px; margin-bottom: 14px; }
+.play { width: 44px; height: 44px; border: 0; border-radius: 50%; background: var(--ink); color: var(--canvas); font-size: 15px; cursor: pointer; }
+.clock { display: flex; flex-direction: column; line-height: 1.2; }
+.clock span:first-child { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.clock span:last-child { color: var(--muted); font: 400 12px/1.4 var(--mono); }
+input[type="range"] { width: 100%; accent-color: var(--agent); }
+.stage { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr); gap: 14px; }
+.col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.col .panel { padding: 14px 16px; }
+.big { font-size: 26px; font-weight: 600; letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: var(--agent); }
+.strips { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 18px; }
+.strip { position: relative; }
+.strip .name { display: flex; justify-content: space-between; color: var(--muted); font: 500 10px/1.5 var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+.strip .name b { color: var(--ink); font-weight: 500; }
+.budget-row { display: grid; grid-template-columns: minmax(0, 1fr) 108px; gap: 4px 14px; padding: 9px 0; border-top: 1px solid var(--line); }
+.budget-row:first-child { border-top: 0; }
+.budget-row .head { display: flex; justify-content: space-between; font-size: 13px; }
+.budget-row .head span { font-variant-numeric: tabular-nums; color: var(--muted); }
+.track { position: relative; height: 12px; background: var(--fill); border-radius: 0 4px 4px 0; }
+.track .bar { position: absolute; left: 0; top: 0; bottom: 0; background: var(--agent); border-radius: 0 4px 4px 0; }
+.track .was { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--ink); }
+.ret { position: relative; grid-row: 1 / span 2; grid-column: 2; }
+.ret .axis { position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--line); }
+.ret .dot { position: absolute; top: 50%; width: 11px; height: 11px; margin: -5.5px 0 0 -5.5px; border-radius: 50%; background: var(--ink); border: 2px solid var(--paper); }
+.ret .val { position: absolute; right: 0; top: -3px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.gap { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.gap b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.log-panel { flex: 1; min-height: 0; }
+.log { display: flex; flex-direction: column; gap: 6px; height: 250px; overflow: hidden; }
+.log li { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 8px; font-size: 12.5px; line-height: 1.4; }
+.log li .mark { margin-top: 5px; width: 9px; height: 9px; border-radius: 50%; background: var(--alone); }
+.log li.move .mark { border-radius: 2px; background: var(--agent); }
+.log li.alert .mark { background: var(--ink); }
+.log li.false .mark { background: transparent; border: 1.5px solid var(--ink); }
+.log li.check .mark { background: var(--model); }
+.log li .when { display: block; color: var(--muted); font: 400 10.5px/1.4 var(--mono); }
+.log li.fresh { animation: fresh .6s ease-out; }
+@keyframes fresh { from { background: #f6e3d9; } to { background: transparent; } }
+
+/* Result */
+.result-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin-bottom: 20px; }
+.score-row { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 4px 14px; align-items: center; padding: 8px 0; }
+.score-row .who { font-size: 13px; font-weight: 500; }
+.score-row .bars { display: flex; gap: 2px; height: 16px; }
+.score-row .real { background: var(--ink); border-radius: 0 3px 3px 0; }
+.score-row .false { background: var(--fill); border: 1px solid var(--alone); border-radius: 0 3px 3px 0; }
+.score-row .txt { grid-column: 2; color: var(--muted); font: 400 11px/1.4 var(--mono); }
+.three { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; }
+.three div { padding: 4px 16px 4px 0; }
+.three .v { font-size: 30px; font-weight: 500; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.three .l { font-size: 13px; }
+.three .s { color: var(--muted); font-size: 12px; }
+.gate { margin-bottom: 20px; }
+.gate-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.gate-steps li { position: relative; display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--canvas); font-size: 14px; font-weight: 500; }
+.gate-steps li span { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: var(--ink); color: var(--canvas); font: 500 11px/1 var(--mono); }
+.receipt { margin-top: 12px; color: var(--muted); font: 400 11.5px/1.5 var(--mono); overflow-wrap: anywhere; }
+.next { display: grid; gap: 10px; }
+.next li { display: grid; grid-template-columns: 220px minmax(0, 1fr) auto; gap: 16px; align-items: baseline; padding-top: 10px; border-top: 1px solid var(--line); font-size: 13.5px; }
+.next li:first-child { padding-top: 0; border-top: 0; }
+.next strong { font-weight: 600; }
+.next em { color: var(--muted); font: 400 11px/1.4 var(--mono); font-style: normal; white-space: nowrap; }
+.cta { margin-top: 26px; }
+.button { display: inline-block; padding: 12px 20px; border-radius: 999px; background: var(--ink); color: var(--canvas); font-weight: 500; text-decoration: none; }
+.fine { margin-top: 18px; color: var(--muted); font-size: 12px; max-width: 110ch; }
+
+.tip { position: fixed; z-index: 10; max-width: 260px; padding: 8px 10px; border-radius: 8px; background: var(--ink); color: var(--canvas); font-size: 12px; line-height: 1.4; pointer-events: none; }
+.tip b { font-weight: 600; }
+
+/* The replay alone, for recording a video */
+body.video .page { max-width: none; padding: 14px; }
+body.video .hero, body.video #jobs, body.video #features, body.video #result, body.video #replay h2 { display: none; }
+body.video section { margin: 0; }
+body.video .player { border: 0; padding: 0; background: transparent; }
+body.video .stage { grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); }
+
+@media (max-width: 980px) {
+  h1 { font-size: 34px; }
+  .hero-tiles, .pair, .stage, .result-grid, .three, .gate-steps { grid-template-columns: minmax(0, 1fr); }
+  .tile { border-right: 0; border-bottom: 1px solid var(--line); }
+  .pipe-row { grid-template-columns: minmax(0, 1fr); }
+  .arrow { transform: rotate(90deg); padding: 4px; }
+  .chips { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .controls { grid-template-columns: 44px minmax(0, 1fr); }
+  .controls input { grid-column: 1 / -1; }
+  .ev-row { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .next li { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .log li.fresh { animation: none; }
+}
+</style>
+</head>
+<body>
+<main class="page">
+
+<header class="hero">
+  <p class="eyebrow">Paid media agent · Northwind, a simulated store</p>
+  <h1>An agent that watches ad spend and moves budget.<br>TabPFN does the predicting.</h1>
+  <div class="hero-tiles" id="hero-tiles"></div>
+</header>
+
+<section id="jobs" aria-labelledby="jobs-title">
+  <h2 id="jobs-title"><span class="num">01</span>Two jobs, two ideas</h2>
+
+  <article class="job">
+    <header class="job-head">
+      <p class="tag">Job 1 · Spot the unusual day</p>
+      <h3>Is today normal <em>for this campaign, at this budget</em>?</h3>
+      <p class="line">A fixed rule alerts on ordinary noise. A range learned from the campaign's own weeks does not.</p>
+    </header>
+    <div class="pair">
+      <figure class="panel">
+        <figcaption><span class="cap">±50% day-over-day rule</span><span class="count" id="intu-rule-count"></span></figcaption>
+        <svg id="intu-rule" class="chart" role="img" aria-label="The same days judged by a fixed ±50% rule"></svg>
+      </figure>
+      <figure class="panel">
+        <figcaption><span class="cap">TabPFN&#39;s expected range</span><span class="count" id="intu-range-count"></span></figcaption>
+        <svg id="intu-range" class="chart" role="img" aria-label="The same days judged by the model's expected range"></svg>
+      </figure>
+    </div>
+    <p class="keys" id="intu-keys"></p>
+  </article>
+
+  <article class="job">
+    <header class="job-head">
+      <p class="tag">Job 2 · Move the budget</p>
+      <h3>Where does the next dollar buy the most?</h3>
+      <p class="line">Take budget from where the curve is flat and give it to where it is steep, until the slopes meet.</p>
+    </header>
+    <figure class="panel">
+      <figcaption><span class="cap">Conversions a day against daily budget · the simulation's true curves</span>
+        <span class="toggle" role="group" aria-label="Budgets shown">
+          <button type="button" id="curve-before" aria-pressed="true">Before the agent</button>
+          <button type="button" id="curve-now" aria-pressed="false">After 8 weeks</button>
+        </span>
+      </figcaption>
+      <svg id="intu-curves" class="chart tall" role="img" aria-label="Two campaigns' response curves with the budget moving from the flatter one to the steeper one"></svg>
+    </figure>
+  </article>
+</section>
+
+<section id="features" aria-labelledby="features-title">
+  <h2 id="features-title"><span class="num">02</span>The feature engineering that makes it work</h2>
+  <div id="pipelines"></div>
+</section>
+
+<section id="replay" aria-labelledby="replay-title">
+  <h2 id="replay-title"><span class="num">03</span>Eight weeks, replayed</h2>
+  <div class="player" id="player">
+    <div class="controls">
+      <button type="button" id="play" class="play" aria-label="Play">▶</button>
+      <div class="clock"><span id="clock-week"></span><span id="clock-day"></span></div>
+      <input type="range" id="scrub" min="0" max="56" step="0.05" value="0" aria-label="Day of the replay">
+      <span class="toggle" role="group" aria-label="Speed">
+        <button type="button" data-speed="1" aria-pressed="true">1×</button>
+        <button type="button" data-speed="2" aria-pressed="false">2×</button>
+        <button type="button" data-speed="4" aria-pressed="false">4×</button>
+      </span>
+    </div>
+    <div class="stage">
+      <div class="col">
+        <figure class="panel">
+          <figcaption><span class="cap">Conversions gained over budgets left alone</span><span class="big" id="gain-now"></span></figcaption>
+          <svg id="race" class="chart" role="img" aria-label="Cumulative conversions gained by the agent and by the best possible split, against budgets left alone"></svg>
+        </figure>
+        <figure class="panel">
+          <figcaption><span class="cap">The weekly watch · observed against the expected range</span><span class="counts" id="watch-counts"></span></figcaption>
+          <div class="strips" id="strips"></div>
+          <p class="keys" id="watch-keys"></p>
+        </figure>
+      </div>
+      <div class="col narrow">
+        <figure class="panel">
+          <figcaption><span class="cap">Daily budget</span><span class="cap right">Next 100 a day buys</span></figcaption>
+          <div id="budget-rows"></div>
+          <p class="gap" id="gap"></p>
+        </figure>
+        <figure class="panel log-panel">
+          <figcaption><span class="cap">What the agent did</span></figcaption>
+          <ol class="log" id="log" aria-live="off"></ol>
+        </figure>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="result" aria-labelledby="result-title">
+  <h2 id="result-title"><span class="num">04</span>The result, and the guardrail</h2>
+  <div class="result-grid">
+    <figure class="panel" id="result-alerts"></figure>
+    <figure class="panel" id="result-budget"></figure>
+  </div>
+  <figure class="panel gate">
+    <figcaption><span class="cap">Nothing changes without a person</span></figcaption>
+    <ol class="gate-steps">
+      <li><span>1</span>The agent proposes</li>
+      <li><span>2</span>A person approves</li>
+      <li><span>3</span>Applied once, read back</li>
+    </ol>
+    <p class="receipt">Receipt for proposal 13c97ac0-b0ae-47f4-9bfc-2f9204063eaf revision 1: status=verified, mutation_attempted=True, readback_attempts=1, verified_state=[daily_budget=240.0], reason=readback matched the approved change</p>
+  </figure>
+  
+  <figure class="panel">
+    <figcaption><span class="cap">What the agent recommends next</span><span class="cap right">Written by the agent (anthropic/claude-sonnet-5.5), recorded</span></figcaption>
+    <ol class="next">
+      <li><strong>Retargeting daily budget</strong><span>Raise the daily budget from 182.96 USD to the recommended 228.70 USD, an increase of 45.74 USD (25.0%).</span><em>medium confidence</em></li><li><strong>Brand Search and Non-Brand Search daily budgets</strong><span>Lower Brand Search from 42.43 USD to 31.82 USD (-10.61 USD) and Non-Brand Search from 487.65 USD to 455.78 USD (-31.87 USD).</span><em>low confidence</em></li><li><strong>Unusual days: Shopping tracking, Retargeting spend, Brand Search conversions</strong><span>Check the Shopping conversion tracking for 2026-07-30.</span><em>high confidence</em></li>
+    </ol>
+  </figure>
+  
+  <p class="cta"><a class="button" href="demo_report.html">Open the report the agent wrote</a></p>
+  <p class="fine" id="sources"></p>
+</section>
+
+</main>
+<div class="tip" id="tip" hidden></div>
+<script type="application/json" id="story">{"meta":{"account":"Northwind","currency":"USD","weeks":8,"step":100.0,"model":"TabPFN","labels":{"static":"Budgets left alone","best":"Best possible","agent":"The agent, with TabPFN"},"sources":{"budgets":"recorded","watch":"recorded","watch_label":"TabPFN, 95% expected range","text":"Written by the agent (anthropic/claude-sonnet-5.5), recorded"},"report":"demo_report.html"},"days":["2026-06-15","2026-06-16","2026-06-17","2026-06-18","2026-06-19","2026-06-20","2026-06-21","2026-06-22","2026-06-23","2026-06-24","2026-06-25","2026-06-26","2026-06-27","2026-06-28","2026-06-29","2026-06-30","2026-07-01","2026-07-02","2026-07-03","2026-07-04","2026-07-05","2026-07-06","2026-07-07","2026-07-08","2026-07-09","2026-07-10","2026-07-11","2026-07-12","2026-07-13","2026-07-14","2026-07-15","2026-07-16","2026-07-17","2026-07-18","2026-07-19","2026-07-20","2026-07-21","2026-07-22","2026-07-23","2026-07-24","2026-07-25","2026-07-26","2026-07-27","2026-07-28","2026-07-29","2026-07-30","2026-07-31","2026-08-01","2026-08-02","2026-08-03","2026-08-04","2026-08-05","2026-08-06","2026-08-07","2026-08-08","2026-08-09"],"campaigns":[{"ref":"sim-001","name":"Brand Search"},{"ref":"sim-002","name":"Non-Brand Search"},{"ref":"sim-003","name":"Shopping"},{"ref":"sim-004","name":"Retargeting"}],"series":{"static":[34.102,33.21,35.931,40.257,41.783,40.087,35.026,32.065,34.549,37.099,39.983,40.662,38.668,36.086,33.981,33.532,36.643,40.579,41.238,39.583,35.816,33.302,33.068,37.476,41.362,41.082,39.431,34.328,34.324,33.908,36.397,40.309,40.666,39.884,36.692,32.087,34.806,36.377,40.048,40.716,40.211,35.232,32.697,33.005,37.856,39.932,41.901,39.815,36.657,33.436,33.653,41.217,40.339,40.548,40.427,36.333],"agent":[34.626,33.841,36.753,41.044,42.366,40.592,35.406,33.169,36.364,39.096,41.735,41.812,39.801,37.036,36.375,36.576,39.758,43.382,43.577,40.996,36.831,35.956,36.41,42.01,45.674,43.911,41.591,36.06,37.468,37.944,40.561,45.114,43.666,41.917,38.874,34.047,39.025,40.516,43.826,43.185,41.632,36.754,35.262,35.423,41.617,42.922,44.068,41.885,37.672,35.413,37.402,41.819,44.577,43.373,41.848,37.363],"best":[34.626,33.841,36.753,41.044,42.366,40.592,35.406,33.123,36.549,39.633,42.131,42.204,39.906,37.005,36.371,36.797,40.077,43.725,43.749,41.21,36.853,36.157,36.927,42.874,46.657,44.203,41.521,35.867,37.523,38.227,41.007,45.698,43.83,41.927,38.726,34.05,39.961,41.727,44.883,43.567,41.309,36.585,35.751,36.309,43.575,44.477,45.074,42.367,37.583,35.731,37.971,43.461,45.821,44.108,41.886,37.108]},"budgets":{"static":{"sim-001":[423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77,423.77],"sim-002":[590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01,590.01],"sim-003":[688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32,688.32],"sim-004":[611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83,611.83]},"agent":{"sim-001":[317.83,317.83,317.83,317.83,317.83,317.83,317.83,238.37,238.37,238.37,238.37,238.37,238.37,238.37,178.78,178.78,178.78,178.78,178.78,178.78,178.78,134.09,134.09,134.09,134.09,134.09,134.09,134.09,100.57,100.57,100.57,100.57,100.57,100.57,100.57,75.43,75.43,75.43,75.43,75.43,75.43,75.43,56.57,56.57,56.57,56.57,56.57,56.57,56.57,42.43,42.43,42.43,42.43,42.43,42.43,42.43],"sim-002":[590.01,590.01,590.01,590.01,590.01,590.01,590.01,623.86,623.86,623.86,623.86,623.86,623.86,623.86,494.11,494.11,494.11,494.11,494.11,494.11,494.11,456.32,456.32,456.32,456.32,456.32,456.32,456.32,371.86,371.86,371.86,371.86,371.86,371.86,371.86,464.83,464.83,464.83,464.83,464.83,464.83,464.83,581.04,581.04,581.04,581.04,581.04,581.04,581.04,487.65,487.65,487.65,487.65,487.65,487.65,487.65],"sim-003":[794.26,794.26,794.26,794.26,794.26,794.26,794.26,992.83,992.83,992.83,992.83,992.83,992.83,992.83,1241.04,1241.04,1241.04,1241.04,1241.04,1241.04,1241.04,1391.82,1391.82,1391.82,1391.82,1391.82,1391.82,1391.82,1544.12,1544.12,1544.12,1544.12,1544.12,1544.12,1544.12,1448.72,1448.72,1448.72,1448.72,1448.72,1448.72,1448.72,1432.61,1432.61,1432.61,1432.61,1432.61,1432.61,1432.61,1600.9,1600.9,1600.9,1600.9,1600.9,1600.9,1600.9],"sim-004":[611.83,611.83,611.83,611.83,611.83,611.83,611.83,458.87,458.87,458.87,458.87,458.87,458.87,458.87,400.0,400.0,400.0,400.0,400.0,400.0,400.0,331.71,331.71,331.71,331.71,331.71,331.71,331.71,297.39,297.39,297.39,297.39,297.39,297.39,297.39,324.96,324.96,324.96,324.96,324.96,324.96,324.96,243.72,243.72,243.72,243.72,243.72,243.72,243.72,182.96,182.96,182.96,182.96,182.96,182.96,182.96]},"best":{"sim-001":[317.83,317.83,317.83,317.83,317.83,317.83,317.83,238.37,238.37,238.37,238.37,238.37,238.37,238.37,178.78,178.78,178.78,178.78,178.78,178.78,178.78,134.09,134.09,134.09,134.09,134.09,134.09,134.09,100.57,100.57,100.57,100.57,100.57,100.57,100.57,75.43,75.43,75.43,75.43,75.43,75.43,75.43,56.57,56.57,56.57,56.57,56.57,56.57,56.57,42.43,42.43,42.43,42.43,42.43,42.43,42.43],"sim-002":[590.01,590.01,590.01,590.01,590.01,590.01,590.01,442.51,442.51,442.51,442.51,442.51,442.51,442.51,352.7,352.7,352.7,352.7,352.7,352.7,352.7,264.52,264.52,264.52,264.52,264.52,264.52,264.52,238.55,238.55,238.55,238.55,238.55,238.55,238.55,242.44,242.44,242.44,242.44,242.44,242.44,242.44,243.43,243.43,243.43,243.43,243.43,243.43,243.43,244.16,244.16,244.16,244.16,244.16,244.16,244.16],"sim-003":[794.26,794.26,794.26,794.26,794.26,794.26,794.26,992.83,992.83,992.83,992.83,992.83,992.83,992.83,1241.04,1241.04,1241.04,1241.04,1241.04,1241.04,1241.04,1509.26,1509.26,1509.26,1509.26,1509.26,1509.26,1509.26,1670.27,1670.27,1670.27,1670.27,1670.27,1670.27,1670.27,1731.77,1731.77,1731.77,1731.77,1731.77,1731.77,1731.77,1747.58,1747.58,1747.58,1747.58,1747.58,1747.58,1747.58,1759.44,1759.44,1759.44,1759.44,1759.44,1759.44,1759.44],"sim-004":[611.83,611.83,611.83,611.83,611.83,611.83,611.83,640.22,640.22,640.22,640.22,640.22,640.22,640.22,541.42,541.42,541.42,541.42,541.42,541.42,541.42,406.06,406.06,406.06,406.06,406.06,406.06,406.06,304.55,304.55,304.55,304.55,304.55,304.55,304.55,264.3,264.3,264.3,264.3,264.3,264.3,264.3,266.36,266.36,266.36,266.36,266.36,266.36,266.36,267.91,267.91,267.91,267.91,267.91,267.91,267.91]}},"returns":{"before":{"sim-001":1.082,"sim-002":1.04,"sim-003":1.753,"sim-004":1.256},"agent":{"sim-001":[1.12,1.12,1.12,1.12,1.12,1.12,1.12,1.159,1.159,1.159,1.159,1.159,1.159,1.159,1.2,1.2,1.2,1.2,1.2,1.2,1.2,1.242,1.242,1.242,1.242,1.242,1.242,1.242,1.286,1.286,1.286,1.286,1.286,1.286,1.286,1.331,1.331,1.331,1.331,1.331,1.331,1.331,1.378,1.378,1.378,1.378,1.378,1.378,1.378,1.426,1.426,1.426,1.426,1.426,1.426,1.426],"sim-002":[1.04,1.04,1.04,1.04,1.04,1.04,1.04,1.018,1.018,1.018,1.018,1.018,1.018,1.018,1.114,1.114,1.114,1.114,1.114,1.114,1.114,1.149,1.149,1.149,1.149,1.149,1.149,1.149,1.245,1.245,1.245,1.245,1.245,1.245,1.245,1.141,1.141,1.141,1.141,1.141,1.141,1.141,1.046,1.046,1.046,1.046,1.046,1.046,1.046,1.12,1.12,1.12,1.12,1.12,1.12,1.12],"sim-003":[1.71,1.71,1.71,1.71,1.71,1.71,1.71,1.645,1.645,1.645,1.645,1.645,1.645,1.645,1.582,1.582,1.582,1.582,1.582,1.582,1.582,1.551,1.551,1.551,1.551,1.551,1.551,1.551,1.523,1.523,1.523,1.523,1.523,1.523,1.523,1.54,1.54,1.54,1.54,1.54,1.54,1.54,1.543,1.543,1.543,1.543,1.543,1.543,1.543,1.514,1.514,1.514,1.514,1.514,1.514,1.514],"sim-004":[1.256,1.256,1.256,1.256,1.256,1.256,1.256,1.332,1.332,1.332,1.332,1.332,1.332,1.332,1.369,1.369,1.369,1.369,1.369,1.369,1.369,1.423,1.423,1.423,1.423,1.423,1.423,1.423,1.454,1.454,1.454,1.454,1.454,1.454,1.454,1.429,1.429,1.429,1.429,1.429,1.429,1.429,1.515,1.515,1.515,1.515,1.515,1.515,1.515,1.605,1.605,1.605,1.605,1.605,1.605,1.605]}},"decisions":[{"t":0,"day":"2026-06-15","moves":[{"ref":"sim-001","from":423.77,"to":317.83},{"ref":"sim-003","from":688.32,"to":794.26}]},{"t":7,"day":"2026-06-22","moves":[{"ref":"sim-001","from":317.83,"to":238.37},{"ref":"sim-002","from":590.01,"to":623.86},{"ref":"sim-003","from":794.26,"to":992.83},{"ref":"sim-004","from":611.83,"to":458.87}]},{"t":14,"day":"2026-06-29","moves":[{"ref":"sim-001","from":238.37,"to":178.78},{"ref":"sim-002","from":623.86,"to":494.11},{"ref":"sim-003","from":992.83,"to":1241.04},{"ref":"sim-004","from":458.87,"to":400.0}]},{"t":21,"day":"2026-07-06","moves":[{"ref":"sim-001","from":178.78,"to":134.09},{"ref":"sim-002","from":494.11,"to":456.32},{"ref":"sim-003","from":1241.04,"to":1391.82},{"ref":"sim-004","from":400.0,"to":331.71}]},{"t":28,"day":"2026-07-13","moves":[{"ref":"sim-001","from":134.09,"to":100.57},{"ref":"sim-002","from":456.32,"to":371.86},{"ref":"sim-003","from":1391.82,"to":1544.12},{"ref":"sim-004","from":331.71,"to":297.39}]},{"t":35,"day":"2026-07-20","moves":[{"ref":"sim-001","from":100.57,"to":75.43},{"ref":"sim-002","from":371.86,"to":464.83},{"ref":"sim-003","from":1544.12,"to":1448.72},{"ref":"sim-004","from":297.39,"to":324.96}]},{"t":42,"day":"2026-07-27","moves":[{"ref":"sim-001","from":75.43,"to":56.57},{"ref":"sim-002","from":464.83,"to":581.04},{"ref":"sim-003","from":1448.72,"to":1432.61},{"ref":"sim-004","from":324.96,"to":243.72}]},{"t":49,"day":"2026-08-03","moves":[{"ref":"sim-001","from":56.57,"to":42.43},{"ref":"sim-002","from":581.04,"to":487.65},{"ref":"sim-003","from":1432.61,"to":1600.9},{"ref":"sim-004","from":243.72,"to":182.96}]}],"points":[{"ref":"sim-001","metric":"conversions","i":0,"reveal":7,"observed":2.0,"expected":3.06,"lo":0.0,"hi":9.98,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":0,"reveal":7,"observed":317.83,"expected":275.57,"lo":73.63,"hi":364.97,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":0,"reveal":7,"observed":5.0,"expected":8.0,"lo":0.55,"hi":16.12,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":0,"reveal":7,"observed":562.35,"expected":553.27,"lo":508.06,"hi":599.85,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":0,"reveal":7,"observed":14.0,"expected":12.99,"lo":4.97,"hi":28.71,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":0,"reveal":7,"observed":761.8,"expected":767.88,"lo":621.85,"hi":1194.15,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":0,"reveal":7,"observed":8.0,"expected":8.97,"lo":0.76,"hi":18.85,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":0,"reveal":7,"observed":577.59,"expected":562.52,"lo":515.74,"hi":608.42,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":1,"reveal":7,"observed":4.0,"expected":3.62,"lo":0.0,"hi":9.96,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":1,"reveal":7,"observed":294.82,"expected":274.16,"lo":66.39,"hi":364.9,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":1,"reveal":7,"observed":8.0,"expected":7.29,"lo":0.68,"hi":15.81,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":1,"reveal":7,"observed":537.19,"expected":547.77,"lo":504.09,"hi":593.0,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":1,"reveal":7,"observed":15.0,"expected":11.77,"lo":4.49,"hi":25.22,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":1,"reveal":7,"observed":688.24,"expected":769.82,"lo":622.25,"hi":1192.13,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":1,"reveal":7,"observed":12.0,"expected":8.15,"lo":0.93,"hi":16.0,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":1,"reveal":7,"observed":603.38,"expected":562.7,"lo":515.07,"hi":613.88,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":2,"reveal":7,"observed":6.0,"expected":2.57,"lo":0.0,"hi":8.6,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":2,"reveal":7,"observed":280.36,"expected":274.79,"lo":68.01,"hi":365.9,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":2,"reveal":7,"observed":8.0,"expected":7.71,"lo":1.22,"hi":15.17,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":2,"reveal":7,"observed":544.8,"expected":548.63,"lo":504.48,"hi":594.12,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":2,"reveal":7,"observed":12.0,"expected":10.31,"lo":3.09,"hi":23.61,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":2,"reveal":7,"observed":711.6,"expected":762.21,"lo":622.51,"hi":1156.02,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":2,"reveal":7,"observed":5.0,"expected":8.57,"lo":1.4,"hi":19.35,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":2,"reveal":7,"observed":550.02,"expected":562.01,"lo":515.57,"hi":606.29,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":3,"reveal":7,"observed":297.92,"expected":274.4,"lo":67.03,"hi":365.67,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":3,"reveal":7,"observed":529.26,"expected":551.24,"lo":507.31,"hi":596.43,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":3,"reveal":7,"observed":741.13,"expected":757.23,"lo":618.12,"hi":1151.92,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":3,"reveal":7,"observed":567.24,"expected":562.79,"lo":515.98,"hi":606.76,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":4,"reveal":7,"observed":307.9,"expected":276.45,"lo":79.44,"hi":354.29,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":4,"reveal":7,"observed":525.64,"expected":551.28,"lo":507.26,"hi":596.61,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":4,"reveal":7,"observed":738.04,"expected":773.99,"lo":619.72,"hi":1310.16,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":4,"reveal":7,"observed":584.32,"expected":562.28,"lo":515.6,"hi":606.24,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":5,"reveal":7,"observed":307.9,"expected":275.34,"lo":80.53,"hi":356.14,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":5,"reveal":7,"observed":532.61,"expected":550.94,"lo":506.85,"hi":596.57,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":5,"reveal":7,"observed":778.83,"expected":766.59,"lo":624.16,"hi":1227.27,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":5,"reveal":7,"observed":558.54,"expected":561.0,"lo":514.54,"hi":604.72,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":3,"reveal":14,"observed":3.0,"expected":4.02,"lo":0.0,"hi":9.03,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":3,"reveal":14,"observed":12.0,"expected":9.01,"lo":2.36,"hi":15.99,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":3,"reveal":14,"observed":15.0,"expected":14.94,"lo":7.28,"hi":32.09,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":3,"reveal":14,"observed":12.0,"expected":9.03,"lo":2.98,"hi":17.19,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":4,"reveal":14,"observed":5.0,"expected":4.94,"lo":0.0,"hi":10.99,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":4,"reveal":14,"observed":13.0,"expected":9.02,"lo":2.35,"hi":17.18,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":4,"reveal":14,"observed":13.0,"expected":14.91,"lo":7.23,"hi":31.64,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":4,"reveal":14,"observed":9.0,"expected":9.0,"lo":1.99,"hi":17.19,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":5,"reveal":14,"observed":5.0,"expected":4.04,"lo":0.0,"hi":9.95,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":5,"reveal":14,"observed":11.0,"expected":9.98,"lo":2.03,"hi":22.24,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":5,"reveal":14,"observed":14.0,"expected":15.03,"lo":7.37,"hi":33.65,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":5,"reveal":14,"observed":14.0,"expected":9.79,"lo":2.96,"hi":17.91,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":6,"reveal":14,"observed":3.0,"expected":4.02,"lo":0.0,"hi":9.43,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":6,"reveal":14,"observed":286.83,"expected":300.86,"lo":227.05,"hi":332.92,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":6,"reveal":14,"observed":10.0,"expected":9.02,"lo":2.87,"hi":16.01,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":6,"reveal":14,"observed":555.68,"expected":547.62,"lo":507.67,"hi":592.43,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":6,"reveal":14,"observed":17.0,"expected":14.84,"lo":6.99,"hi":33.15,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":6,"reveal":14,"observed":688.95,"expected":736.38,"lo":669.95,"hi":870.1,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":6,"reveal":14,"observed":13.0,"expected":9.97,"lo":3.01,"hi":17.42,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":6,"reveal":14,"observed":553.49,"expected":565.53,"lo":520.1,"hi":610.52,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":7,"reveal":14,"observed":3.0,"expected":3.8,"lo":0.0,"hi":9.01,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":7,"reveal":14,"observed":227.15,"expected":219.04,"lo":0.0,"hi":313.11,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":7,"reveal":14,"observed":8.0,"expected":8.99,"lo":2.06,"hi":15.66,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":7,"reveal":14,"observed":570.91,"expected":586.12,"lo":528.22,"hi":641.59,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":7,"reveal":14,"observed":17.0,"expected":15.02,"lo":6.98,"hi":33.7,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":7,"reveal":14,"observed":866.55,"expected":901.18,"lo":730.08,"hi":1223.79,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":7,"reveal":14,"observed":1.0,"expected":6.97,"lo":0.0,"hi":19.62,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":7,"reveal":14,"observed":385.67,"expected":412.91,"lo":352.66,"hi":469.45,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":8,"reveal":14,"observed":2.0,"expected":3.6,"lo":0.0,"hi":8.2,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":8,"reveal":14,"observed":229.28,"expected":217.89,"lo":0.0,"hi":313.22,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":8,"reveal":14,"observed":14.0,"expected":8.18,"lo":1.84,"hi":14.41,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":8,"reveal":14,"observed":623.86,"expected":586.47,"lo":528.69,"hi":641.27,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":8,"reveal":14,"observed":14.0,"expected":14.48,"lo":5.8,"hi":32.3,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":8,"reveal":14,"observed":957.83,"expected":898.72,"lo":728.73,"hi":1217.68,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":8,"reveal":14,"observed":6.0,"expected":5.44,"lo":0.0,"hi":14.51,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":8,"reveal":14,"observed":422.14,"expected":413.98,"lo":353.73,"hi":470.56,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":9,"reveal":14,"observed":1.0,"expected":3.43,"lo":0.0,"hi":8.57,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":9,"reveal":14,"observed":206.32,"expected":214.83,"lo":0.0,"hi":312.97,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":9,"reveal":14,"observed":1.0,"expected":7.74,"lo":1.87,"hi":13.75,"flagged":true,"note":"tracking outage, caught"},{"ref":"sim-002","metric":"spend","i":9,"reveal":14,"observed":600.54,"expected":586.65,"lo":529.98,"hi":640.41,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":9,"reveal":14,"observed":21.0,"expected":13.7,"lo":6.18,"hi":30.12,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":9,"reveal":14,"observed":926.23,"expected":897.92,"lo":727.36,"hi":1215.03,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":9,"reveal":14,"observed":13.0,"expected":6.86,"lo":1.16,"hi":13.64,"flagged":false,"note":"conversion surge, missed"},{"ref":"sim-004","metric":"spend","i":9,"reveal":14,"observed":445.06,"expected":413.06,"lo":355.2,"hi":467.59,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":10,"reveal":14,"observed":219.44,"expected":216.54,"lo":0.0,"hi":313.1,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":10,"reveal":14,"observed":623.86,"expected":584.97,"lo":529.82,"hi":638.23,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":10,"reveal":14,"observed":898.98,"expected":902.77,"lo":727.54,"hi":1222.33,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":10,"reveal":14,"observed":402.8,"expected":413.11,"lo":354.91,"hi":468.55,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":11,"reveal":14,"observed":222.85,"expected":216.68,"lo":0.0,"hi":314.65,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":11,"reveal":14,"observed":576.94,"expected":586.55,"lo":529.38,"hi":643.08,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":11,"reveal":14,"observed":878.61,"expected":908.1,"lo":725.49,"hi":1247.76,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":11,"reveal":14,"observed":408.43,"expected":413.89,"lo":350.03,"hi":468.67,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":12,"reveal":14,"observed":210.42,"expected":216.29,"lo":0.0,"hi":314.66,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":12,"reveal":14,"observed":573.23,"expected":586.43,"lo":530.48,"hi":639.4,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":12,"reveal":14,"observed":921.48,"expected":908.69,"lo":724.22,"hi":1246.95,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":12,"reveal":14,"observed":393.06,"expected":415.94,"lo":358.98,"hi":463.74,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":10,"reveal":21,"observed":2.0,"expected":3.04,"lo":0.0,"hi":8.39,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":10,"reveal":21,"observed":15.0,"expected":10.98,"lo":1.33,"hi":19.16,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":10,"reveal":21,"observed":22.0,"expected":17.96,"lo":9.32,"hi":32.53,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":10,"reveal":21,"observed":5.0,"expected":7.0,"lo":0.15,"hi":15.04,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":11,"reveal":21,"observed":5.0,"expected":3.13,"lo":0.0,"hi":8.98,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":11,"reveal":21,"observed":9.0,"expected":11.0,"lo":1.88,"hi":19.35,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":11,"reveal":21,"observed":24.0,"expected":18.11,"lo":9.39,"hi":33.95,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":11,"reveal":21,"observed":13.0,"expected":8.97,"lo":0.88,"hi":17.45,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":12,"reveal":21,"observed":3.0,"expected":3.05,"lo":0.0,"hi":8.93,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":12,"reveal":21,"observed":8.0,"expected":11.0,"lo":1.89,"hi":19.34,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":12,"reveal":21,"observed":18.0,"expected":18.34,"lo":9.19,"hi":34.39,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":12,"reveal":21,"observed":7.0,"expected":6.99,"lo":0.0,"hi":16.21,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":13,"reveal":21,"observed":2.0,"expected":3.93,"lo":0.0,"hi":9.0,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":13,"reveal":21,"observed":236.74,"expected":216.12,"lo":160.31,"hi":255.35,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":13,"reveal":21,"observed":15.0,"expected":11.95,"lo":2.09,"hi":21.94,"flagged":false,"note":"conversion surge, missed"},{"ref":"sim-002","metric":"spend","i":13,"reveal":21,"observed":581.96,"expected":588.27,"lo":542.1,"hi":639.62,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":13,"reveal":21,"observed":12.0,"expected":19.37,"lo":9.96,"hi":35.62,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":13,"reveal":21,"observed":947.82,"expected":901.83,"lo":801.4,"hi":1039.59,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":13,"reveal":21,"observed":8.0,"expected":8.99,"lo":0.88,"hi":18.69,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":13,"reveal":21,"observed":402.54,"expected":413.66,"lo":377.95,"hi":456.5,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":14,"reveal":21,"observed":4.0,"expected":2.12,"lo":0.0,"hi":8.0,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":14,"reveal":21,"observed":159.71,"expected":149.9,"lo":0.0,"hi":226.38,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":14,"reveal":21,"observed":7.0,"expected":9.02,"lo":1.02,"hi":17.66,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":14,"reveal":21,"observed":466.94,"expected":442.56,"lo":400.95,"hi":500.33,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":14,"reveal":21,"observed":21.0,"expected":21.48,"lo":9.75,"hi":41.31,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":14,"reveal":21,"observed":1224.52,"expected":1131.98,"lo":965.23,"hi":1532.38,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":14,"reveal":21,"observed":6.0,"expected":7.02,"lo":0.14,"hi":16.42,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":14,"reveal":21,"observed":381.43,"expected":363.65,"lo":318.05,"hi":415.6,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":15,"reveal":21,"observed":2.0,"expected":2.35,"lo":0.0,"hi":7.28,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":15,"reveal":21,"observed":164.03,"expected":147.87,"lo":0.0,"hi":225.67,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":15,"reveal":21,"observed":4.0,"expected":8.18,"lo":0.76,"hi":16.28,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":15,"reveal":21,"observed":430.75,"expected":442.61,"lo":399.37,"hi":502.37,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":15,"reveal":21,"observed":15.0,"expected":18.84,"lo":8.82,"hi":35.85,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":15,"reveal":21,"observed":1161.63,"expected":1134.77,"lo":965.31,"hi":1550.35,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":15,"reveal":21,"observed":9.0,"expected":6.41,"lo":0.26,"hi":14.78,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":15,"reveal":21,"observed":379.69,"expected":362.98,"lo":317.91,"hi":413.49,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":16,"reveal":21,"observed":1.0,"expected":2.53,"lo":0.0,"hi":6.91,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":16,"reveal":21,"observed":175.85,"expected":147.5,"lo":0.0,"hi":227.26,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":16,"reveal":21,"observed":10.0,"expected":8.54,"lo":1.19,"hi":15.57,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":16,"reveal":21,"observed":461.06,"expected":443.07,"lo":400.79,"hi":500.3,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":16,"reveal":21,"observed":18.0,"expected":17.19,"lo":8.04,"hi":32.85,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":16,"reveal":21,"observed":1110.03,"expected":1131.66,"lo":963.78,"hi":1537.0,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":16,"reveal":21,"observed":9.0,"expected":6.02,"lo":0.13,"hi":13.92,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":16,"reveal":21,"observed":371.51,"expected":362.62,"lo":317.76,"hi":413.19,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":17,"reveal":21,"observed":178.78,"expected":147.81,"lo":0.0,"hi":227.62,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":17,"reveal":21,"observed":478.75,"expected":443.61,"lo":400.18,"hi":502.33,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":17,"reveal":21,"observed":1118.54,"expected":1131.48,"lo":962.79,"hi":1532.45,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":17,"reveal":21,"observed":371.66,"expected":363.86,"lo":315.27,"hi":418.1,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":18,"reveal":21,"observed":174.94,"expected":144.51,"lo":0.0,"hi":223.61,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":18,"reveal":21,"observed":458.78,"expected":442.39,"lo":398.42,"hi":504.51,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":18,"reveal":21,"observed":1147.23,"expected":1125.75,"lo":958.36,"hi":1523.06,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":18,"reveal":21,"observed":346.77,"expected":358.54,"lo":309.42,"hi":407.95,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":19,"reveal":21,"observed":160.41,"expected":145.22,"lo":0.0,"hi":224.78,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":19,"reveal":21,"observed":444.37,"expected":442.65,"lo":400.65,"hi":499.47,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":19,"reveal":21,"observed":1141.99,"expected":1128.08,"lo":958.91,"hi":1533.52,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":19,"reveal":21,"observed":393.08,"expected":358.95,"lo":309.95,"hi":408.45,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":17,"reveal":28,"observed":1.0,"expected":3.03,"lo":0.0,"hi":7.98,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":17,"reveal":28,"observed":15.0,"expected":9.97,"lo":2.17,"hi":17.56,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":17,"reveal":28,"observed":25.0,"expected":20.39,"lo":11.49,"hi":31.97,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":17,"reveal":28,"observed":8.0,"expected":8.97,"lo":1.3,"hi":16.03,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":18,"reveal":28,"observed":1.0,"expected":3.07,"lo":0.0,"hi":8.02,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":18,"reveal":28,"observed":10.0,"expected":9.98,"lo":2.25,"hi":17.88,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":18,"reveal":28,"observed":23.0,"expected":21.62,"lo":11.96,"hi":35.68,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":18,"reveal":28,"observed":7.0,"expected":8.98,"lo":1.5,"hi":16.05,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":19,"reveal":28,"observed":1.0,"expected":3.04,"lo":0.0,"hi":7.99,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":19,"reveal":28,"observed":9.0,"expected":9.01,"lo":1.72,"hi":16.8,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":19,"reveal":28,"observed":21.0,"expected":21.62,"lo":11.96,"hi":35.57,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":19,"reveal":28,"observed":9.0,"expected":9.01,"lo":1.88,"hi":17.23,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":20,"reveal":28,"observed":2.0,"expected":3.06,"lo":0.0,"hi":8.02,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":20,"reveal":28,"observed":178.78,"expected":168.39,"lo":125.59,"hi":207.02,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":20,"reveal":28,"observed":2.0,"expected":9.0,"lo":1.52,"hi":16.67,"flagged":false,"note":"tracking outage, missed"},{"ref":"sim-002","metric":"spend","i":20,"reveal":28,"observed":440.31,"expected":453.81,"lo":417.74,"hi":490.85,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":20,"reveal":28,"observed":10.0,"expected":21.4,"lo":11.04,"hi":35.36,"flagged":true,"note":"false alarm"},{"ref":"sim-003","metric":"spend","i":20,"reveal":28,"observed":1124.5,"expected":1144.25,"lo":1023.38,"hi":1296.23,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":20,"reveal":28,"observed":17.0,"expected":9.0,"lo":1.82,"hi":16.72,"flagged":true,"note":"conversion surge, caught"},{"ref":"sim-004","metric":"spend","i":20,"reveal":28,"observed":377.49,"expected":370.96,"lo":335.76,"hi":404.31,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":21,"reveal":28,"observed":2.0,"expected":2.12,"lo":0.0,"hi":7.02,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":21,"reveal":28,"observed":129.84,"expected":119.14,"lo":21.52,"hi":173.34,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":21,"reveal":28,"observed":6.0,"expected":7.96,"lo":0.57,"hi":15.01,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":21,"reveal":28,"observed":394.94,"expected":416.28,"lo":379.54,"hi":458.34,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":21,"reveal":28,"observed":32.0,"expected":22.12,"lo":12.0,"hi":38.52,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":21,"reveal":28,"observed":1349.48,"expected":1335.25,"lo":1152.73,"hi":1782.4,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":21,"reveal":28,"observed":5.0,"expected":6.05,"lo":0.21,"hi":13.98,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":21,"reveal":28,"observed":301.15,"expected":304.56,"lo":255.59,"hi":346.61,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":22,"reveal":28,"observed":3.0,"expected":2.64,"lo":0.0,"hi":6.4,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":22,"reveal":28,"observed":118.33,"expected":119.28,"lo":22.39,"hi":173.54,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":22,"reveal":28,"observed":5.0,"expected":7.28,"lo":0.79,"hi":13.96,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":22,"reveal":28,"observed":402.58,"expected":418.75,"lo":380.93,"hi":461.04,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":22,"reveal":28,"observed":22.0,"expected":19.83,"lo":10.85,"hi":33.31,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":22,"reveal":28,"observed":1250.3,"expected":1338.91,"lo":1157.94,"hi":1768.12,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":22,"reveal":28,"observed":5.0,"expected":6.35,"lo":0.38,"hi":13.13,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":22,"reveal":28,"observed":318.07,"expected":304.46,"lo":255.87,"hi":346.14,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":23,"reveal":28,"observed":2.0,"expected":2.5,"lo":0.0,"hi":6.04,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":23,"reveal":28,"observed":126.9,"expected":119.62,"lo":23.2,"hi":173.89,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":23,"reveal":28,"observed":2.0,"expected":6.91,"lo":0.8,"hi":13.69,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":23,"reveal":28,"observed":423.21,"expected":418.28,"lo":380.55,"hi":461.02,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":23,"reveal":28,"observed":27.0,"expected":18.98,"lo":10.33,"hi":32.75,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":23,"reveal":28,"observed":1341.84,"expected":1342.45,"lo":1161.83,"hi":1757.5,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":23,"reveal":28,"observed":15.0,"expected":6.02,"lo":0.58,"hi":12.47,"flagged":true,"note":"conversion surge, caught"},{"ref":"sim-004","metric":"spend","i":23,"reveal":28,"observed":312.42,"expected":304.32,"lo":255.12,"hi":346.26,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":24,"reveal":28,"observed":127.51,"expected":118.28,"lo":18.86,"hi":174.2,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":24,"reveal":28,"observed":403.08,"expected":418.2,"lo":379.92,"hi":462.61,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":24,"reveal":28,"observed":1370.02,"expected":1345.18,"lo":1162.13,"hi":1770.87,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":24,"reveal":28,"observed":323.38,"expected":305.62,"lo":256.42,"hi":347.76,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":25,"reveal":28,"observed":118.0,"expected":117.26,"lo":16.34,"hi":173.94,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":25,"reveal":28,"observed":446.55,"expected":417.52,"lo":380.13,"hi":460.23,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":25,"reveal":28,"observed":1272.1,"expected":1337.47,"lo":1154.71,"hi":1771.23,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":25,"reveal":28,"observed":293.59,"expected":303.82,"lo":250.48,"hi":347.93,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":26,"reveal":28,"observed":116.38,"expected":116.87,"lo":14.43,"hi":174.24,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":26,"reveal":28,"observed":446.83,"expected":417.93,"lo":380.13,"hi":460.64,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":26,"reveal":28,"observed":1322.02,"expected":1336.39,"lo":1152.0,"hi":1774.15,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":26,"reveal":28,"observed":289.78,"expected":303.61,"lo":253.13,"hi":346.7,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":24,"reveal":35,"observed":0.0,"expected":2.03,"lo":0.0,"hi":6.07,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":24,"reveal":35,"observed":10.0,"expected":8.02,"lo":1.06,"hi":17.58,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":24,"reveal":35,"observed":29.0,"expected":27.88,"lo":11.94,"hi":42.73,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":24,"reveal":35,"observed":5.0,"expected":7.02,"lo":1.08,"hi":18.0,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":25,"reveal":35,"observed":3.0,"expected":2.05,"lo":0.0,"hi":6.62,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":25,"reveal":35,"observed":15.0,"expected":9.02,"lo":1.71,"hi":18.96,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":25,"reveal":35,"observed":19.0,"expected":25.54,"lo":11.09,"hi":40.71,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":25,"reveal":35,"observed":7.0,"expected":7.74,"lo":1.12,"hi":18.15,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":26,"reveal":35,"observed":0.0,"expected":2.04,"lo":0.0,"hi":6.33,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":26,"reveal":35,"observed":8.0,"expected":9.03,"lo":1.83,"hi":19.05,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":26,"reveal":35,"observed":23.0,"expected":26.84,"lo":11.35,"hi":41.64,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":26,"reveal":35,"observed":6.0,"expected":7.04,"lo":1.06,"hi":18.15,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":27,"reveal":35,"observed":1.0,"expected":2.05,"lo":0.0,"hi":6.66,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":27,"reveal":35,"observed":114.42,"expected":119.08,"lo":84.67,"hi":148.53,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":27,"reveal":35,"observed":7.0,"expected":8.05,"lo":1.11,"hi":18.16,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":27,"reveal":35,"observed":410.74,"expected":418.38,"lo":383.84,"hi":457.94,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":27,"reveal":35,"observed":19.0,"expected":24.34,"lo":9.62,"hi":41.06,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":27,"reveal":35,"observed":1252.5,"expected":1323.32,"lo":1158.03,"hi":1498.95,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":27,"reveal":35,"observed":2.0,"expected":7.26,"lo":0.95,"hi":18.91,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":27,"reveal":35,"observed":276.92,"expected":305.78,"lo":271.67,"hi":338.76,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":28,"reveal":35,"observed":1.0,"expected":2.01,"lo":0.0,"hi":6.03,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":28,"reveal":35,"observed":91.13,"expected":81.9,"lo":3.82,"hi":124.99,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":28,"reveal":35,"observed":1.0,"expected":6.98,"lo":0.48,"hi":16.13,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":28,"reveal":35,"observed":352.4,"expected":344.46,"lo":306.35,"hi":379.75,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":28,"reveal":35,"observed":27.0,"expected":31.88,"lo":11.51,"hi":51.73,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":28,"reveal":35,"observed":1544.12,"expected":1560.05,"lo":1337.78,"hi":1987.65,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":28,"reveal":35,"observed":4.0,"expected":6.99,"lo":0.9,"hi":17.91,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":28,"reveal":35,"observed":289.69,"expected":271.94,"lo":233.28,"hi":310.14,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":29,"reveal":35,"observed":2.0,"expected":1.83,"lo":0.0,"hi":5.73,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":29,"reveal":35,"observed":99.67,"expected":80.88,"lo":1.22,"hi":124.72,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":29,"reveal":35,"observed":13.0,"expected":6.36,"lo":0.74,"hi":14.7,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":29,"reveal":35,"observed":364.89,"expected":344.24,"lo":305.79,"hi":379.93,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":29,"reveal":35,"observed":19.0,"expected":26.73,"lo":10.84,"hi":40.98,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":29,"reveal":35,"observed":1439.69,"expected":1562.49,"lo":1339.91,"hi":1979.95,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":29,"reveal":35,"observed":7.0,"expected":5.49,"lo":0.39,"hi":16.44,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":29,"reveal":35,"observed":261.47,"expected":271.75,"lo":232.69,"hi":309.8,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":30,"reveal":35,"observed":1.0,"expected":1.71,"lo":0.0,"hi":5.43,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":30,"reveal":35,"observed":87.81,"expected":81.08,"lo":1.18,"hi":124.89,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":30,"reveal":35,"observed":3.0,"expected":6.0,"lo":0.72,"hi":13.83,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":30,"reveal":35,"observed":354.5,"expected":343.76,"lo":305.18,"hi":379.78,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":30,"reveal":35,"observed":23.0,"expected":23.26,"lo":9.43,"hi":36.98,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":30,"reveal":35,"observed":1341.84,"expected":1564.46,"lo":1334.69,"hi":2014.35,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":30,"reveal":35,"observed":6.0,"expected":6.02,"lo":0.7,"hi":15.61,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":30,"reveal":35,"observed":295.31,"expected":271.56,"lo":231.77,"hi":309.74,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":31,"reveal":35,"observed":91.73,"expected":80.65,"lo":0.0,"hi":124.72,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":31,"reveal":35,"observed":329.24,"expected":345.16,"lo":304.93,"hi":381.56,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":31,"reveal":35,"observed":1455.7,"expected":1563.45,"lo":1332.48,"hi":2023.51,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":31,"reveal":35,"observed":279.82,"expected":271.5,"lo":231.96,"hi":309.67,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":32,"reveal":35,"observed":98.04,"expected":79.64,"lo":0.0,"hi":124.26,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":32,"reveal":35,"observed":340.71,"expected":342.21,"lo":303.15,"hi":380.64,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":32,"reveal":35,"observed":1400.91,"expected":1553.81,"lo":1334.89,"hi":2011.64,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":32,"reveal":35,"observed":250.09,"expected":271.0,"lo":229.41,"hi":311.73,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":33,"reveal":35,"observed":94.79,"expected":79.35,"lo":0.0,"hi":124.15,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":33,"reveal":35,"observed":320.17,"expected":343.22,"lo":304.87,"hi":380.15,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":33,"reveal":35,"observed":1486.87,"expected":1554.86,"lo":1337.67,"hi":1978.02,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":33,"reveal":35,"observed":287.05,"expected":271.6,"lo":231.18,"hi":311.75,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":31,"reveal":42,"observed":0.0,"expected":1.39,"lo":0.0,"hi":5.91,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":31,"reveal":42,"observed":6.0,"expected":6.27,"lo":0.76,"hi":15.0,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":31,"reveal":42,"observed":31.0,"expected":27.07,"lo":14.23,"hi":42.63,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":31,"reveal":42,"observed":6.0,"expected":6.02,"lo":0.84,"hi":14.59,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":32,"reveal":42,"observed":0.0,"expected":1.91,"lo":0.0,"hi":5.95,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":32,"reveal":42,"observed":5.0,"expected":6.99,"lo":0.85,"hi":15.6,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":32,"reveal":42,"observed":32.0,"expected":25.91,"lo":13.41,"hi":41.63,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":32,"reveal":42,"observed":7.0,"expected":6.0,"lo":0.73,"hi":14.36,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":33,"reveal":42,"observed":4.0,"expected":1.48,"lo":0.0,"hi":5.98,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":33,"reveal":42,"observed":5.0,"expected":6.99,"lo":0.93,"hi":15.2,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":33,"reveal":42,"observed":25.0,"expected":26.1,"lo":13.33,"hi":42.01,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":33,"reveal":42,"observed":7.0,"expected":6.04,"lo":0.87,"hi":15.22,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":34,"reveal":42,"observed":1.0,"expected":1.16,"lo":0.0,"hi":5.88,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":34,"reveal":42,"observed":92.26,"expected":90.82,"lo":62.79,"hi":112.89,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":34,"reveal":42,"observed":9.0,"expected":7.97,"lo":1.13,"hi":15.97,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":34,"reveal":42,"observed":349.07,"expected":343.85,"lo":311.46,"hi":374.97,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":34,"reveal":42,"observed":30.0,"expected":26.66,"lo":12.93,"hi":43.52,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":34,"reveal":42,"observed":1544.12,"expected":1449.25,"lo":1285.08,"hi":1627.2,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":34,"reveal":42,"observed":7.0,"expected":6.0,"lo":0.69,"hi":14.79,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":34,"reveal":42,"observed":277.71,"expected":273.31,"lo":234.83,"hi":306.54,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":35,"reveal":42,"observed":1.0,"expected":1.04,"lo":0.0,"hi":5.05,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":35,"reveal":42,"observed":71.42,"expected":64.89,"lo":9.79,"hi":94.27,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":35,"reveal":42,"observed":4.0,"expected":8.01,"lo":1.05,"hi":16.27,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":35,"reveal":42,"observed":423.83,"expected":426.06,"lo":383.67,"hi":474.12,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":35,"reveal":42,"observed":21.0,"expected":21.48,"lo":9.05,"hi":36.02,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":35,"reveal":42,"observed":1250.87,"expected":1319.59,"lo":1136.56,"hi":1644.16,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":35,"reveal":42,"observed":4.0,"expected":5.95,"lo":0.59,"hi":13.98,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":35,"reveal":42,"observed":281.04,"expected":300.72,"lo":260.72,"hi":335.69,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":36,"reveal":42,"observed":2.0,"expected":0.97,"lo":0.0,"hi":4.59,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":36,"reveal":42,"observed":70.01,"expected":65.36,"lo":9.82,"hi":94.81,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":36,"reveal":42,"observed":6.0,"expected":8.2,"lo":1.39,"hi":16.35,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":36,"reveal":42,"observed":454.43,"expected":426.47,"lo":384.13,"hi":474.54,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":36,"reveal":42,"observed":26.0,"expected":22.32,"lo":10.86,"hi":35.7,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":36,"reveal":42,"observed":1430.57,"expected":1318.54,"lo":1150.32,"hi":1595.39,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":36,"reveal":42,"observed":1.0,"expected":5.48,"lo":0.69,"hi":13.91,"flagged":false,"note":"tracking outage, missed"},{"ref":"sim-004","metric":"spend","i":36,"reveal":42,"observed":310.78,"expected":300.25,"lo":257.63,"hi":337.48,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":37,"reveal":42,"observed":1.0,"expected":0.91,"lo":0.0,"hi":4.35,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":37,"reveal":42,"observed":71.36,"expected":64.53,"lo":7.32,"hi":94.44,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":37,"reveal":42,"observed":7.0,"expected":6.9,"lo":1.13,"hi":13.95,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":37,"reveal":42,"observed":413.81,"expected":426.24,"lo":383.08,"hi":475.74,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":37,"reveal":42,"observed":22.0,"expected":19.33,"lo":8.58,"hi":31.65,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":37,"reveal":42,"observed":1308.67,"expected":1315.85,"lo":1160.87,"hi":1548.58,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":37,"reveal":42,"observed":4.0,"expected":5.17,"lo":0.64,"hi":13.06,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":37,"reveal":42,"observed":302.59,"expected":300.38,"lo":260.39,"hi":335.58,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":38,"reveal":42,"observed":75.43,"expected":64.27,"lo":6.85,"hi":94.19,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":38,"reveal":42,"observed":437.77,"expected":425.23,"lo":382.07,"hi":474.52,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":38,"reveal":42,"observed":1322.25,"expected":1318.06,"lo":1146.79,"hi":1604.24,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":38,"reveal":42,"observed":281.94,"expected":300.26,"lo":259.23,"hi":336.44,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":39,"reveal":42,"observed":68.38,"expected":63.92,"lo":5.28,"hi":93.92,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":39,"reveal":42,"observed":416.2,"expected":426.19,"lo":381.58,"hi":478.02,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":39,"reveal":42,"observed":1287.14,"expected":1316.58,"lo":1148.54,"hi":1595.42,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":39,"reveal":42,"observed":302.32,"expected":299.86,"lo":250.66,"hi":339.24,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":40,"reveal":42,"observed":68.69,"expected":63.4,"lo":3.92,"hi":93.88,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":40,"reveal":42,"observed":456.05,"expected":425.29,"lo":380.44,"hi":477.64,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":40,"reveal":42,"observed":1331.26,"expected":1319.12,"lo":1145.62,"hi":1610.65,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":40,"reveal":42,"observed":318.71,"expected":300.92,"lo":256.75,"hi":337.23,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":38,"reveal":49,"observed":3.0,"expected":1.01,"lo":0.0,"hi":4.98,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":38,"reveal":49,"observed":8.0,"expected":7.96,"lo":1.16,"hi":15.81,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":38,"reveal":49,"observed":34.0,"expected":24.97,"lo":14.09,"hi":34.99,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":38,"reveal":49,"observed":5.0,"expected":5.98,"lo":0.84,"hi":13.06,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":39,"reveal":49,"observed":2.0,"expected":1.02,"lo":0.0,"hi":5.0,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":39,"reveal":49,"observed":15.0,"expected":7.99,"lo":1.49,"hi":16.03,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":39,"reveal":49,"observed":29.0,"expected":24.25,"lo":13.76,"hi":34.63,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":39,"reveal":49,"observed":8.0,"expected":6.05,"lo":0.96,"hi":14.73,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":40,"reveal":49,"observed":1.0,"expected":0.99,"lo":0.0,"hi":4.99,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":40,"reveal":49,"observed":8.0,"expected":7.99,"lo":1.02,"hi":16.24,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":40,"reveal":49,"observed":31.0,"expected":25.05,"lo":14.08,"hi":35.27,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":40,"reveal":49,"observed":6.0,"expected":6.96,"lo":0.97,"hi":15.04,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":41,"reveal":49,"observed":3.0,"expected":1.01,"lo":0.0,"hi":4.98,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":41,"reveal":49,"observed":73.8,"expected":68.23,"lo":53.49,"hi":82.23,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":41,"reveal":49,"observed":7.0,"expected":7.02,"lo":1.01,"hi":15.57,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":41,"reveal":49,"observed":409.34,"expected":427.41,"lo":392.88,"hi":465.1,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":41,"reveal":49,"observed":23.0,"expected":24.04,"lo":12.11,"hi":35.14,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":41,"reveal":49,"observed":1338.22,"expected":1335.33,"lo":1203.25,"hi":1498.01,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":41,"reveal":49,"observed":5.0,"expected":6.01,"lo":0.83,"hi":14.05,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":41,"reveal":49,"observed":280.91,"expected":298.9,"lo":265.83,"hi":327.75,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":42,"reveal":49,"observed":1.0,"expected":0.92,"lo":0.0,"hi":4.05,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":42,"reveal":49,"observed":48.52,"expected":49.7,"lo":12.82,"hi":70.63,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":42,"reveal":49,"observed":9.0,"expected":7.6,"lo":0.76,"hi":16.01,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":42,"reveal":49,"observed":517.32,"expected":543.94,"lo":493.8,"hi":613.9,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":42,"reveal":49,"observed":18.0,"expected":24.19,"lo":13.04,"hi":34.54,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":42,"reveal":49,"observed":1340.64,"expected":1334.3,"lo":1201.62,"hi":1504.41,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":42,"reveal":49,"observed":5.0,"expected":4.91,"lo":0.06,"hi":11.02,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":42,"reveal":49,"observed":222.66,"expected":223.7,"lo":191.28,"hi":255.58,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":43,"reveal":49,"observed":1.0,"expected":0.85,"lo":0.0,"hi":3.69,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":43,"reveal":49,"observed":54.57,"expected":49.1,"lo":11.56,"hi":70.28,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":43,"reveal":49,"observed":3.0,"expected":8.15,"lo":0.91,"hi":15.78,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":43,"reveal":49,"observed":547.23,"expected":542.24,"lo":495.92,"hi":608.4,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":43,"reveal":49,"observed":20.0,"expected":20.01,"lo":10.02,"hi":30.02,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":43,"reveal":49,"observed":1214.63,"expected":1315.37,"lo":1186.21,"hi":1478.58,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":43,"reveal":49,"observed":3.0,"expected":4.54,"lo":0.16,"hi":10.88,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":43,"reveal":49,"observed":229.44,"expected":223.35,"lo":189.54,"hi":256.29,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":44,"reveal":49,"observed":0.0,"expected":0.83,"lo":0.0,"hi":3.52,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":44,"reveal":49,"observed":55.01,"expected":48.63,"lo":10.37,"hi":70.04,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":44,"reveal":49,"observed":7.0,"expected":7.7,"lo":0.87,"hi":14.98,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":44,"reveal":49,"observed":537.67,"expected":542.02,"lo":495.64,"hi":607.61,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":44,"reveal":49,"observed":30.0,"expected":22.13,"lo":12.59,"hi":30.96,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":44,"reveal":49,"observed":1364.01,"expected":1331.7,"lo":1199.61,"hi":1500.87,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":44,"reveal":49,"observed":8.0,"expected":4.3,"lo":0.33,"hi":10.3,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":44,"reveal":49,"observed":243.72,"expected":225.38,"lo":192.54,"hi":259.95,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":45,"reveal":49,"observed":50.63,"expected":48.47,"lo":9.93,"hi":69.88,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":45,"reveal":49,"observed":539.44,"expected":541.35,"lo":486.18,"hi":625.66,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":45,"reveal":49,"observed":1274.31,"expected":1326.83,"lo":1196.71,"hi":1493.79,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":45,"reveal":49,"observed":234.89,"expected":225.62,"lo":193.36,"hi":259.51,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":46,"reveal":49,"observed":54.77,"expected":47.58,"lo":8.16,"hi":69.41,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":46,"reveal":49,"observed":540.83,"expected":544.52,"lo":493.71,"hi":610.18,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":46,"reveal":49,"observed":1336.49,"expected":1324.88,"lo":1195.74,"hi":1492.63,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":46,"reveal":49,"observed":227.16,"expected":221.78,"lo":188.21,"hi":254.3,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":47,"reveal":49,"observed":51.29,"expected":47.45,"lo":7.71,"hi":69.24,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":47,"reveal":49,"observed":522.86,"expected":540.22,"lo":495.05,"hi":604.16,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":47,"reveal":49,"observed":1411.98,"expected":1318.7,"lo":1190.57,"hi":1485.37,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":47,"reveal":49,"observed":222.6,"expected":222.87,"lo":188.98,"hi":256.0,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":45,"reveal":56,"observed":0.0,"expected":1.01,"lo":0.0,"hi":4.06,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":45,"reveal":56,"observed":9.0,"expected":9.97,"lo":2.6,"hi":17.61,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":45,"reveal":56,"observed":6.0,"expected":23.83,"lo":13.03,"hi":35.22,"flagged":true,"note":"tracking outage, caught"},{"ref":"sim-004","metric":"conversions","i":45,"reveal":56,"observed":7.0,"expected":5.02,"lo":0.95,"hi":12.02,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":46,"reveal":56,"observed":0.0,"expected":1.09,"lo":0.0,"hi":4.94,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":46,"reveal":56,"observed":16.0,"expected":10.99,"lo":3.06,"hi":19.81,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":46,"reveal":56,"observed":26.0,"expected":29.01,"lo":17.16,"hi":39.93,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":46,"reveal":56,"observed":3.0,"expected":5.08,"lo":0.97,"hi":13.47,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":47,"reveal":56,"observed":6.0,"expected":1.19,"lo":0.0,"hi":4.96,"flagged":true,"note":"conversion surge, caught"},{"ref":"sim-002","metric":"conversions","i":47,"reveal":56,"observed":13.0,"expected":10.03,"lo":2.98,"hi":18.65,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":47,"reveal":56,"observed":20.0,"expected":30.25,"lo":18.31,"hi":41.97,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":47,"reveal":56,"observed":1.0,"expected":5.02,"lo":0.93,"hi":12.09,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":48,"reveal":56,"observed":1.0,"expected":1.19,"lo":0.0,"hi":4.99,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":48,"reveal":56,"observed":54.32,"expected":50.75,"lo":37.12,"hi":62.89,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":48,"reveal":56,"observed":13.0,"expected":10.01,"lo":2.96,"hi":18.03,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":48,"reveal":56,"observed":547.36,"expected":536.49,"lo":501.32,"hi":586.58,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":48,"reveal":56,"observed":14.0,"expected":28.78,"lo":15.97,"hi":41.11,"flagged":true,"note":"false alarm"},{"ref":"sim-003","metric":"spend","i":48,"reveal":56,"observed":1341.18,"expected":1314.44,"lo":1187.99,"hi":1452.94,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":48,"reveal":56,"observed":5.0,"expected":5.03,"lo":0.93,"hi":12.66,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":48,"reveal":56,"observed":241.29,"expected":229.96,"lo":203.08,"hi":255.51,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":49,"reveal":56,"observed":1.0,"expected":0.97,"lo":0.0,"hi":4.02,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":49,"reveal":56,"observed":40.96,"expected":32.8,"lo":0.0,"hi":52.71,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":49,"reveal":56,"observed":3.0,"expected":5.97,"lo":0.5,"hi":14.98,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":49,"reveal":56,"observed":424.67,"expected":446.81,"lo":403.77,"hi":488.68,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":49,"reveal":56,"observed":21.0,"expected":28.51,"lo":15.06,"hi":41.17,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":49,"reveal":56,"observed":1475.15,"expected":1559.18,"lo":1356.42,"hi":1839.14,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":49,"reveal":56,"observed":4.0,"expected":3.96,"lo":0.06,"hi":8.94,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":49,"reveal":56,"observed":182.96,"expected":172.55,"lo":146.12,"hi":197.16,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":50,"reveal":56,"observed":0.0,"expected":0.89,"lo":0.0,"hi":3.66,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":50,"reveal":56,"observed":40.51,"expected":32.48,"lo":0.0,"hi":52.32,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":50,"reveal":56,"observed":8.0,"expected":6.38,"lo":1.15,"hi":14.49,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":50,"reveal":56,"observed":472.13,"expected":446.38,"lo":403.17,"hi":488.49,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":50,"reveal":56,"observed":28.0,"expected":26.38,"lo":14.58,"hi":37.93,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":50,"reveal":56,"observed":1462.08,"expected":1576.27,"lo":1361.02,"hi":1886.04,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":50,"reveal":56,"observed":1.0,"expected":3.62,"lo":0.27,"hi":8.17,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":50,"reveal":56,"observed":165.87,"expected":172.23,"lo":145.5,"hi":197.13,"flagged":false,"note":null},{"ref":"sim-001","metric":"conversions","i":51,"reveal":56,"observed":1.0,"expected":0.86,"lo":0.0,"hi":4.16,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":51,"reveal":56,"observed":40.9,"expected":32.0,"lo":0.0,"hi":52.32,"flagged":false,"note":null},{"ref":"sim-002","metric":"conversions","i":51,"reveal":56,"observed":6.0,"expected":6.86,"lo":1.52,"hi":14.0,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":51,"reveal":56,"observed":453.39,"expected":446.74,"lo":403.31,"hi":488.91,"flagged":false,"note":null},{"ref":"sim-003","metric":"conversions","i":51,"reveal":56,"observed":16.0,"expected":24.96,"lo":14.01,"hi":36.0,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":51,"reveal":56,"observed":1387.05,"expected":1556.91,"lo":1358.89,"hi":1824.39,"flagged":false,"note":null},{"ref":"sim-004","metric":"conversions","i":51,"reveal":56,"observed":3.0,"expected":5.13,"lo":0.79,"hi":11.99,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":51,"reveal":56,"observed":300.59,"expected":172.25,"lo":145.01,"hi":197.55,"flagged":true,"note":"spend spike, caught"},{"ref":"sim-001","metric":"spend","i":52,"reveal":56,"observed":40.23,"expected":31.82,"lo":0.0,"hi":52.33,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":52,"reveal":56,"observed":421.18,"expected":449.6,"lo":404.92,"hi":493.46,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":52,"reveal":56,"observed":1509.29,"expected":1566.69,"lo":1362.62,"hi":1846.27,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":52,"reveal":56,"observed":171.76,"expected":172.2,"lo":145.2,"hi":197.28,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":53,"reveal":56,"observed":37.84,"expected":31.37,"lo":0.0,"hi":51.92,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":53,"reveal":56,"observed":420.05,"expected":446.1,"lo":403.32,"hi":489.13,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":53,"reveal":56,"observed":1465.45,"expected":1560.91,"lo":1347.31,"hi":1871.6,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":53,"reveal":56,"observed":165.93,"expected":169.44,"lo":122.29,"hi":207.9,"flagged":false,"note":null},{"ref":"sim-001","metric":"spend","i":54,"reveal":56,"observed":38.06,"expected":31.4,"lo":0.0,"hi":52.1,"flagged":false,"note":null},{"ref":"sim-002","metric":"spend","i":54,"reveal":56,"observed":487.65,"expected":449.94,"lo":407.22,"hi":492.14,"flagged":false,"note":null},{"ref":"sim-003","metric":"spend","i":54,"reveal":56,"observed":1506.14,"expected":1565.55,"lo":1358.18,"hi":1844.47,"flagged":false,"note":null},{"ref":"sim-004","metric":"spend","i":54,"reveal":56,"observed":177.13,"expected":171.03,"lo":142.98,"hi":195.49,"flagged":false,"note":null}],"alarms":[{"method":"rule","ref":"sim-001","metric":"conversions","i":1,"reveal":7,"real":false,"lo":1.0,"hi":3.0},{"method":"rule","ref":"sim-002","metric":"conversions","i":1,"reveal":7,"real":false,"lo":2.5,"hi":7.5},{"method":"rule","ref":"sim-004","metric":"conversions","i":1,"reveal":7,"real":false,"lo":4.0,"hi":12.0},{"method":"rule","ref":"sim-001","metric":"conversions","i":2,"reveal":7,"real":false,"lo":2.2,"hi":6.6},{"method":"rule","ref":"sim-004","metric":"conversions","i":2,"reveal":7,"real":false,"lo":6.6,"hi":19.8},{"method":"rule","ref":"sim-001","metric":"conversions","i":0,"reveal":7,"real":false,"lo":2.0,"hi":6.0},{"method":"rule","ref":"sim-002","metric":"conversions","i":0,"reveal":7,"real":false,"lo":5.0,"hi":15.0},{"method":"local","ref":"sim-001","metric":"spend","i":0,"reveal":7,"real":false,"lo":261.37,"hi":313.36},{"method":"local","ref":"sim-003","metric":"spend","i":5,"reveal":7,"real":false,"lo":643.67,"hi":771.7},{"method":"rule","ref":"sim-004","metric":"conversions","i":8,"reveal":14,"real":false,"lo":0.5,"hi":1.5},{"method":"rule","ref":"sim-004","metric":"conversions","i":9,"reveal":14,"real":true,"lo":3.3,"hi":9.9},{"method":"rule","ref":"sim-002","metric":"conversions","i":8,"reveal":14,"real":false,"lo":4.0,"hi":12.0},{"method":"rule","ref":"sim-002","metric":"conversions","i":9,"reveal":14,"real":true,"lo":7.7,"hi":23.1},{"method":"rule","ref":"sim-004","metric":"conversions","i":7,"reveal":14,"real":false,"lo":6.5,"hi":19.5},{"method":"rule","ref":"sim-004","metric":"conversions","i":3,"reveal":14,"real":false,"lo":3.5,"hi":10.5},{"method":"rule","ref":"sim-001","metric":"conversions","i":4,"reveal":14,"real":false,"lo":1.5,"hi":4.5},{"method":"rule","ref":"sim-003","metric":"conversions","i":9,"reveal":14,"real":false,"lo":7.7,"hi":23.1},{"method":"rule","ref":"sim-004","metric":"conversions","i":5,"reveal":14,"real":false,"lo":4.5,"hi":13.5},{"method":"rule","ref":"sim-001","metric":"conversions","i":3,"reveal":14,"real":false,"lo":3.0,"hi":9.0},{"method":"local","ref":"sim-002","metric":"conversions","i":9,"reveal":14,"real":true,"lo":4.13,"hi":22.28},{"method":"local","ref":"sim-004","metric":"conversions","i":7,"reveal":14,"real":false,"lo":2.63,"hi":21.07},{"method":"local","ref":"sim-002","metric":"spend","i":8,"reveal":14,"real":false,"lo":517.28,"hi":617.91},{"method":"local","ref":"sim-004","metric":"spend","i":7,"reveal":14,"real":false,"lo":387.44,"hi":462.8},{"method":"rule","ref":"sim-002","metric":"conversions","i":10,"reveal":21,"real":false,"lo":0.5,"hi":1.5},{"method":"rule","ref":"sim-002","metric":"conversions","i":16,"reveal":21,"real":false,"lo":2.2,"hi":6.6},{"method":"rule","ref":"sim-004","metric":"conversions","i":11,"reveal":21,"real":false,"lo":2.5,"hi":7.5},{"method":"rule","ref":"sim-001","metric":"conversions","i":11,"reveal":21,"real":false,"lo":1.0,"hi":3.0},{"method":"rule","ref":"sim-001","metric":"conversions","i":14,"reveal":21,"real":false,"lo":1.0,"hi":3.0},{"method":"rule","ref":"sim-002","metric":"conversions","i":13,"reveal":21,"real":true,"lo":4.0,"hi":12.0},{"method":"rule","ref":"sim-003","metric":"conversions","i":14,"reveal":21,"real":false,"lo":6.0,"hi":18.0},{"method":"rule","ref":"sim-004","metric":"conversions","i":15,"reveal":21,"real":false,"lo":3.0,"hi":9.0},{"method":"rule","ref":"sim-004","metric":"conversions","i":10,"reveal":21,"real":false,"lo":7.0,"hi":21.0},{"method":"rule","ref":"sim-002","metric":"conversions","i":14,"reveal":21,"real":false,"lo":7.5,"hi":22.5},{"method":"local","ref":"sim-001","metric":"spend","i":17,"reveal":21,"real":false,"lo":143.36,"hi":171.76},{"method":"local","ref":"sim-001","metric":"spend","i":16,"reveal":21,"real":false,"lo":143.36,"hi":171.76},{"method":"rule","ref":"sim-003","metric":"conversions","i":21,"reveal":28,"real":false,"lo":5.0,"hi":15.0},{"method":"rule","ref":"sim-004","metric":"conversions","i":23,"reveal":28,"real":true,"lo":2.75,"hi":8.25},{"method":"rule","ref":"sim-002","metric":"conversions","i":21,"reveal":28,"real":false,"lo":1.0,"hi":3.0},{"method":"rule","ref":"sim-001","metric":"conversions","i":20,"reveal":28,"real":false,"lo":0.5,"hi":1.5},{"method":"rule","ref":"sim-004","metric":"conversions","i":20,"reveal":28,"real":true,"lo":4.5,"hi":13.5},{"method":"rule","ref":"sim-002","metric":"conversions","i":20,"reveal":28,"real":true,"lo":4.5,"hi":13.5},{"method":"rule","ref":"sim-004","metric":"conversions","i":21,"reveal":28,"real":false,"lo":8.5,"hi":25.5},{"method":"rule","ref":"sim-001","metric":"conversions","i":22,"reveal":28,"real":false,"lo":1.0,"hi":3.0},{"method":"rule","ref":"sim-002","metric":"conversions","i":23,"reveal":28,"real":false,"lo":2.75,"hi":8.25},{"method":"rule","ref":"sim-003","metric":"conversions","i":20,"reveal":28,"real":false,"lo":10.5,"hi":31.5},{"method":"rule","ref":"sim-001","metric":"conversions","i":17,"reveal":28,"real":false,"lo":1.0,"hi":3.0},{"method":"local","ref":"sim-004","metric":"conversions","i":23,"reveal":28,"real":true,"lo":1.13,"hi":12.61},{"method":"local","ref":"sim-004","metric":"spend","i":24,"reveal":28,"real":false,"lo":261.34,"hi":314.87},{"method":"local","ref":"sim-003","metric":"conversions","i":20,"reveal":28,"real":false,"lo":12.18,"hi":34.76},{"method":"local","ref":"sim-002","metric":"conversions","i":20,"reveal":28,"real":true,"lo":3.11,"hi":18.56},{"method":"local","ref":"sim-004","metric":"conversions","i":20,"reveal":28,"real":true,"lo":1.97,"hi":16.15},{"method":"local","ref":"sim-001","metric":"spend","i":22,"reveal":28,"real":false,"lo":119.24,"hi":143.67},{"method":"local","ref":"sim-002","metric":"conversions","i":23,"reveal":28,"real":false,"lo":2.09,"hi":14.73},{"method":"local","ref":"sim-004","metric":"spend","i":25,"reveal":28,"real":false,"lo":293.89,"hi":354.09},{"method":"rule","ref":"sim-002","metric":"conversions","i":29,"reveal":35,"real":false,"lo":0.5,"hi":1.5},{"method":"rule","ref":"sim-002","metric":"conversions","i":24,"reveal":35,"real":false,"lo":1.5,"hi":4.5},{"method":"rule","ref":"sim-001","metric":"conversions","i":29,"reveal":35,"real":false,"lo":0.5,"hi":1.5},{"method":"rule","ref":"sim-001","metric":"conversions","i":24,"reveal":35,"real":false,"lo":1.0,"hi":3.0},{"method":"rule","ref":"sim-001","metric":"conversions","i":26,"reveal":35,"real":false,"lo":1.5,"hi":4.5},{"method":"rule","ref":"sim-004","metric":"conversions","i":28,"reveal":35,"real":false,"lo":1.0,"hi":3.0},{"method":"rule","ref":"sim-004","metric":"conversions","i":29,"reveal":35,"real":false,"lo":2.0,"hi":6.0},{"method":"rule","ref":"sim-002","metric":"conversions","i":28,"reveal":35,"real":false,"lo":3.5,"hi":10.5},{"method":"rule","ref":"sim-002","metric":"conversions","i":30,"reveal":35,"real":false,"lo":7.15,"hi":21.45},{"method":"rule","ref":"sim-004","metric":"conversions","i":24,"reveal":35,"real":false,"lo":8.5,"hi":25.5},{"method":"rule","ref":"sim-004","metric":"conversions","i":27,"reveal":35,"real":false,"lo":3.0,"hi":9.0},{"method":"rule","ref":"sim-002","metric":"conversions","i":25,"reveal":35,"real":false,"lo":5.0,"hi":15.0},{"method":"local","ref":"sim-004","metric":"spend","i":32,"reveal":35,"real":false,"lo":262.84,"hi":317.53},{"method":"local","ref":"sim-004","metric":"spend","i":30,"reveal":35,"real":false,"lo":235.72,"hi":284.77},{"method":"local","ref":"sim-001","metric":"spend","i":29,"reveal":35,"real":false,"lo":80.3,"hi":97.01},{"method":"local","ref":"sim-004","metric":"spend","i":27,"reveal":35,"real":false,"lo":283.46,"hi":342.45},{"method":"local","ref":"sim-003","metric":"spend","i":30,"reveal":35,"real":false,"lo":1350.69,"hi":1631.75},{"method":"local","ref":"sim-001","metric":"spend","i":27,"reveal":35,"real":false,"lo":115.14,"hi":139.1},{"method":"local","ref":"sim-002","metric":"spend","i":33,"reveal":35,"real":false,"lo":321.64,"hi":388.57},{"method":"local","ref":"sim-002","metric":"conversions","i":29,"reveal":35,"real":false,"lo":0.23,"hi":12.84},{"method":"rule","ref":"sim-004","metric":"conversions","i":37,"reveal":42,"real":false,"lo":0.55,"hi":1.65},{"method":"rule","ref":"sim-001","metric":"conversions","i":36,"reveal":42,"real":false,"lo":0.5,"hi":1.5},{"method":"rule","ref":"sim-001","metric":"conversions","i":31,"reveal":42,"real":false,"lo":1.0,"hi":3.0},{"method":"rule","ref":"sim-002","metric":"conversions","i":31,"reveal":42,"real":false,"lo":1.5,"hi":4.5},{"method":"rule","ref":"sim-002","metric":"conversions","i":34,"reveal":42,"real":false,"lo":2.5,"hi":7.5},{"method":"rule","ref":"sim-001","metric":"conversions","i":34,"reveal":42,"real":false,"lo":2.0,"hi":6.0},{"method":"rule","ref":"sim-004","metric":"conversions","i":36,"reveal":42,"real":true,"lo":2.0,"hi":6.0},{"method":"rule","ref":"sim-002","metric":"conversions","i":36,"reveal":42,"real":false,"lo":2.0,"hi":6.0},{"method":"rule","ref":"sim-002","metric":"conversions","i":35,"reveal":42,"real":false,"lo":4.5,"hi":13.5},{"method":"local","ref":"sim-004","metric":"spend","i":40,"reveal":42,"real":false,"lo":258.98,"hi":315.61},{"method":"local","ref":"sim-004","metric":"conversions","i":36,"reveal":42,"real":true,"lo":1.5,"hi":14.49},{"method":"rule","ref":"sim-001","metric":"conversions","i":38,"reveal":49,"real":false,"lo":0.5,"hi":1.5},{"method":"rule","ref":"sim-001","metric":"conversions","i":41,"reveal":49,"real":false,"lo":0.5,"hi":1.5},{"method":"rule","ref":"sim-004","metric":"conversions","i":44,"reveal":49,"real":false,"lo":1.65,"hi":4.95},{"method":"rule","ref":"sim-002","metric":"conversions","i":44,"reveal":49,"real":false,"lo":1.65,"hi":4.95},{"method":"rule","ref":"sim-001","metric":"conversions","i":44,"reveal":49,"real":false,"lo":0.55,"hi":1.65},{"method":"rule","ref":"sim-002","metric":"conversions","i":39,"reveal":49,"real":false,"lo":4.0,"hi":12.0},{"method":"rule","ref":"sim-001","metric":"conversions","i":42,"reveal":49,"real":false,"lo":1.5,"hi":4.5},{"method":"rule","ref":"sim-002","metric":"conversions","i":43,"reveal":49,"real":false,"lo":4.5,"hi":13.5},{"method":"rule","ref":"sim-004","metric":"conversions","i":39,"reveal":49,"real":false,"lo":2.5,"hi":7.5},{"method":"rule","ref":"sim-003","metric":"conversions","i":44,"reveal":49,"real":false,"lo":11.0,"hi":33.01},{"method":"rule","ref":"sim-001","metric":"conversions","i":40,"reveal":49,"real":false,"lo":1.0,"hi":3.0},{"method":"local","ref":"sim-004","metric":"spend","i":44,"reveal":49,"real":false,"lo":190.97,"hi":232.61},{"method":"local","ref":"sim-002","metric":"conversions","i":39,"reveal":49,"real":false,"lo":0.47,"hi":13.25},{"method":"local","ref":"sim-004","metric":"spend","i":45,"reveal":49,"real":false,"lo":190.27,"hi":231.76},{"method":"rule","ref":"sim-004","metric":"conversions","i":48,"reveal":56,"real":false,"lo":0.5,"hi":1.5},{"method":"rule","ref":"sim-003","metric":"conversions","i":46,"reveal":56,"real":false,"lo":3.0,"hi":9.0},{"method":"rule","ref":"sim-004","metric":"conversions","i":51,"reveal":56,"real":true,"lo":0.55,"hi":1.65},{"method":"rule","ref":"sim-002","metric":"conversions","i":50,"reveal":56,"real":false,"lo":1.5,"hi":4.5},{"method":"rule","ref":"sim-001","metric":"conversions","i":50,"reveal":56,"real":false,"lo":0.5,"hi":1.5},{"method":"rule","ref":"sim-001","metric":"conversions","i":48,"reveal":56,"real":false,"lo":3.0,"hi":9.0},{"method":"rule","ref":"sim-003","metric":"conversions","i":45,"reveal":56,"real":true,"lo":17.0,"hi":51.0},{"method":"rule","ref":"sim-004","metric":"spend","i":51,"reveal":56,"real":true,"lo":82.94,"hi":248.81},{"method":"rule","ref":"sim-002","metric":"conversions","i":46,"reveal":56,"real":false,"lo":4.5,"hi":13.5},{"method":"rule","ref":"sim-002","metric":"conversions","i":49,"reveal":56,"real":false,"lo":6.5,"hi":19.5},{"method":"rule","ref":"sim-004","metric":"conversions","i":50,"reveal":56,"real":false,"lo":2.0,"hi":6.0},{"method":"rule","ref":"sim-004","metric":"conversions","i":47,"reveal":56,"real":false,"lo":1.5,"hi":4.5},{"method":"rule","ref":"sim-004","metric":"conversions","i":46,"reveal":56,"real":false,"lo":3.5,"hi":10.5},{"method":"rule","ref":"sim-003","metric":"conversions","i":49,"reveal":56,"real":false,"lo":7.0,"hi":21.0},{"method":"local","ref":"sim-004","metric":"spend","i":51,"reveal":56,"real":true,"lo":154.04,"hi":188.67},{"method":"local","ref":"sim-004","metric":"spend","i":53,"reveal":56,"real":false,"lo":201.08,"hi":246.28},{"method":"local","ref":"sim-003","metric":"conversions","i":45,"reveal":56,"real":true,"lo":18.75,"hi":45.37},{"method":"local","ref":"sim-001","metric":"conversions","i":47,"reveal":56,"real":true,"lo":0.0,"hi":4.82},{"method":"local","ref":"sim-002","metric":"spend","i":53,"reveal":56,"real":false,"lo":426.49,"hi":522.36}],"planted":[{"ref":"sim-002","i":9,"kind":"tracking outage"},{"ref":"sim-004","i":9,"kind":"conversion surge"},{"ref":"sim-002","i":13,"kind":"conversion surge"},{"ref":"sim-002","i":20,"kind":"tracking outage"},{"ref":"sim-004","i":20,"kind":"conversion surge"},{"ref":"sim-004","i":23,"kind":"conversion surge"},{"ref":"sim-004","i":36,"kind":"tracking outage"},{"ref":"sim-003","i":45,"kind":"tracking outage"},{"ref":"sim-001","i":47,"kind":"conversion surge"},{"ref":"sim-004","i":51,"kind":"spend spike"}],"scores":[{"label":"TabPFN, 95% expected range","alerts":8,"real":6,"false":2},{"label":"Local model, 95% expected range","alerts":33,"real":8,"false":25},{"label":"\u00b150% day-over-day rule","alerts":83,"real":9,"false":74}],"log":[{"t":0,"kind":"move","day":"Mon Jun 15","text":"Budgets moved: Brand Search \u2193 106, Shopping \u2191 106"},{"t":7,"kind":"check","day":"Mon Jun 22","text":"Checked the week: 0 alerts. The \u00b150% rule would have raised 7."},{"t":7,"kind":"move","day":"Mon Jun 22","text":"Budgets moved: Shopping \u2191 199, Retargeting \u2193 153, Brand Search \u2193 79, Non-Brand Search \u2191 34"},{"t":14,"kind":"alert","day":"Mon Jun 29","text":"Non-Brand Search conversions on Wed Jun 24: 1 against 1.9 to 13.7 expected. Tracking outage, caught."},{"t":14,"kind":"check","day":"Mon Jun 29","text":"Checked the week: 1 alert. The \u00b150% rule would have raised 10."},{"t":14,"kind":"move","day":"Mon Jun 29","text":"Budgets moved: Shopping \u2191 248, Non-Brand Search \u2193 130, Brand Search \u2193 60, Retargeting \u2193 59"},{"t":21,"kind":"check","day":"Mon Jul 6","text":"Checked the week: 0 alerts. The \u00b150% rule would have raised 10."},{"t":21,"kind":"move","day":"Mon Jul 6","text":"Budgets moved: Shopping \u2191 151, Retargeting \u2193 68, Brand Search \u2193 45, Non-Brand Search \u2193 38"},{"t":28,"kind":"false","day":"Mon Jul 13","text":"Shopping conversions on Sun Jul 5: 10 against 11 to 35.4 expected. False alarm."},{"t":28,"kind":"alert","day":"Mon Jul 13","text":"Retargeting conversions on Sun Jul 5: 17 against 1.8 to 16.7 expected. Conversion surge, caught."},{"t":28,"kind":"alert","day":"Mon Jul 13","text":"Retargeting conversions on Wed Jul 8: 15 against 0.6 to 12.5 expected. Conversion surge, caught."},{"t":28,"kind":"check","day":"Mon Jul 13","text":"Checked the week: 3 alerts. The \u00b150% rule would have raised 11."},{"t":28,"kind":"move","day":"Mon Jul 13","text":"Budgets moved: Shopping \u2191 152, Non-Brand Search \u2193 84, Retargeting \u2193 34, Brand Search \u2193 34"},{"t":35,"kind":"check","day":"Mon Jul 20","text":"Checked the week: 0 alerts. The \u00b150% rule would have raised 12."},{"t":35,"kind":"move","day":"Mon Jul 20","text":"Budgets moved: Shopping \u2193 95, Non-Brand Search \u2191 93, Retargeting \u2191 28, Brand Search \u2193 25"},{"t":42,"kind":"check","day":"Mon Jul 27","text":"Checked the week: 0 alerts. The \u00b150% rule would have raised 9."},{"t":42,"kind":"move","day":"Mon Jul 27","text":"Budgets moved: Non-Brand Search \u2191 116, Retargeting \u2193 81, Brand Search \u2193 19, Shopping \u2193 16"},{"t":49,"kind":"check","day":"Mon Aug 3","text":"Checked the week: 0 alerts. The \u00b150% rule would have raised 11."},{"t":49,"kind":"move","day":"Mon Aug 3","text":"Budgets moved: Shopping \u2191 168, Non-Brand Search \u2193 93, Retargeting \u2193 61, Brand Search \u2193 14"},{"t":56,"kind":"false","day":"Mon Aug 10","text":"Shopping conversions on Sun Aug 2: 14 against 16 to 41.1 expected. False alarm."},{"t":56,"kind":"alert","day":"Mon Aug 10","text":"Shopping conversions on Thu Jul 30: 6 against 13 to 35.2 expected. Tracking outage, caught."},{"t":56,"kind":"alert","day":"Mon Aug 10","text":"Brand Search conversions on Sat Aug 1: 6 against 0 to 5 expected. Conversion surge, caught."},{"t":56,"kind":"alert","day":"Mon Aug 10","text":"Retargeting spend on Wed Aug 5: 301 against 145 to 198 expected. Spend spike, caught."},{"t":56,"kind":"check","day":"Mon Aug 10","text":"Checked the week: 4 alerts. The \u00b150% rule would have raised 13."}],"intuition":{"noisy":{"ref":"sim-001","metric":"conversions"},"curves":[{"ref":"sim-003","points":[[0.0,0.0],[30.68,1.118],[61.37,1.982],[92.05,2.771],[122.74,3.514],[153.42,4.226],[184.1,4.913],[214.79,5.58],[245.47,6.231],[276.16,6.867],[306.84,7.492],[337.52,8.106],[368.21,8.71],[398.89,9.305],[429.57,9.893],[460.26,10.473],[490.94,11.046],[521.63,11.614],[552.31,12.175],[582.99,12.731],[613.68,13.283],[644.36,13.829],[675.05,14.371],[705.73,14.908],[736.41,15.442],[767.1,15.971],[797.78,16.497],[828.47,17.02],[859.15,17.539],[889.83,18.055],[920.52,18.568],[951.2,19.077],[981.89,19.584],[1012.57,20.089],[1043.25,20.59],[1073.94,21.089],[1104.62,21.586],[1135.3,22.08],[1165.99,22.572],[1196.67,23.062],[1227.36,23.549],[1258.04,24.034],[1288.72,24.518],[1319.41,24.999],[1350.09,25.478],[1380.78,25.956],[1411.46,26.431],[1442.14,26.905],[1472.83,27.377],[1503.51,27.847],[1534.2,28.316],[1564.88,28.783],[1595.56,29.249],[1626.25,29.712],[1656.93,30.175],[1687.62,30.636],[1718.3,31.095],[1748.98,31.553],[1779.67,32.01],[1810.35,32.465],[1841.03,32.919]],"start":688.32,"now":1600.9,"start_value":14.604,"now_value":29.329,"start_return":1.753,"now_return":1.514},{"ref":"sim-004","points":[[0.0,0.0],[30.68,0.889],[61.37,1.544],[92.05,2.133],[122.74,2.682],[153.42,3.204],[184.1,3.705],[214.79,4.189],[245.47,4.66],[276.16,5.118],[306.84,5.566],[337.52,6.005],[368.21,6.436],[398.89,6.86],[429.57,7.278],[460.26,7.689],[490.94,8.094],[521.63,8.495],[552.31,8.891],[582.99,9.282],[613.68,9.669],[644.36,10.053],[675.05,10.432],[705.73,10.808],[736.41,11.181],[767.1,11.551],[797.78,11.917],[828.47,12.281],[859.15,12.642],[889.83,13.0],[920.52,13.356],[951.2,13.71],[981.89,14.061],[1012.57,14.41],[1043.25,14.757],[1073.94,15.102],[1104.62,15.444],[1135.3,15.785],[1165.99,16.124],[1196.67,16.461],[1227.36,16.797],[1258.04,17.131],[1288.72,17.463],[1319.41,17.793],[1350.09,18.122],[1380.78,18.449],[1411.46,18.775],[1442.14,19.1],[1472.83,19.423],[1503.51,19.744],[1534.2,20.065],[1564.88,20.384],[1595.56,20.702],[1626.25,21.018],[1656.93,21.334],[1687.62,21.648],[1718.3,21.961],[1748.98,22.273],[1779.67,22.583],[1810.35,22.893],[1841.03,23.202]],"start":611.83,"now":182.96,"start_value":9.646,"now_value":3.687,"start_return":1.256,"now_return":1.605}]},"features":{"ranges":{"model":"TabPFN","about":"TabPFN is a model pretrained on synthetic tables. The history rows and the rows to judge go to it in one request and the ranges come back; nothing is trained or tuned for this account.","requests":2,"history_rows":320,"judged_rows":56,"headers":["Campaign","Day","Usual of last 7 days","A week before","Budget"],"answer_header":"Spend","rows":[{"cells":["Retargeting","Fri, Jul 24","282","250","325"],"answer":"302","asked":false,"predicted":null},{"cells":["Retargeting","Sat, Jul 25","287","287","325"],"answer":"319","asked":false,"predicted":null},{"cells":["Retargeting","Wed, Aug 5","227","244","183"],"answer":"?","asked":true,"predicted":null}],"other_columns":["the platform","the day number, for trend","a simple estimate: the usual level scaled by the budget change"],"extras":[["Weekday","Wednesday"],["Day number","93"],["Simple estimate","171"]],"example":{"entity_name":"Retargeting","day":"2026-08-05","metric":"spend","unit":"USD","lo":134.29,"expected":169.61,"hi":205.92,"observed":300.59,"low_level":2.5,"high_level":97.5,"note":"spend spike, caught"},"step":{"entity_name":"Retargeting","day":"2026-07-27","unit":"USD","budget_before":324.96,"budget_after":243.72,"expected_before":298.91,"expected_after":223.69},"contrast":{"entity_name":"Retargeting","day":"2026-08-02","metric":"conversions","unit":"conversions","before":1.0,"observed":5.0,"change":4.0,"lo":0.58,"hi":12.59,"others":19,"planted_known":true}},"budgets":{"model":"TabPFN","about":"TabPFN is a model pretrained on synthetic tables. Every campaign's days and the questions go to it in one request and the predictions come back; it assumes no curve shape and nothing is trained for this account.","history_rows":348,"campaigns":4,"levels":64,"entity_name":"Shopping","headers":["Campaign","Day","Spend"],"answer_header":"Conversions","rows":[{"cells":["Shopping","Sun, Aug 2","1,341"],"answer":"14","asked":false,"predicted":null},{"cells":["Shopping","Mon, Aug 3","1,475"],"answer":"21","asked":false,"predicted":null},{"cells":["Shopping","any weekday","1,006"],"answer":"?","asked":true,"predicted":"19.5"},{"cells":["Shopping","any weekday","1,677"],"answer":"?","asked":true,"predicted":"29.9"}],"tried":[516.36,1122.34],"tried_when":"before the agent","reached":1600.9,"unit":49.77,"sample":[1475.15,21.0],"step":100.0,"marginals":[{"entity_name":"Brand Search","start_budget":423.77,"now_budget":42.43,"start_predicted":0.81,"start_true":1.09,"now_predicted":1.19,"now_true":1.43,"moved":"down","next_move":"down"},{"entity_name":"Non-Brand Search","start_budget":590.01,"now_budget":487.65,"start_predicted":1.5,"start_true":1.07,"now_predicted":1.55,"now_true":1.15,"moved":"down","next_move":"down"},{"entity_name":"Shopping","start_budget":688.32,"now_budget":1600.9,"start_predicted":1.81,"start_true":1.78,"now_predicted":1.57,"now_true":1.53,"moved":"up","next_move":"flat"},{"entity_name":"Retargeting","start_budget":611.83,"now_budget":182.96,"start_predicted":1.42,"start_true":1.27,"now_predicted":1.75,"now_true":1.63,"moved":"down","next_move":"up"}],"headline":"Budget goes to where the next 100 a day buys the most. Before the agent that was Shopping: 1.81 more conversions a day by the fitted curve, 1.78 by the true one.","balance":"A split is balanced when the next unit buys about the same everywhere. The gap between the best and the worst campaign went from 1.00 to 0.56 (by the true curves, from 0.71 to 0.48)."},"evidence":{"budget":{"title":"Error in the spend response TabPFN implies","unit":"mean absolute elasticity error, lower is better","bars":[{"label":"Raw spend, median prediction","value":0.32},{"label":"Spend in cost-per-conversion units, mean prediction","value":0.18}],"note":"Project backtest on 30 campaign cut-offs, not this run.","source":"docs/architecture/budget-bandit.md"},"anomaly":{"title":"False alarms caused by a budget change","unit":"per simulated account of about 450 campaign-days","bars":[{"label":"\u00b150% day-over-day rule","low":17,"value":21},{"label":"Range with the budget as a feature","low":2,"value":4}],"note":"Project backtest on three simulated accounts, not this run.","source":"docs/architecture/history-and-simulation.md"}}},"result":{"totals":{"static":2090.4,"agent":2217.9,"best":2238.4},"per_day":{"static":37.33,"agent":39.61,"best":39.97},"gain":0.061,"best_gain":0.0708,"captured":0.862},"change":{"account_ref":"demo-google","summary":["Proposed change for review (demo-google, google_ads, g-103):","- daily_budget: 300.0 account currency per day -> 240 account currency per day","- Risk: medium (budget_delta)","- Reason: Performance Max spend fell while CPA rose; reduce daily budget by a reversible step.","- Measurement: Compare CPA and conversions after 7 complete days at the new budget.","- Reversal: Restore the previous daily budget through a new proposal.","Nothing changes until a reviewer approves it."],"receipt":"Receipt for proposal 13c97ac0-b0ae-47f4-9bfc-2f9204063eaf revision 1: status=verified, mutation_attempted=True, readback_attempts=1, verified_state=[daily_budget=240.0], reason=readback matched the approved change","context":"sample account demo-google"},"next_steps":[{"target":"Retargeting daily budget","action":"Raise the daily budget from 182.96 USD to the recommended 228.70 USD, an increase of 45.74 USD (25.0%).","confidence":"medium"},{"target":"Brand Search and Non-Brand Search daily budgets","action":"Lower Brand Search from 42.43 USD to 31.82 USD (-10.61 USD) and Non-Brand Search from 487.65 USD to 455.78 USD (-31.87 USD).","confidence":"low"},{"target":"Unusual days: Shopping tracking, Retargeting spend, Brand Search conversions","action":"Check the Shopping conversion tracking for 2026-07-30.","confidence":"high"}],"summary":"This is a simulated account, so results are scored against the simulation's truth, not real sales. Over 8 weeks, the agent's weekly budget moves produced 39.6 conversions a day against 37.3 with budgets left alone. That is +6.1% at the same total budget, and it captured 86% of the available gain. TabPFN raised 4 alerts on unusual days and 3 were real problems. The \u00b150% day-over-day rule raised 24 alerts and 22 were false alarms. Next, move budget toward Retargeting and investigate the flagged days."}</script>
+<script>// The demo page. It only draws: every figure comes from the embedded story
+// (testing/demo_story.py). One clock, `t` in days elapsed, drives the replay, and
+// `render(t)` depends on nothing else, so scrubbing and video frames match playback.
+(function () {
+  "use strict";
+  const S = JSON.parse(document.getElementById("story").textContent);
+  const N = S.days.length;
+  const SVG = "http://www.w3.org/2000/svg";
+  const C = { ink: "#1b150f", muted: "#655c53", line: "#e4ddd3", agent: "#a5432b", alone: "#787069", fill: "#efeae4", model: "#1f6fb0", paper: "#f5f2eb" };
+  const params = new URLSearchParams(location.search);
+  // A fixed moment (?t=) is drawn finished, like reduced motion: nothing waits to animate.
+  const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches || params.has("t");
+  const names = Object.fromEntries(S.campaigns.map((c) => [c.ref, c.name]));
+  const planted = new Map(S.planted.map((p) => [p.ref + "|" + p.i, p.kind]));
+
+  const $ = (id) => document.getElementById(id);
+  function svg(tag, attrs, parent) {
+    const node = document.createElementNS(SVG, tag);
+    for (const k in attrs) node.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(node);
+    return node;
+  }
+  function html(tag, cls, parent, text) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined) node.textContent = text;
+    if (parent) parent.appendChild(node);
+    return node;
+  }
+  const fmt = (v, d) => Number(v).toLocaleString("en-US", { minimumFractionDigits: d || 0, maximumFractionDigits: d || 0 });
+  const amount = (v, metric) => (metric === "spend" ? fmt(v) : fmt(v, v % 1 ? 1 : 0));
+  const dayText = (i) => new Date(S.days[Math.max(0, Math.min(N - 1, i))] + "T00:00:00Z").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
+  const lerp = (a, b, f) => a + (b - a) * f;
+  const ease = (f) => (f < 0 ? 0 : f > 1 ? 1 : f * f * (3 - 2 * f));
+  const scale = (d0, d1, r0, r1) => (v) => r0 + ((v - d0) / (d1 - d0 || 1)) * (r1 - r0);
+  const plural = (n, word) => n + " " + word + (n === 1 ? "" : "s");
+  function ticks(max, count) {
+    const raw = max / count, mag = Math.pow(10, Math.floor(Math.log10(raw || 1)));
+    const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw) || raw;
+    const out = [];
+    for (let v = 0; v <= max + 1e-9; v += step) out.push(Math.round(v * 100) / 100);
+    return out;
+  }
+  function key(parent, draw, label) {
+    const k = html("span", "key", parent);
+    const icon = svg("svg", { width: 24, height: 12, "aria-hidden": "true" }, k);
+    draw(icon);
+    k.appendChild(document.createTextNode(label));
+  }
+  const ring = (parent, x, y, real) => svg("circle", Object.assign({ cx: x, cy: y, r: 6.5, fill: "none", stroke: C.ink, "stroke-width": 2 }, real ? {} : { "stroke-dasharray": "3 2.5" }), parent);
+
+  // ---- Tooltip -------------------------------------------------------------------------
+  const tip = $("tip");
+  function showTip(event, markup) {
+    tip.innerHTML = markup;
+    tip.hidden = false;
+    const x = Math.min(window.innerWidth - tip.offsetWidth - 12, event.clientX + 14);
+    tip.style.left = Math.max(8, x) + "px";
+    tip.style.top = event.clientY + 16 + "px";
+  }
+  const hideTip = () => { tip.hidden = true; };
+
+  // ---- Opening tiles -------------------------------------------------------------------
+  (function hero() {
+    const model = S.scores[0], rule = S.scores[S.scores.length - 1];
+    const tiles = [
+      { value: model.real + " of " + S.planted.length, label: "real problems caught by " + S.meta.model, sub: plural(model.false, "false alarm") + ". The ±50% rule raised " + rule.false + "." },
+      { value: S.result.gain === null ? "" : (S.result.gain >= 0 ? "+" : "") + fmt(100 * S.result.gain, 1) + "%", label: "more conversions at the same total budget", sub: S.result.captured === null ? "" : fmt(100 * S.result.captured) + "% of the gain there was to have" },
+      { value: "0", label: "changes without a person's approval", sub: "Every change is proposed, approved, then read back." },
+    ];
+    for (const t of tiles) {
+      const tile = html("div", "tile", $("hero-tiles"));
+      html("p", "value", tile, t.value);
+      html("p", "label", tile, t.label);
+      html("p", "sub", tile, t.sub);
+    }
+  })();
+
+  // ---- Job 1: a fixed rule against a learned range -------------------------------------
+  (function ruleAgainstRange() {
+    const pick = S.intuition.noisy;
+    const pts = S.points.filter((p) => p.ref === pick.ref && p.metric === pick.metric).sort((a, b) => a.i - b.i);
+    if (!pts.length) return;
+    const W = 540, H = 230, L = 34, R = 10, T = 14, B = 24;
+    const top = Math.max.apply(null, pts.map((p) => Math.max(p.observed, p.hi))) * 1.08;
+    const x = scale(pts[0].i, pts[pts.length - 1].i, L, W - R), y = scale(0, top, H - B, T);
+    const ruleHits = new Map(S.alarms.filter((a) => a.method === "rule" && a.ref === pick.ref && a.metric === pick.metric).map((a) => [a.i, a]));
+    const line = pts.map((p) => x(p.i) + "," + y(p.observed)).join(" ");
+    function frame(root, id) {
+      root.setAttribute("viewBox", "0 0 " + W + " " + H);
+      for (const v of ticks(top, 4)) {
+        svg("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: C.line }, root);
+        svg("text", { x: L - 6, y: y(v) + 3.5, "text-anchor": "end" }, root).textContent = fmt(v);
+      }
+      for (const p of pts) if (p.i % 14 === 0) svg("text", { x: x(p.i), y: H - 6, "text-anchor": "middle" }, root).textContent = dayText(p.i).slice(4);
+      const clip = svg("clipPath", { id: id }, svg("defs", {}, root));
+      const sweep = svg("rect", { x: 0, y: 0, width: still ? W : 0, height: H }, clip);
+      return { layer: svg("g", { "clip-path": "url(#" + id + ")" }, root), sweep: sweep };
+    }
+    const left = frame($("intu-rule"), "sweep-rule"), right = frame($("intu-range"), "sweep-range");
+    const step = (x(pts[pts.length - 1].i) - x(pts[0].i)) / Math.max(1, pts.length - 1);
+    for (let j = 1; j < pts.length; j++) {
+      const before = pts[j - 1].observed;
+      if (pts[j].i !== pts[j - 1].i + 1 || before <= 0) continue;
+      const hi = Math.min(top, before * 1.5);
+      svg("rect", { x: x(pts[j].i) - step * 0.36, y: y(hi), width: step * 0.72, height: y(before * 0.5) - y(hi), fill: C.alone, "fill-opacity": 0.22 }, left.layer);
+    }
+    const band = pts.map((p) => x(p.i) + "," + y(Math.min(top, p.hi))).concat(pts.slice().reverse().map((p) => x(p.i) + "," + y(Math.max(0, p.lo))));
+    svg("polygon", { points: band.join(" "), fill: C.model, "fill-opacity": 0.16 }, right.layer);
+    svg("polyline", { points: pts.map((p) => x(p.i) + "," + y(p.expected)).join(" "), fill: "none", stroke: C.model, "stroke-width": 1.5 }, right.layer);
+    let ruleFalse = 0, modelAlerts = 0, modelFalse = 0;
+    for (const side of [left, right]) {
+      svg("polyline", { points: line, fill: "none", stroke: C.agent, "stroke-width": 2, "stroke-linejoin": "round" }, side.layer);
+      for (const p of pts) svg("circle", { cx: x(p.i), cy: y(p.observed), r: 2.6, fill: C.agent, stroke: C.paper, "stroke-width": 1 }, side.layer);
+    }
+    for (const p of pts) {
+      const hit = ruleHits.get(p.i);
+      if (hit) { ring(left.layer, x(p.i), y(p.observed), hit.real); if (!hit.real) ruleFalse++; }
+      if (p.flagged) { const real = planted.has(p.ref + "|" + p.i); ring(right.layer, x(p.i), y(p.observed), real); modelAlerts++; if (!real) modelFalse++; }
+    }
+    $("intu-rule-count").innerHTML = "<b>" + plural(ruleHits.size, "alert") + "</b> <span class='quiet'>· " + ruleFalse + " false</span>";
+    $("intu-range-count").innerHTML = "<b>" + plural(modelAlerts, "alert") + "</b> <span class='quiet'>· " + modelFalse + " false</span>";
+    const keys = $("intu-keys");
+    html("span", "key", keys, names[pick.ref] + " · " + pick.metric + ", " + S.meta.weeks + " weeks");
+    key(keys, (i) => { svg("line", { x1: 0, x2: 24, y1: 6, y2: 6, stroke: C.agent, "stroke-width": 2 }, i); svg("circle", { cx: 12, cy: 6, r: 2.6, fill: C.agent }, i); }, "Observed");
+    key(keys, (i) => svg("rect", { x: 6, y: 0, width: 12, height: 12, fill: C.alone, "fill-opacity": 0.22 }, i), "±50% of the day before");
+    key(keys, (i) => { svg("rect", { x: 0, y: 1, width: 24, height: 10, fill: C.model, "fill-opacity": 0.16 }, i); svg("line", { x1: 0, x2: 24, y1: 6, y2: 6, stroke: C.model, "stroke-width": 1.5 }, i); }, "Expected, with its range");
+    key(keys, (i) => ring(i, 12, 6, true).setAttribute("r", 5), "Alert on a real problem");
+    key(keys, (i) => ring(i, 12, 6, false).setAttribute("r", 5), "False alarm");
+    if (still) return;
+    new IntersectionObserver((entries, observer) => {
+      if (!entries[0].isIntersecting) return;
+      observer.disconnect();
+      const began = performance.now();
+      (function grow(now) {
+        const f = Math.min(1, (now - began) / 2600);
+        left.sweep.setAttribute("width", W * f);
+        right.sweep.setAttribute("width", W * f);
+        if (f < 1) requestAnimationFrame(grow);
+      })(began);
+    }, { threshold: 0.4 }).observe($("intu-rule"));
+  })();
+
+  // ---- Job 2: move budget from the flat curve to the steep one -------------------------
+  (function curves() {
+    const root = $("intu-curves"), pair = S.intuition.curves;
+    if (!pair.length) return;
+    const W = 1100, H = 330, L = 46, R = 24, T = 20, B = 34;
+    root.setAttribute("viewBox", "0 0 " + W + " " + H);
+    const maxX = pair[0].points[pair[0].points.length - 1][0];
+    const maxY = Math.max.apply(null, pair.map((c) => c.points[c.points.length - 1][1])) * 1.06;
+    const x = scale(0, maxX, L, W - R), y = scale(0, maxY, H - B, T);
+    for (const v of ticks(maxY, 4)) { svg("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: C.line }, root); svg("text", { x: L - 8, y: y(v) + 3.5, "text-anchor": "end" }, root).textContent = fmt(v); }
+    for (const v of ticks(maxX, 6)) svg("text", { x: x(v), y: H - 10, "text-anchor": "middle" }, root).textContent = fmt(v);
+    svg("text", { x: W - R, y: H - 10, "text-anchor": "end" }, root).textContent = "daily budget · " + S.meta.currency;
+    const valueAt = (curve, b) => {
+      const p = curve.points, stepB = p[1][0] - p[0][0], j = Math.max(0, Math.min(p.length - 2, Math.floor(b / stepB)));
+      return lerp(p[j][1], p[j + 1][1], (b - p[j][0]) / stepB);
+    };
+    const colours = [C.agent, C.ink];
+    const parts = pair.map((curve, k) => {
+      svg("polyline", { points: curve.points.map((p) => x(p[0]) + "," + y(p[1])).join(" "), fill: "none", stroke: colours[k], "stroke-width": 2.5, "stroke-linejoin": "round" }, root);
+      svg("circle", { cx: x(curve.start), cy: y(curve.start_value), r: 6, fill: C.paper, stroke: colours[k], "stroke-width": 2 }, root);
+      return {
+        curve: curve,
+        tangent: svg("line", { stroke: colours[k], "stroke-width": 1.5, "stroke-dasharray": "5 4" }, root),
+        drop: svg("line", { stroke: C.line, "stroke-width": 1 }, root),
+        dot: svg("circle", { r: 7, fill: colours[k], stroke: C.paper, "stroke-width": 2 }, root),
+        name: svg("text", { class: "strong" }, root),
+        label: svg("text", { class: "label" }, root),
+        budget: svg("text", { "text-anchor": "middle" }, root),
+      };
+    });
+    const gap = svg("text", { x: L + 14, y: T + 16, class: "strong" }, root);
+    function draw(s) {
+      const returns = [];
+      for (const part of parts) {
+        const c = part.curve, b = lerp(c.start, c.now, s), v = valueAt(c, b), d = maxX / 60;
+        const slope = (valueAt(c, Math.min(maxX, b + d)) - valueAt(c, Math.max(0, b - d))) / (Math.min(maxX, b + d) - Math.max(0, b - d));
+        const reach = maxX * 0.09;
+        part.tangent.setAttribute("x1", x(b - reach)); part.tangent.setAttribute("y1", y(v - slope * reach));
+        part.tangent.setAttribute("x2", x(b + reach)); part.tangent.setAttribute("y2", y(v + slope * reach));
+        part.drop.setAttribute("x1", x(b)); part.drop.setAttribute("x2", x(b)); part.drop.setAttribute("y1", y(v)); part.drop.setAttribute("y2", H - B);
+        part.dot.setAttribute("cx", x(b)); part.dot.setAttribute("cy", y(v));
+        const right = x(b) > W * 0.72, side = right ? -14 : 14, below = parts.indexOf(part) ? 1 : -1;
+        for (const text of [part.name, part.label]) { text.setAttribute("x", x(b) + side); text.setAttribute("text-anchor", right ? "end" : "start"); }
+        part.name.setAttribute("y", y(v) + (below > 0 ? 24 : -30)); part.name.textContent = names[c.ref] + " · " + fmt(b) + " a day";
+        part.label.setAttribute("y", y(v) + (below > 0 ? 40 : -14));
+        part.label.textContent = "next " + fmt(S.meta.step) + " buys " + fmt(slope * S.meta.step, 2) + " conversions";
+        part.budget.textContent = "";
+        returns.push(slope * S.meta.step);
+      }
+      gap.textContent = "Difference between the two: " + fmt(Math.abs(returns[0] - returns[1]), 2) + " conversions per extra " + fmt(S.meta.step);
+    }
+    let s = 0, target = 0;
+    const before = $("curve-before"), now = $("curve-now");
+    function go(to) {
+      target = to;
+      before.setAttribute("aria-pressed", String(to === 0)); now.setAttribute("aria-pressed", String(to === 1));
+      if (still) { s = to; draw(s); return; }
+      const from = s, began = performance.now();
+      (function move(time) {
+        const f = Math.min(1, (time - began) / 1400);
+        s = lerp(from, target, ease(f)); draw(s);
+        if (f < 1 && target === to) requestAnimationFrame(move);
+      })(began);
+    }
+    before.addEventListener("click", () => go(0));
+    now.addEventListener("click", () => go(1));
+    draw(still ? 1 : 0);
+    if (still) { go(1); return; }
+    new IntersectionObserver((entries, observer) => { if (entries[0].isIntersecting) { observer.disconnect(); setTimeout(() => go(1), 700); } }, { threshold: 0.5 }).observe(root);
+  })();
+
+  // ---- Feature pipelines ---------------------------------------------------------------
+  (function pipelines() {
+    const host = $("pipelines");
+    const kv = (parent, k, v, cls) => { const row = html("p", "kv" + (cls ? " " + cls : ""), parent); html("span", "", row, k); html("span", "", row, v); };
+    const chip = (parent, name, value, why, strong) => { const c = html("div", "chip" + (strong ? " key-feature" : ""), parent); html("p", "name", c, name); html("p", "val", c, value); html("p", "why", c, why); };
+    function pipe(title, tag, who, raw, chips, note, model, out, evidence) {
+      const wrap = html("div", "pipe", host);
+      const head = html("div", "pipe-title", wrap);
+      html("span", "tag", head, tag); html("b", "", head, title);
+      const row = html("div", "pipe-row", wrap);
+      const a = html("div", "stage-card", row); html("p", "cap", a, "Raw daily rows"); raw(a);
+      html("div", "arrow", row, "→");
+      const b = html("div", "stage-card", row); html("p", "cap", b, "One engineered row"); chips(html("div", "chips", b)); html("p", "small", b, note);
+      html("div", "arrow", row, "→");
+      const c = html("div", "stage-card model", row); html("b", "", c, who); model(c);
+      html("div", "arrow", row, "→");
+      const d = html("div", "stage-card", row); out(d);
+      const ev = html("div", "evidence", wrap);
+      html("p", "cap", ev, evidence.title + " · " + evidence.unit);
+      const most = Math.max.apply(null, evidence.bars.map((bar) => bar.value));
+      evidence.bars.forEach((bar, k) => {
+        const line = html("div", "ev-row" + (k ? " good" : ""), ev);
+        html("span", "", line, bar.label);
+        const track = html("span", "ev-track", line);
+        html("span", "ev-bar", track).style.width = (100 * bar.value) / most + "%";
+        html("span", "ev-val", line, bar.low === undefined ? fmt(bar.value, 2) : bar.low + " to " + bar.value);
+      });
+      html("p", "small", ev, evidence.note + " Source: " + evidence.source + ".");
+    }
+    const fr = S.features.ranges, fb = S.features.budgets, ev = S.features.evidence;
+    if (fr) {
+      const judged = fr.rows[fr.rows.length - 1].cells, ex = fr.example, extra = Object.fromEntries(fr.extras);
+      const money = ex.metric === "spend";
+      pipe("Unusual days", "Job 1", fr.model,
+        (card) => { kv(card, "Campaign", judged[0]); kv(card, "Day", judged[1]); kv(card, fr.headers[4], judged[4]); kv(card, fr.answer_header, "?", "ask"); html("p", "small", card, fmt(fr.history_rows) + " past rows · " + fr.judged_rows + " to judge"); },
+        (grid) => {
+          chip(grid, fr.headers[4], judged[4], money ? "A deliberate change is explained, not flagged" : "Conversions follow spend", true);
+          chip(grid, "Usual of last 7 days", judged[2], "The campaign's recent level");
+          chip(grid, "A week before", judged[3], "Same weekday, last week");
+          chip(grid, "Simple estimate", extra["Simple estimate"] || "", money ? "Usual level × budget change" : "Usual level × spend change", true);
+          chip(grid, "Weekday", (extra.Weekday || "").slice(0, 3), "Weekly rhythm");
+          chip(grid, "Day number", extra["Day number"] || "", "Trend");
+        },
+        "Conversions are scaled for those still arriving, and the model learns from settled days only.",
+        (card) => html("p", "small", card, "One request. Nothing trained for this account."),
+        (card) => {
+          html("p", "cap", card, "A range for that row");
+          kv(card, "Low (" + ex.low_level + "%)", fmt(ex.lo)); kv(card, "Expected", fmt(ex.expected)); kv(card, "High (" + ex.high_level + "%)", fmt(ex.hi));
+          kv(card, "Observed", fmt(ex.observed));
+          html("p", "small", card, "Outside the range: an alert." + (ex.note ? " It was a " + ex.note.replace(", caught", "") + "." : ""));
+        }, ev.anomaly);
+    }
+    if (fb && fb.unit && fb.sample) {
+      const units = fb.sample[0] / fb.unit, asked = fb.rows.filter((r) => r.asked), seen = fb.rows.filter((r) => !r.asked);
+      pipe("Budgets", "Job 2", fb.model,
+        (card) => { kv(card, "Campaign", fb.entity_name); kv(card, "Day", seen[seen.length - 1].cells[1]); kv(card, "Spend", fmt(fb.sample[0])); kv(card, "Conversions", fmt(fb.sample[1])); html("p", "small", card, fmt(fb.history_rows) + " rows from all " + fb.campaigns + " campaigns"); },
+        (grid) => {
+          chip(grid, "Cost per conversion", fmt(fb.unit, 1), "The campaign's context", true);
+          chip(grid, "Spend in those units", fmt(units, 1), "One scale for every campaign", true);
+          chip(grid, "log(units + 1)", fmt(Math.log(units + 1), 2), "Diminishing returns become a line");
+          chip(grid, "Weekday", seen[seen.length - 1].cells[1].slice(0, 3), "Weekly rhythm");
+          chip(grid, "Target", fmt(Math.log(fb.sample[1] + 1), 2), "log(conversions + 1): small counts, tamed");
+          chip(grid, "Asked at", fb.levels + " spends", "Per campaign, on every weekday");
+        },
+        "The answer is the mean of 19 quantiles. The median of small counts moves in steps and hides the response.",
+        (card) => html("p", "small", card, "One request. No curve shape assumed."),
+        (card) => {
+          html("p", "cap", card, "Conversions at spends not tried");
+          for (const r of asked) kv(card, "at " + r.cells[2] + " a day", r.predicted || "");
+          html("p", "small", card, "These join the campaign's own days when its curve is fitted.");
+        }, ev.budget);
+    }
+  })();
+
+  // ---- The replay ----------------------------------------------------------------------
+  const refs = S.campaigns.map((c) => c.ref);
+  const gains = { agent: [0], best: [0] };
+  for (let i = 0; i < N; i++) {
+    gains.agent.push(gains.agent[i] + S.series.agent[i] - S.series.static[i]);
+    gains.best.push(gains.best[i] + S.series.best[i] - S.series.static[i]);
+  }
+  const at = (list, t) => { const i = Math.min(N - 1, Math.floor(t)); return lerp(list[i], list[i + 1], Math.min(1, t - i)); };
+  const reveals = []; // {node, t}: shown once the clock reaches t
+  const show = (node, t) => { reveals.push({ node: node, t: t }); return node; };
+
+  // The race
+  const race = (function () {
+    const root = $("race"), W = 760, H = 184, L = 40, R = 150, T = 10, B = 24;
+    root.setAttribute("viewBox", "0 0 " + W + " " + H);
+    const top = Math.max(gains.best[N], gains.agent[N], 1) * 1.1;
+    const x = scale(0, N, L, W - R), y = scale(0, top, H - B, T);
+    for (const v of ticks(top, 4)) { svg("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: C.line }, root); svg("text", { x: L - 6, y: y(v) + 3.5, "text-anchor": "end" }, root).textContent = (v ? "+" : "") + fmt(v); }
+    for (let w = 0; w < N / 7; w++) svg("text", { x: x(7 * w + 3.5), y: H - 7, "text-anchor": "middle" }, root).textContent = "week " + (w + 1);
+    svg("line", { x1: L, x2: W - R, y1: y(0), y2: y(0), stroke: C.alone, "stroke-width": 2 }, root);
+    svg("text", { x: W - R + 8, y: y(0) + 4, class: "label" }, root).textContent = S.meta.labels.static;
+    const moves = S.decisions.map((d) => show(svg("rect", { x: x(d.t) - 3.5, y: y(0) - 3.5, width: 7, height: 7, fill: C.agent, stroke: C.paper, "stroke-width": 1.5 }, root), d.t));
+    void moves;
+    const best = svg("polyline", { fill: "none", stroke: C.ink, "stroke-width": 1.5, "stroke-dasharray": "4 3" }, root);
+    const agent = svg("polyline", { fill: "none", stroke: C.agent, "stroke-width": 2.5, "stroke-linejoin": "round" }, root);
+    const tips = { best: svg("circle", { r: 3.5, fill: C.ink, stroke: C.paper, "stroke-width": 1.5 }, root), agent: svg("circle", { r: 4.5, fill: C.agent, stroke: C.paper, "stroke-width": 1.5 }, root) };
+    const labels = { best: svg("text", { class: "label" }, root), agent: svg("text", { class: "strong" }, root) };
+    const path = (list, t) => { const pts = []; for (let i = 0; i <= Math.floor(t); i++) pts.push(x(i) + "," + y(list[i])); pts.push(x(t) + "," + y(at(list, t))); return pts.join(" "); };
+    root.addEventListener("mousemove", (event) => {
+      const box = root.getBoundingClientRect(), i = Math.round(((event.clientX - box.left) / box.width * W - L) / (W - R - L) * N);
+      if (i < 1 || i > Math.floor(clock.t)) return hideTip();
+      showTip(event, "<b>After " + plural(i, "day") + " · " + dayText(i - 1) + "</b><br>" + S.meta.labels.agent + ": +" + fmt(gains.agent[i]) + " conversions<br>" + S.meta.labels.best + ": +" + fmt(gains.best[i]));
+    });
+    root.addEventListener("mouseleave", hideTip);
+    return function (t) {
+      agent.setAttribute("points", path(gains.agent, t)); best.setAttribute("points", path(gains.best, t));
+      const ya = y(at(gains.agent, t)); let yb = y(at(gains.best, t));
+      tips.agent.setAttribute("cx", x(t)); tips.agent.setAttribute("cy", ya); tips.best.setAttribute("cx", x(t)); tips.best.setAttribute("cy", yb);
+      if (ya - yb < 15) yb = ya - 15; // keep the two end labels apart
+      labels.agent.setAttribute("x", x(t) + 9); labels.agent.setAttribute("y", ya + 4); labels.agent.textContent = S.meta.labels.agent;
+      labels.best.setAttribute("x", x(t) + 9); labels.best.setAttribute("y", yb + 4); labels.best.textContent = S.meta.labels.best;
+      $("gain-now").textContent = "+" + fmt(at(gains.agent, t)) + " conversions";
+    };
+  })();
+
+  // The watch: one strip per campaign and metric
+  const strips = (function () {
+    const host = $("strips"), W = 360, H = 54, L = 4, R = 4, T = 8, B = 4;
+    const x = (i) => L + ((i + 0.5) / N) * (W - L - R);
+    const sweeps = [];
+    for (const ref of refs) for (const metric of ["spend", "conversions"]) {
+      const pts = S.points.filter((p) => p.ref === ref && p.metric === metric).sort((a, b) => a.i - b.i);
+      const cell = html("div", "strip", host), name = html("p", "name", cell);
+      html("b", "", name, names[ref]); html("span", "", name, metric);
+      const root = svg("svg", { class: "chart", viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": names[ref] + " " + metric + ": observed against the expected range" }, cell);
+      if (!pts.length) continue;
+      const top = Math.max.apply(null, pts.map((p) => Math.max(p.observed, p.hi))) * 1.05 || 1;
+      const y = scale(0, top, H - B, T);
+      svg("line", { x1: L, x2: W - R, y1: H - B, y2: H - B, stroke: C.line }, root);
+      const groups = new Map();
+      for (const p of pts) { if (!groups.has(p.reveal)) groups.set(p.reveal, []); groups.get(p.reveal).push(p); }
+      for (const [reveal, group] of groups) {
+        const half = (W - L - R) / N / 2, edge = (p, side) => x(p.i) + side * half;
+        const upper = [], low = [];
+        for (const p of group) upper.push(edge(p, -1) + "," + y(Math.min(top, p.hi)), edge(p, 1) + "," + y(Math.min(top, p.hi)));
+        for (let k = group.length - 1; k >= 0; k--) low.push(edge(group[k], 1) + "," + y(Math.max(0, group[k].lo)), edge(group[k], -1) + "," + y(Math.max(0, group[k].lo)));
+        show(svg("polygon", { points: upper.concat(low).join(" "), fill: C.model, "fill-opacity": 0.18 }, root), reveal);
+      }
+      const clip = svg("clipPath", { id: "strip-" + ref + "-" + metric }, svg("defs", {}, root));
+      const sweep = svg("rect", { x: 0, y: 0, width: 0, height: H }, clip);
+      sweeps.push({ rect: sweep, pts: pts, daily: metric === "spend" });
+      svg("polyline", { points: pts.map((p) => x(p.i) + "," + y(p.observed)).join(" "), fill: "none", stroke: C.agent, "stroke-width": 1.4, "stroke-linejoin": "round", "clip-path": "url(#strip-" + ref + "-" + metric + ")" }, root);
+      for (const a of S.alarms) if (a.method === "rule" && a.ref === ref && a.metric === metric) show(svg("line", { x1: x(a.i), x2: x(a.i), y1: 0, y2: 5, stroke: C.alone, "stroke-width": 1.5 }, root), a.reveal);
+      for (const p of pts) {
+        if (p.flagged) show(ring(root, x(p.i), y(p.observed), planted.has(ref + "|" + p.i)), p.reveal).setAttribute("r", 5.5);
+        else if (p.note) show(svg("path", { d: "M" + x(p.i) + " " + (H - B - 7) + " l4 7 l-8 0 z", fill: C.ink }, root), p.reveal);
+      }
+      root.addEventListener("mousemove", (event) => {
+        const box = root.getBoundingClientRect(), i = Math.floor(((event.clientX - box.left) / box.width * W - L) / (W - L - R) * N);
+        const p = pts.find((q) => q.i === i);
+        if (!p || (metric === "spend" ? p.i + 1 : p.reveal) > clock.t) return hideTip();
+        const judged = p.reveal <= clock.t;
+        showTip(event, "<b>" + names[ref] + " " + metric + " · " + dayText(p.i) + "</b><br>observed " + amount(p.observed, metric) + (judged ? "<br>expected " + amount(p.expected, metric) + " (" + amount(p.lo, metric) + " to " + amount(p.hi, metric) + ")" + (p.note ? "<br>" + p.note : "") : "<br>not checked yet"));
+      });
+      root.addEventListener("mouseleave", hideTip);
+    }
+    const keys = $("watch-keys");
+    key(keys, (i) => svg("line", { x1: 0, x2: 24, y1: 6, y2: 6, stroke: C.agent, "stroke-width": 1.6 }, i), "Observed");
+    key(keys, (i) => svg("rect", { x: 0, y: 1, width: 24, height: 10, fill: C.model, "fill-opacity": 0.18 }, i), "Expected range, drawn at each weekly check");
+    key(keys, (i) => ring(i, 12, 6, true).setAttribute("r", 5), "Alert, real problem");
+    key(keys, (i) => ring(i, 12, 6, false).setAttribute("r", 5), "False alarm");
+    key(keys, (i) => svg("line", { x1: 12, x2: 12, y1: 1, y2: 9, stroke: C.alone, "stroke-width": 1.5 }, i), "±50% rule would alert");
+    if (S.points.some((p) => p.note && !p.flagged)) key(keys, (i) => svg("path", { d: "M12 2 l5 8 l-10 0 z", fill: C.ink }, i), "Planted, missed");
+    const model = S.points.filter((p) => p.flagged), others = { local: S.alarms.filter((a) => a.method === "local"), rule: S.alarms.filter((a) => a.method === "rule") };
+    function tally(list, t, isReal) {
+      const seen = new Map();
+      for (const item of list) if (item.reveal <= t) seen.set(item.ref + "|" + item.i, isReal(item));
+      let real = 0; for (const v of seen.values()) if (v) real++;
+      return { alerts: seen.size, real: real, false: seen.size - real };
+    }
+    return function (t) {
+      for (const s of sweeps) {
+        let upTo = t;
+        if (!s.daily) { upTo = 0; for (const p of s.pts) if (p.reveal <= t) upTo = Math.max(upTo, p.i + 1); }
+        s.rect.setAttribute("width", L + (Math.min(N, upTo) / N) * (W - L - R));
+      }
+      const rows = [[S.meta.model, tally(model, t, (p) => planted.has(p.ref + "|" + p.i))]];
+      if (S.scores.length > 2) rows.push(["Local model", tally(others.local, t, (a) => a.real)]);
+      rows.push(["±50% rule", tally(others.rule, t, (a) => a.real)]);
+      $("watch-counts").innerHTML = rows.map((r) => "<span><b>" + r[0] + "</b> " + plural(r[1].alerts, "alert") + " <span class='quiet'>· " + r[1].real + " real · " + r[1].false + " false</span></span>").join("");
+    };
+  })();
+
+  // Budgets, and what the next step buys in each campaign
+  const budgetRows = (function () {
+    const host = $("budget-rows");
+    const start = Object.fromEntries(refs.map((r) => [r, S.budgets.static[r][0]]));
+    const most = Math.max.apply(null, refs.map((r) => Math.max(start[r], Math.max.apply(null, S.budgets.agent[r])))) * 1.04;
+    const all = refs.flatMap((r) => S.returns.agent[r].concat([S.returns.before[r]]));
+    const lo = Math.min.apply(null, all), hi = Math.max.apply(null, all), pos = scale(lo, hi, 6, 62);
+    const rows = refs.map((ref) => {
+      const row = html("div", "budget-row", host), head = html("div", "head", row);
+      html("b", "", head, names[ref]);
+      const value = html("span", "", head);
+      const ret = html("div", "ret", row); html("span", "axis", ret);
+      const track = html("div", "track", row), bar = html("span", "bar", track), was = html("span", "was", track);
+      was.style.left = (100 * start[ref]) / most + "%"; was.title = "Before the agent: " + fmt(start[ref]);
+      return { ref: ref, value: value, bar: bar, dot: html("span", "dot", ret), ret: html("span", "val", ret) };
+    });
+    function value(list, first, t) {
+      const i = Math.min(N - 1, Math.floor(t)), before = i === 0 ? first : list[i - 1];
+      return t >= N ? list[N - 1] : lerp(before, list[i], ease((t - i) / 0.5));
+    }
+    return function (t) {
+      const now = [];
+      for (const row of rows) {
+        const b = value(S.budgets.agent[row.ref], start[row.ref], t), r = value(S.returns.agent[row.ref], S.returns.before[row.ref], t);
+        row.bar.style.width = (100 * b) / most + "%"; row.value.textContent = fmt(b);
+        row.dot.style.left = pos(r) + "%"; row.ret.textContent = fmt(r, 2);
+        now.push(r);
+      }
+      const was = refs.map((r) => S.returns.before[r]);
+      $("gap").innerHTML = "Best against worst campaign: <b>" + fmt(Math.max.apply(null, now) - Math.min.apply(null, now), 2) + "</b> apart (" + fmt(Math.max.apply(null, was) - Math.min.apply(null, was), 2) + " before the agent). By the simulation's true curves.";
+    };
+  })();
+
+  // The log
+  const logger = (function () {
+    const host = $("log"); let shown = -1;
+    return function (t) {
+      const visible = S.log.filter((entry) => entry.t <= t);
+      if (visible.length === shown) return;
+      const grew = visible.length > shown && shown >= 0; shown = visible.length;
+      host.textContent = "";
+      visible.slice(-9).reverse().forEach((entry, k) => {
+        const item = html("li", entry.kind + (grew && k === 0 ? " fresh" : ""), host);
+        html("span", "mark", item);
+        const body = html("span", "", item); html("span", "when", body, entry.day); body.appendChild(document.createTextNode(entry.text));
+      });
+    };
+  })();
+
+  const clock = { t: 0, playing: false, speed: 1, last: 0 };
+  let lastWhole = -1;
+  function render(t) {
+    clock.t = Math.max(0, Math.min(N, t));
+    race(clock.t); strips(clock.t); budgetRows(clock.t); logger(clock.t);
+    const whole = Math.floor(clock.t);
+    if (whole !== lastWhole) { lastWhole = whole; for (const r of reveals) r.node.style.display = r.t <= clock.t ? "" : "none"; }
+    const d = Math.min(N - 1, whole);
+    $("clock-week").textContent = clock.t >= N ? S.meta.weeks + " weeks complete" : "Week " + (Math.floor(d / 7) + 1) + " of " + S.meta.weeks;
+    $("clock-day").textContent = dayText(d);
+    $("scrub").value = clock.t;
+    $("play").textContent = clock.playing ? "❚❚" : clock.t >= N ? "↻" : "▶";
+    $("play").setAttribute("aria-label", clock.playing ? "Pause" : "Play");
+  }
+  function tick(now) {
+    if (!clock.playing) return;
+    const next = clock.t + ((now - clock.last) / 1000) * 2 * clock.speed;
+    clock.last = now;
+    if (next >= N) { clock.playing = false; render(N); return; }
+    render(next); requestAnimationFrame(tick);
+  }
+  function play() { if (clock.t >= N) render(0); clock.playing = true; clock.last = performance.now(); render(clock.t); requestAnimationFrame(tick); }
+  function pause() { clock.playing = false; render(clock.t); }
+  $("play").addEventListener("click", () => (clock.playing ? pause() : play()));
+  $("scrub").addEventListener("input", (event) => { clock.playing = false; render(Number(event.target.value)); });
+  document.querySelectorAll("[data-speed]").forEach((button) => button.addEventListener("click", () => {
+    clock.speed = Number(button.dataset.speed);
+    document.querySelectorAll("[data-speed]").forEach((b) => b.setAttribute("aria-pressed", String(b === button)));
+  }));
+  document.addEventListener("keydown", (event) => { if (event.code === "Space" && event.target === document.body) { event.preventDefault(); clock.playing ? pause() : play(); } });
+
+  // ---- Result --------------------------------------------------------------------------
+  (function result() {
+    const alerts = $("result-alerts"), cap = html("figcaption", "", alerts);
+    html("span", "cap", cap, "Alerts over " + S.meta.weeks + " weeks, on the same days");
+    const most = Math.max.apply(null, S.scores.map((s) => s.alerts)) || 1;
+    for (const s of S.scores) {
+      const row = html("div", "score-row", alerts); html("span", "who", row, s.label.replace(", 95% expected range", ""));
+      const bars = html("span", "bars", row);
+      if (s.real) html("span", "real", bars).style.width = (100 * s.real) / most + "%";
+      if (s.false) html("span", "false", bars).style.width = (100 * s.false) / most + "%";
+      html("span", "txt", row, s.real + " real of " + S.planted.length + " planted · " + plural(s.false, "false alarm"));
+    }
+    const budget = $("result-budget"), cap2 = html("figcaption", "", budget);
+    html("span", "cap", cap2, "Conversions a day, at the same total budget");
+    const three = html("div", "three", budget), r = S.result;
+    const pct = (v) => (v === null ? "" : (v >= 0 ? "+" : "") + fmt(100 * v, 1) + "%");
+    [["static", "the comparison"], ["agent", pct(r.gain)], ["best", pct(r.best_gain) + ", knowing the true curves"]].forEach((item) => {
+      const cell = html("div", "", three); html("p", "v", cell, fmt(r.per_day[item[0]], 1)); html("p", "l", cell, S.meta.labels[item[0]]); html("p", "s", cell, item[1]);
+    });
+    if (r.captured !== null) html("p", "small", budget, "The agent captured " + fmt(100 * r.captured) + "% of the gain there was to have.").style.marginTop = "12px";
+    const words = { recorded: "recorded answers, replayed with no call", live: "asked live", cached: "from the stored cache", local: "computed locally", rule: "no model ran" };
+    $("sources").textContent = "A simulated store, so results are scored against the simulation's truth, not real sales. Weekly budget predictions: " + (words[S.meta.sources.budgets] || S.meta.sources.budgets) + ". Weekly checks: " + S.meta.sources.watch_label + ", " + (words[S.meta.sources.watch] || S.meta.sources.watch) + ". " + S.meta.sources.text + ".";
+  })();
+
+  // ---- Start ---------------------------------------------------------------------------
+  window.demoRender = render;
+  if (params.has("video")) document.body.classList.add("video");
+  if (params.has("t")) render(Number(params.get("t")));
+  else if (still) render(N);
+  else {
+    render(0);
+    new IntersectionObserver((entries, observer) => { if (entries[0].isIntersecting) { observer.disconnect(); play(); } }, { threshold: 0.3 }).observe($("player"));
+  }
+})();
+</script>
+</body>
+</html>

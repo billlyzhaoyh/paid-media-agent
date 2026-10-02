@@ -1,0 +1,378 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paid Media Agent Walkthrough</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600&display=swap">
+<style>
+  /* Layout: one reading column with a sticky section index beside it on wide screens;
+     the project's own report palette (workspace/skills/report-design/DESIGN.md) and Plex faces. */
+  :root {
+    --canvas: #fdfbf6; --paper: #f5f2eb; --ink: #1b150f; --muted: #655c53;
+    --line: #e4ddd3; --accent: #a5432b; --good: #19704c; --warn: #992b57; --code-bg: #efeae4;
+    --display: "IBM Plex Sans Condensed", "Arial Narrow", sans-serif;
+    --body: "IBM Plex Sans", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --canvas: #17130f; --paper: #211b16; --ink: #f1ebe2; --muted: #a89d91;
+      --line: #3a3129; --accent: #e08a6c; --good: #6cc69b; --warn: #e389ad; --code-bg: #2b241d;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --canvas: #17130f; --paper: #211b16; --ink: #f1ebe2; --muted: #a89d91;
+    --line: #3a3129; --accent: #e08a6c; --good: #6cc69b; --warn: #e389ad; --code-bg: #2b241d;
+    color-scheme: dark;
+  }
+  body { background: var(--canvas); color: var(--ink); font: 16px/1.6 var(--body); padding-inline: 20px; padding-block: 28px 64px; }
+  .wrap { max-width: 1080px; margin-inline: auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 32px; }
+  @media (min-width: 900px) { .wrap { grid-template-columns: 200px minmax(0, 1fr); } }
+  nav { font-size: 14px; }
+  @media (min-width: 900px) { nav { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 20px); align-self: start; } }
+  nav ol { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+  @media (min-width: 900px) { nav ol { flex-direction: column; gap: 6px; } }
+  nav a { color: var(--muted); text-decoration: none; }
+  nav a:hover, nav a:focus-visible { color: var(--accent); }
+  a { color: var(--accent); }
+  a:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  main { min-width: 0; display: flex; flex-direction: column; gap: 44px; }
+  header h1 { font: 600 clamp(30px, 5vw, 44px)/1.1 var(--display); margin: 0 0 10px; text-wrap: balance; }
+  header p { max-width: 65ch; margin: 0; color: var(--muted); }
+  .eyebrow { font: 500 12px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin: 0 0 8px; }
+  section { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  h2 { font: 600 26px/1.2 var(--display); margin: 0; padding-top: 14px; border-top: 1px solid var(--line); text-wrap: balance; }
+  h3 { font: 600 17px/1.3 var(--body); margin: 8px 0 0; }
+  p, li { max-width: 68ch; }
+  p { margin: 0; }
+  ul, ol { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 6px; }
+  code { font: 14px var(--mono); background: var(--code-bg); padding: 1px 5px; border-radius: 3px; overflow-wrap: anywhere; }
+  pre { font: 13.5px/1.55 var(--mono); background: var(--code-bg); padding: 14px 16px; border-radius: 4px; margin: 0; overflow-x: auto; }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0; border-block: 1px solid var(--line); }
+  .facts div { padding: 12px 14px 12px 0; }
+  .facts b { display: block; font: 600 26px/1.1 var(--display); font-variant-numeric: tabular-nums; }
+  .facts span { color: var(--muted); font-size: 14px; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  th, td { text-align: left; vertical-align: top; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--line); }
+  th { font: 500 12px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  td:first-child { white-space: nowrap; }
+  td.num { font-variant-numeric: tabular-nums; text-align: right; color: var(--muted); white-space: nowrap; }
+  .note { background: var(--paper); border-left: 3px solid var(--accent); padding: 12px 16px; max-width: 68ch; }
+  .note.limit { border-left-color: var(--warn); }
+  .diagram { background: var(--paper); padding: 16px; overflow-x: auto; border-radius: 4px; }
+  .steps { counter-reset: s; list-style: none; padding: 0; gap: 10px; }
+  .steps li { counter-increment: s; display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 8px; }
+  .steps li::before { content: counter(s); font: 600 15px var(--mono); color: var(--accent); }
+  .check { list-style: none; padding: 0; gap: 10px; }
+  .check label { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 8px; align-items: start; cursor: pointer; }
+  .check input { margin-top: 5px; accent-color: var(--accent); width: 16px; height: 16px; }
+  .check input:checked + span { color: var(--muted); text-decoration: line-through; }
+  .progress { font: 500 13px var(--mono); color: var(--muted); }
+  .path { color: var(--muted); font: 13px var(--mono); }
+  .shot { max-height: 520px; overflow-y: auto; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); }
+  .shot img { display: block; width: 100%; height: auto; }
+</style>
+
+<div class="wrap">
+  <nav aria-label="Sections">
+    <ol>
+      <li><a href="#what">What it is</a></li>
+      <li><a href="#question">A question's path</a></li>
+      <li><a href="#change">A change's path</a></li>
+      <li><a href="#demo">The visual demo</a></li>
+      <li><a href="#map">Map of the code</a></li>
+      <li><a href="#guarantees">What code guarantees</a></li>
+      <li><a href="#routes">Reading routes</a></li>
+      <li><a href="#try">Try it</a></li>
+      <li><a href="#evals">Evals</a></li>
+      <li><a href="#checklist">Review checklist</a></li>
+      <li><a href="#limits">Known limits</a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <header>
+      <p class="eyebrow">Reviewer's guide · main at 0c8ff7e</p>
+      <h1>Paid Media Agent, from the front door to the ledger</h1>
+      <p>A local-first agent that reads ad accounts, explains what changed, forecasts budget scenarios, and proposes changes that wait for a person. This guide follows one question and one change through the code, then maps every package and says what to check.</p>
+    </header>
+
+    <section id="what">
+      <h2>What it is</h2>
+      <p>One Python process with one DuckDB file. A small agent loop calls a model; the model calls tools; tools do every calculation and return figures with verdicts. The CLI, the HTTP API and the Slack adapter all use the same assembly, so there is one agent, not three.</p>
+      <div class="facts">
+        <div><b>33k</b><span>lines of Python in <code>src/</code></span></div>
+        <div><b>525</b><span>tests in 65 files</span></div>
+        <div><b>31</b><span>CLI commands</span></div>
+        <div><b>15</b><span>schema migrations</span></div>
+        <div><b>30</b><span>eval questions</span></div>
+      </div>
+      <p class="note limit"><strong>Status.</strong> Tested end to end on synthetic accounts only: the offline demo, the eval, and the Docker image. The live Pipeboard read path, live ad-account writes, and Slack have not been run against real accounts or a real workspace.</p>
+    </section>
+
+    <section id="question">
+      <h2>A question's path</h2>
+      <p>Take "Why did Google CPA change last week?" typed into <code>paid-media-agent ask</code>.</p>
+      <div class="diagram">
+<pre class="mermaid">
+flowchart LR
+  S[CLI / API / Slack] --> R[AgentRunner]
+  R --> L[Agent loop]
+  L -->|system prompt + tools| M[(Model)]
+  M -->|tool calls| D[ToolDispatcher]
+  D --> T[Tools: reads, compute, history, bandit]
+  T --> A[(Artifacts)]
+  T --> H[(DuckDB history)]
+  D -->|results, offloaded if large| L
+  M -->|final answer| C{Answer check}
+  C -->|figures sourced| S
+  C -->|not sourced: one repair| L
+</pre>
+      </div>
+      <ol class="steps">
+        <li><span><strong>A surface takes the message.</strong> <code>surfaces/runner.py</code> owns thread access and turns a conversation into an outcome. The CLI, <code>surfaces/api/app.py</code> and <code>surfaces/slack/service.py</code> all call it.</span></li>
+        <li><span><strong>The loop builds one model call.</strong> <code>harness/loop.py</code> sends the system prompt (instructions, resolved calendar windows, the accounts and their goals) and a fixed tool list. <code>harness/context.py</code> stubs old results past a token budget, in the view only.</span></li>
+        <li><span><strong>The model calls tools.</strong> <code>harness/tools.py</code> checks the tool exists, is not a raw provider mutation, and that arguments match its schema. A read timeout is retried once; a large result is stored as an artifact and replaced by a stub that keeps its verdicts.</span></li>
+        <li><span><strong>Tools compute.</strong> A platform read (<code>tools/reads.py</code>) normalises rows into an artifact and into history. <code>explain_change</code> (<code>analytics/drivers.py</code>) splits the change into drivers that add up exactly. Nothing is left for the model to add up; anything else goes through <code>tools/calculate.py</code>.</span></li>
+        <li><span><strong>The answer is checked.</strong> <code>grounding.py</code> looks for every figure in the tool results, the account goals, or the user's words. A failing draft is kept, a host note sends it back once, and what remains unsourced is marked unverified.</span></li>
+        <li><span><strong>Everything is recorded.</strong> Messages in <code>store/conversations.py</code>; each model call's tokens, cache use and cost in <code>llm_calls</code> via <code>harness/usage.py</code>.</span></li>
+      </ol>
+    </section>
+
+    <section id="change">
+      <h2>A change's path</h2>
+      <p>Take "Cut the Performance Max budget to 240". No tool can change an ad account directly.</p>
+      <ol class="steps">
+        <li><span><strong>Propose.</strong> <code>propose_change</code> (<code>tools/write_tools.py</code>) asks <code>ProposalService</code> in <code>tools/writes.py</code> to read the current value, classify the risk, and store a typed <code>ChangeSet</code> with a digest. Only operations in the reviewed write policy are admitted. A budget recommendation is proposed by its <code>bandit_run_id</code>, so the model never retypes the number.</span></li>
+        <li><span><strong>Pause.</strong> The model calls <code>execute_change</code>, which is gated. If it forgets, the runtime pauses the proposal itself (<code>assembly.py</code> <code>_unpaused_proposals</code>). The reviewer sees a summary written from the record (<code>domain/presentation.py</code>), never the model's wording.</span></li>
+        <li><span><strong>Approve.</strong> An authorised approver creates a signed, single-use claim bound to the proposal's revision and digest. Editing the proposal makes a new revision and voids earlier approvals.</span></li>
+        <li><span><strong>Execute once, then read back.</strong> <code>WriteExecutor</code> checks the write gate and kill switch, makes one attempt, and reads the value back. The receipt says verified, rejected, failed, or unknown; an unknown outcome is never retried blindly.</span></li>
+        <li><span><strong>Log.</strong> Proposed, approved and verified land in <code>change_events</code>, which later explains "what changed and when".</span></li>
+      </ol>
+      <p>Run <code>paid-media-agent demo --with-proposal</code> to watch all five steps as text on synthetic data. Design notes: <code>docs/architecture/writes-and-approvals.md</code>.</p>
+    </section>
+
+    <section id="demo">
+      <h2>The visual demo</h2>
+      <p><code>make demo</code> opens an animated page for Northwind, a simulated store with four campaigns. A simulation is used because it knows what real data cannot: which anomalies were planted and what each campaign's true spend curve is. The page is mostly diagrams, and its centre is a day-by-day replay of the agent at work.</p>
+      <div class="shot"><video controls preload="metadata" src="demo-replay.mp4" style="display:block;width:100%;height:auto" aria-label="The replay: eight weeks of the agent's weekly budget moves, the conversions gained, and its weekly check for unusual days"></video></div>
+      <div class="shot"><a href="demo-page.png"><img src="demo-page.png" alt="The demo page: three headline numbers; a fixed rule against TabPFN's learned range on one series; two response curves with the budget moving between them; two feature-engineering pipelines; the replay player; the result and the approval gate"></a></div>
+      <h3>What is on the page</h3>
+      <ul>
+        <li><strong>Two jobs, two ideas.</strong> One series judged twice: a fixed ±50% rule raises 23 alerts on it, all false, and TabPFN's range raises 1, a real problem. Then two true response curves, with budget moving from the flatter to the steeper until the slopes meet.</li>
+        <li><strong>Feature engineering.</strong> For each job: a raw daily row, the engineered row TabPFN is given, and what comes back. The measured effect of the feature choices is quoted from the project's backtests.</li>
+        <li><strong>Eight weeks, replayed.</strong> One clock drives the conversions gained over budgets left alone, each campaign's budget, the weekly check on every campaign, and a log of what the agent did.</li>
+        <li><strong>The result and the guardrail.</strong> The scores, the approval gate with a real readback receipt, the agent's next steps, and a link to the report it wrote.</li>
+      </ul>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Eight weekly checks, 10 planted problems</th><th>Alerts</th><th>Real problems caught</th><th>False alarms</th></tr></thead>
+          <tbody>
+            <tr><td>TabPFN, 95% range</td><td class="num">8</td><td class="num">6</td><td class="num">2</td></tr>
+            <tr><td>Local model, 95% range</td><td class="num">33</td><td class="num">8</td><td class="num">25</td></tr>
+            <tr><td>±50% day-over-day rule</td><td class="num">83</td><td class="num">9</td><td class="num">74</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Eight weeks, same total budget</th><th>Conversions a day</th><th>Against budgets left alone</th></tr></thead>
+          <tbody>
+            <tr><td>Budgets left alone</td><td class="num">37.3</td><td class="num"></td></tr>
+            <tr><td>The agent, with TabPFN</td><td class="num">39.6</td><td class="num">+6.1%</td></tr>
+            <tr><td>Best possible (knows the true curves)</td><td class="num">40.0</td><td class="num">+7.1%</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note">Two honest points. TabPFN catches fewer of the planted problems than the rule (6 against 9) and raises far fewer false alarms (2 against 74). On budgets the pooled regression reached +6.2% on the same store, so TabPFN matched it and did not beat it.</p>
+      <h3>How it is built</h3>
+      <ol class="steps">
+        <li><span><strong>The store.</strong> <code>testing/demo_visual.py</code> runs <code>bandit/evaluate.py</code> <code>run_closed_loop</code> three ways (budgets left alone, the agent, the best possible split), keeps every campaign-day, and runs <code>check_anomalies</code> once per week as the history stood that day.</span></li>
+        <li><span><strong>The story.</strong> <code>testing/demo_story.py</code> <code>build_story</code> turns the runs, the weekly checks, the truth and the agent's text into one JSON document embedded in the page.</span></li>
+        <li><span><strong>The page.</strong> <code>testing/templates/demo.html.j2</code>, <code>demo.css</code> and <code>demo.js</code>: one self-contained file, vanilla JS and SVG, no network. <code>render(t)</code> draws any moment from the clock alone, so scrubbing and video frames match playback.</span></li>
+        <li><span><strong>The video.</strong> <code>testing/demo_video.py</code> (<code>make demo-video</code>): one headless Chrome on its own profile sets the clock frame by frame; ffmpeg joins the frames.</span></li>
+        <li><span><strong>The report.</strong> The agent's output for the last fortnight (<code>reports/insights.py</code>, <code>reports/charts.py</code>), with next steps written by the real agent loop (<code>testing/demo_narrative.py</code>) and checked against the figures.</span></li>
+        <li><span><strong>Recording and replay.</strong> <code>make demo</code> calls neither TabPFN nor a model, even with keys set. It replays <code>fixtures/data/demo_tabpfn_cache.json</code> (the weekly budgets and TabPFN's 19 recorded answers) and <code>demo_narrative.json</code>, and only if the store rebuilt on the machine matches the recorded one. <code>demo --visual --record-watch</code> asks TabPFN only for answers the recording lacks.</span></li>
+      </ol>
+      <p><code>paid-media-agent report --insights</code> adds the range and budget panels to a real account's report from stored history, with the free local model by default.</p>
+    </section>
+
+    <section id="map">
+      <h2>Map of the code</h2>
+      <p>Everything is under <code>src/paid_media_agent/</code>. Sizes are lines of Python.</p>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Package</th><th>Lines</th><th>What it holds</th><th>Open first</th></tr></thead>
+          <tbody>
+            <tr><td><code>assembly.py</code></td><td class="num">430</td><td>The one place the model, tools, dispatcher, gate and checks are wired together.</td><td><code>build_agent_components</code>, <code>CORE_TOOLS</code></td></tr>
+            <tr><td><code>harness/</code></td><td class="num">1,804</td><td>The agent loop, messages, model adapter (OpenAI-compatible, prompt caching), tool dispatch, context budget, file tools, usage log.</td><td><code>loop.py</code> <code>_run</code>; <code>tools.py</code> <code>dispatch</code></td></tr>
+            <tr><td><code>tools/</code></td><td class="num">8,248</td><td>Every model-facing tool: platform reads and contracts, compare and summarise, history queries, calculate, pacing, anomalies, what-if, proposals and the write executor.</td><td><code>reads.py</code>, <code>writes.py</code>, <code>compute.py</code>, <code>summary.py</code></td></tr>
+            <tr><td><code>analytics/</code></td><td class="num">3,579</td><td>Stored history: sync and backfill, the daily panel, goals, pacing, the driver decomposition, anomaly checks.</td><td><code>sync.py</code>, <code>drivers.py</code></td></tr>
+            <tr><td><code>bandit/</code></td><td class="num">4,015</td><td>Budget allocation: campaign arms, what limits spend, a pooled prior, per-campaign posteriors, Thompson sampling, what-if forecasts, proposals from runs.</td><td><code>recommend.py</code>, <code>posterior.py</code>, <code>whatif.py</code></td></tr>
+            <tr><td><code>grounding.py</code></td><td class="num">500</td><td>Whether an answer's figures came from its tools. Used by the runtime check and the evals.</td><td><code>assess</code>, <code>numbers_in</code></td></tr>
+            <tr><td><code>store/</code></td><td class="num">1,198</td><td>DuckDB: migrations, conversations, proposals, approvals, receipts, backup and restore.</td><td><code>migrations.py</code></td></tr>
+            <tr><td><code>surfaces/</code></td><td class="num">1,175</td><td>The runner, the FastAPI app, and the Slack adapter (Socket Mode).</td><td><code>runner.py</code></td></tr>
+            <tr><td><code>evals/</code></td><td class="num">1,149</td><td>30 questions, deterministic checks, a judge model, stored runs, regrade, reports.</td><td><code>questions.json</code>, <code>checks.py</code></td></tr>
+            <tr><td><code>admin/</code></td><td class="num">2,862</td><td>The local setup console (no build step) and the actions behind it.</td><td><code>actions.py</code></td></tr>
+            <tr><td><code>domain/</code></td><td class="num">1,007</td><td>Typed models: metrics, analysis results, proposals, window presets, the reviewer's summary.</td><td><code>proposals.py</code>, <code>windows.py</code></td></tr>
+            <tr><td><code>reports/</code></td><td class="num">1,324</td><td>The deterministic weekly and monthly report, rendered to HTML or PDF, with reconciliation; the optional expected-range, budget and change panels and their chart geometry.</td><td><code>cadence.py</code>, <code>insights.py</code>, <code>charts.py</code></td></tr>
+            <tr><td><code>sim/</code>, <code>predict/</code></td><td class="num">1,183</td><td>A simulator with known response curves, and the predictors (local model, optional TabPFN).</td><td><code>sim/simulator.py</code></td></tr>
+            <tr><td><code>runtime/</code></td><td class="num">516</td><td>Profiles: sample data, configured accounts, self-hosted.</td><td><code>profiles.py</code></td></tr>
+            <tr><td><code>cli.py</code>, <code>scheduler.py</code>, <code>config.py</code>, <code>doctor.py</code></td><td class="num">3,338</td><td>The command line, scheduled jobs, settings, and the configuration check.</td><td><code>config.py</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>Outside <code>src/</code></h3>
+      <ul>
+        <li><code>instructions.md</code> is the system prompt. <code>workspace/skills/</code> holds the runtime skills the agent reads: analysis, writes, reports, and a paid-media wiki.</li>
+        <li><code>.agents/skills/</code> holds skills for coding agents (onboarding, design). <code>AGENTS.md</code> is the repository contract.</li>
+        <li><code>docs/architecture/</code> has one page per subsystem. <code>capability-map.md</code> lists every capability with its tool, code, stored state and failure modes.</li>
+        <li><code>tests/unit</code> covers pieces; <code>tests/contract</code> runs real paths through the loop with a scripted model.</li>
+      </ul>
+    </section>
+
+    <section id="guarantees">
+      <h2>What code guarantees, and where to verify it</h2>
+      <p>These are the claims worth checking by hand. Each names the code and a test that proves it.</p>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Claim</th><th>Code</th><th>Test</th></tr></thead>
+          <tbody>
+            <tr><td>No provider mutation without an approval</td><td><code>harness/tools.py</code> <code>_refuse</code>; <code>tools/writes.py</code></td><td><code>test_write_flows_graph.py</code>, <code>test_live_write_gates.py</code></td></tr>
+            <tr><td>An approval executes only the revision reviewed</td><td><code>tools/write_tools.py</code> <code>_execute</code></td><td><code>test_approval_binding.py</code></td></tr>
+            <tr><td>A staged change always reaches a reviewer</td><td><code>assembly.py</code> <code>_unpaused_proposals</code></td><td><code>test_approval_binding.py</code> (runtime pause)</td></tr>
+            <tr><td>Figures in an answer come from tools</td><td><code>grounding.py</code>; <code>harness/loop.py</code> <code>_unsourced</code></td><td><code>test_answer_check.py</code>, <code>test_evals.py</code></td></tr>
+            <tr><td>Arithmetic is exact and sandboxed</td><td><code>tools/calculate.py</code></td><td><code>test_calculate.py</code></td></tr>
+            <tr><td>Missing data is never shown as zero</td><td><code>harness/tools.py</code> <code>failed_reads</code>; <code>tools/performance.py</code></td><td><code>test_read_path_graph.py</code></td></tr>
+            <tr><td>Secrets and provider ids stay out of results</td><td><code>redaction.py</code>; <code>harness/tools.py</code></td><td><code>test_runtime_surfaces.py</code></td></tr>
+            <tr><td>Totals reconcile with the provider's</td><td><code>tools/compute.py</code> <code>compare_platform</code></td><td><code>test_compute.py</code></td></tr>
+            <tr><td>A recorded model answer is used only for the account it was made on</td><td><code>testing/demo_visual.py</code> <code>demo_predictors</code></td><td><code>test_visual_demo.py</code></td></tr>
+            <tr><td>Charts place marks inside their frame, on one scale</td><td><code>reports/charts.py</code></td><td><code>test_report_insights.py</code></td></tr>
+            <tr><td>Forecasts match a simulated truth</td><td><code>bandit/whatif.py</code>; <code>bandit/evaluate.py</code></td><td><code>test_whatif.py</code>, <code>test_bandit.py</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="routes">
+      <h2>Reading routes</h2>
+      <h3>Thirty minutes</h3>
+      <ol>
+        <li><code>README.md</code>, then <code>make demo</code> and read the page it opens top to bottom.</li>
+        <li><code>assembly.py</code>: what the agent is made of.</li>
+        <li><code>harness/loop.py</code>, the <code>_run</code> method: the whole loop is about 40 lines.</li>
+        <li><code>tools/writes.py</code>, <code>ProposalService.propose</code> and <code>WriteExecutor.execute</code>.</li>
+        <li><code>docs/architecture/evals.md</code>, the results sections at the end.</li>
+      </ol>
+      <h3>Two hours</h3>
+      <ol>
+        <li>Everything above, then <code>instructions.md</code> and <code>workspace/skills/paid-media-analysis/SKILL.md</code>: what the model is told.</li>
+        <li><code>harness/tools.py</code> and <code>harness/context.py</code>: dispatch, offloading, the context budget.</li>
+        <li><code>tools/reads.py</code> and <code>tools/contracts.py</code>: how a provider payload becomes rows, per platform.</li>
+        <li><code>tools/compute.py</code>, <code>tools/summary.py</code>, <code>domain/windows.py</code>: the verdicts.</li>
+        <li><code>analytics/drivers.py</code>: the decomposition. <code>bandit/posterior.py</code> and <code>bandit/recommend.py</code>: the budget model.</li>
+        <li><code>grounding.py</code> and <code>evals/checks.py</code>: how answers are graded.</li>
+        <li><code>tests/contract/test_approval_binding.py</code> and <code>test_answer_check.py</code>: the two safety nets, exercised.</li>
+      </ol>
+    </section>
+
+    <section id="try">
+      <h2>Try it</h2>
+      <p>No model key or ad account is needed for the first block.</p>
+<pre><code>uv sync
+make demo                                      # opens the report page: ranges, curves, an approval
+uv run paid-media-agent demo --with-proposal   # the same flow as text
+uv run paid-media-agent doctor                 # what is configured, with no secrets printed
+make check                                     # lint, format, types, 525 tests
+
+uv run paid-media-agent simulate --days 180    # campaigns with known response curves
+uv run paid-media-agent history --scenario baseline --view daily
+uv run paid-media-agent bandit evaluate        # the bandit scored against the truth</code></pre>
+      <p>With a model key in <code>.env</code> (sample data, no ad account):</p>
+<pre><code>uv run paid-media-agent setup                  # the local console
+uv run paid-media-agent sync                   # build history from the sample accounts
+uv run paid-media-agent ask "Why did Google CPA change last week?"
+uv run paid-media-agent ask "What if I raise Non-Brand Search by 20%?"
+uv run paid-media-agent allocate               # budget recommendations, nothing applied
+uv run paid-media-agent usage                  # tokens, cache hits, cost per call</code></pre>
+      <p>In Docker: <code>cp .env.example .env</code>, then <code>docker compose up --build -d</code> and <code>curl http://localhost:8080/health</code>.</p>
+    </section>
+
+    <section id="evals">
+      <h2>Evals</h2>
+      <p>Thirty questions on synthetic accounts with goals. Each answer gets deterministic checks (tools called, expected figures, grounded numbers, writes left for approval, no errors) and, if those pass, a judge model scoring correct, grounded, complete and clear.</p>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Measure</th><th>Result</th></tr></thead>
+          <tbody>
+            <tr><td>Sonnet 5.5, all 30 questions, current code</td><td>28 of 30 (93%)</td></tr>
+            <tr><td>Judge scores, out of 5</td><td>correct 4.5, grounded 4.2, complete 4.2, clear 4.3</td></tr>
+            <tr><td>Cost per answer</td><td>$0.046, with 90% of input read from cache (was $0.10 on 30 September)</td></tr>
+            <tr><td>Model calls per answer</td><td>3.6; median 15 seconds</td></tr>
+            <tr><td>Sonnet 5.5 on 30 September</td><td>25 of 30</td></tr>
+            <tr><td>Haiku 4.5 baseline</td><td>12 of 30</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>The two failures: one answer left out the per-platform spend figures the check expects (q05), and one declined the lever the tool recommended (q28). The log of every run, with what each one found and fixed, is <code>docs/architecture/evals.md</code>. Run a subset with <code>eval run --ids q01,q16 --no-judge</code>; re-check stored answers for free with <code>eval regrade</code>.</p>
+    </section>
+
+    <section id="checklist">
+      <h2>Review checklist</h2>
+      <p class="progress" id="progress">0 of 14 checked</p>
+      <ul class="check" id="checks">
+        <li><label><input type="checkbox" id="c1"><span><code>make demo</code> opens the report page; its last section shows a verified receipt.</span></label></li>
+        <li><label><input type="checkbox" id="c2"><span><code>make check</code> passes locally: 525 passed, 5 skipped.</span></label></li>
+        <li><label><input type="checkbox" id="c3"><span>The README's status line matches what you believe is tested.</span></label></li>
+        <li><label><input type="checkbox" id="c4"><span>In <code>harness/tools.py</code>, a mutation-class tool can only be refused, never dispatched.</span></label></li>
+        <li><label><input type="checkbox" id="c5"><span>In <code>tools/writes.py</code>, the write gate defaults to off and the kill switch is checked before every attempt.</span></label></li>
+        <li><label><input type="checkbox" id="c6"><span>The reviewer's summary in <code>domain/presentation.py</code> shows before, after, risk, reason and reversal.</span></label></li>
+        <li><label><input type="checkbox" id="c7"><span><code>instructions.md</code> reads as you would brief an analyst; nothing in it contradicts the tools.</span></label></li>
+        <li><label><input type="checkbox" id="c8"><span><code>tools/calculate.py</code> refuses names, attributes and powers (try <code>__import__('os')</code> in a test).</span></label></li>
+        <li><label><input type="checkbox" id="c9"><span>An <code>ask</code> answer on sample data quotes figures you can find in <code>history</code>.</span></label></li>
+        <li><label><input type="checkbox" id="c10"><span><code>.env</code>, <code>config/accounts.toml</code> and company context are Git-ignored; <code>git ls-files .env</code> prints nothing.</span></label></li>
+        <li><label><input type="checkbox" id="c11"><span>The TabPFN and OpenRouter keys pasted in chat have been rotated.</span></label></li>
+        <li><label><input type="checkbox" id="c13"><span>On the demo page, each chart's flagged and planted days match the comparison table (TabPFN: 4 flagged, 3 of 4 planted).</span></label></li>
+        <li><label><input type="checkbox" id="c14"><span>The demo page says where its figures came from (recorded, cached, live, or local), labels the backtest figures as not from this run, and does not claim TabPFN beats the pooled model on budgets.</span></label></li>
+        <li><label><input type="checkbox" id="c12"><span>The Docker image builds and <code>/health</code> answers.</span></label></li>
+      </ul>
+    </section>
+
+    <section id="limits">
+      <h2>Known limits</h2>
+      <ul>
+        <li><strong>Synthetic only.</strong> Google, Meta and Reddit live payload shapes and Meta's budget units are implemented from published sources and unverified against real accounts.</li>
+        <li><strong>Sample data is 28 days.</strong> A monthly report needs 56, so that job is recorded as skipped on sample data; "same days last month" has nothing to compare with.</li>
+        <li><strong>Late conversions.</strong> Conversions that arrive after the 7-day maturity window are not counted, so history runs a few percent low and forecast ranges are slightly narrow.</li>
+        <li><strong>Smaller models omit caveats.</strong> Haiku 4.5 sometimes leaves out what the tools state (attribution differences, a month with no data yet). Sonnet 5.5 does not.</li>
+        <li><strong>Prompt caching</strong> is used for Anthropic models through OpenRouter only.</li>
+        <li><strong>One process.</strong> DuckDB lets a single process hold the state file; do not scale the container past one replica.</li>
+      </ul>
+    </section>
+  </main>
+</div>
+
+<script>
+  (function () {
+    var KEY = "pma-review-checks";
+    var boxes = Array.prototype.slice.call(document.querySelectorAll("#checks input"));
+    var progress = document.getElementById("progress");
+    var saved = {};
+    try { saved = JSON.parse(localStorage.getItem(KEY) || "{}") || {}; } catch (e) { saved = {}; }
+    function render() {
+      var done = boxes.filter(function (b) { return b.checked; }).length;
+      progress.textContent = done + " of " + boxes.length + " checked";
+    }
+    boxes.forEach(function (box) {
+      box.checked = !!saved[box.id];
+      box.addEventListener("change", function () {
+        saved[box.id] = box.checked;
+        try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch (e) { /* ticks stay for this visit */ }
+        render();
+      });
+    });
+    render();
+  })();
+</script>
