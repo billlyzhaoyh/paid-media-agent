@@ -32,7 +32,7 @@ def _row(day: int, entity: str, spend: str, conversions: str) -> PerformanceRow:
     )
 
 
-def test_summary_computes_pacing_top_spenders_and_flagged_days(tmp_path: Path) -> None:
+def test_summary_computes_pacing_top_spenders_and_day_over_day_moves(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path)
     rows = [_row(d, "g-1", "100", "2") for d in range(1, 8)] + [
         _row(d, "g-2", "20" if d != 5 else "80", "1") for d in range(1, 8)
@@ -72,7 +72,27 @@ def test_summary_computes_pacing_top_spenders_and_flagged_days(tmp_path: Path) -
     assert (top["entity_ref"], top["pacing"], top["daily_budget"]) == ("g-1", "1.1111", "90.00")
     assert second["pacing"] == "0.5714"  # 200 / 7 days = 28.57 against a 50 budget
     assert google["over_budget"] == ["g-1"]
-    assert google["flagged_days"] == ["2026-08-05"]  # +50% day; the -33% return is below the flag
+    assert (second["days_over_budget"], second["highest_day"]) == (
+        1,
+        {"date": "2026-08-05", "spend": "80.00", "to_budget": "1.6000"},
+    ), "an average under budget does not hide a day over it"
+    assert google["over_budget_days"][1] == (
+        "Campaign g-2 [g-2]: 1 of 7 days above its 50.00 daily budget; highest 80.00 on "
+        "2026-08-05 (1.6000x)"
+    )
+    assert "Google Ads can spend up to 2x" in google["over_budget_note"]
+    assert "flagged_days" not in google, "judging a day is check_anomalies' job"
+    preset = run_summarize_window(
+        store,
+        SummarizeWindowArgs(artifact_ids=[perf.artifact_id], window="last_n_days_of_data", days=3),
+        today=date(2026, 8, 10),
+    )
+    assert preset["resolved_window"] == {
+        "window": "2026-08-05..2026-08-07",
+        "rule": "last_n_days_of_data, data through 2026-08-07",
+    }
+    moves = [d.get("spend_change") for d in google["daily"]]
+    assert moves[4] == "0.5000" and moves[5] == "-0.3333"  # the +50% day and its return
     assert store.read(out["artifact_id"]).metadata.tool_name == "summarize_window"
 
 
@@ -141,7 +161,6 @@ def test_summary_keeps_missing_daily_conversions_unavailable(tmp_path: Path) -> 
     summary = result["platforms"]["google_ads"]["demo-google"]
     assert summary["daily"][1]["conversions"] is None
     assert summary["daily"][1]["conversions_change"] is None
-    assert summary["flagged_days"] == []
 
 
 def test_compare_periods_refuses_an_empty_window_instead_of_reporting_zero(tmp_path: Path) -> None:
@@ -197,3 +216,97 @@ def test_compare_periods_refuses_a_window_the_read_did_not_cover(tmp_path: Path)
         assert "previous window starts 2026-08-15 but the read begins 2026-08-21" in str(exc)
     else:
         raise AssertionError("expected ComputeError")
+
+
+def test_the_headline_lists_every_account_first_and_platforms_carry_caveats(
+    tmp_path: Path,
+) -> None:
+    store = ArtifactStore(tmp_path)
+    ids = []
+    for platform, account, last in (("google_ads", "demo-google", 7), ("meta_ads", "demo-meta", 5)):
+        rows = [
+            _row(d, "c1", "100", "2").model_copy(
+                update={"platform": Platform(platform), "account_ref": account}
+            )
+            for d in range(1, last + 1)
+        ]
+        ids.append(
+            store.write_json(
+                "performance_rows", rows_to_payload(rows), schema_version=ROWS_SCHEMA_VERSION,
+                platform=platform, account_ref=account,
+            ).artifact_id
+        )  # fmt: skip
+    out = run_summarize_window(
+        store,
+        SummarizeWindowArgs(
+            artifact_ids=ids, start_date=date(2026, 8, 1), end_date=date(2026, 8, 7)
+        ),
+    )
+    assert next(iter(out)) == "headline", "first, so a partial view still lists every account"
+    assert [(h["account"], h["spend"], h["days_covered"]) for h in out["headline"]] == [
+        ("demo-google", "700.00", 7),
+        ("demo-meta", "500.00", 5),
+    ]
+    assert any("attribution" in c for c in out["caveats"])
+    assert any("different days" in c for c in out["caveats"])
+
+
+def test_compare_periods_resolves_a_preset_and_says_which_dates(tmp_path: Path) -> None:
+    import pytest
+
+    store = ArtifactStore(tmp_path)
+    rows = [_row(d, "g-1", "100", "2") for d in range(1, 8)]
+    perf = store.write_json(
+        "performance_rows", rows_to_payload(rows), schema_version=ROWS_SCHEMA_VERSION,
+        platform="google_ads", account_ref="demo-google",
+    )  # fmt: skip
+    out = run_compare_periods(
+        store,
+        ComparePeriodsArgs(artifact_ids=[perf.artifact_id], window="last_n_days_of_data", days=3),
+        today=date(2026, 8, 10),
+    )
+    assert out["resolved_windows"] == {
+        "current": "2026-08-05..2026-08-07",
+        "previous": "2026-08-02..2026-08-04",
+        "rule": "last_n_days_of_data, data through 2026-08-07",
+    }
+    assert out["platforms"][0]["cpa_change"] == "0.0%", "flat carries no verdict"
+    with pytest.raises(ComputeError, match="preset or dates, not both"):
+        run_compare_periods(
+            store,
+            ComparePeriodsArgs(
+                artifact_ids=[perf.artifact_id], window="last_week", current_start=date(2026, 8, 1),
+                current_end=date(2026, 8, 3),
+            ),
+        )  # fmt: skip
+
+
+def test_a_previous_window_before_all_the_data_is_named_first(tmp_path: Path) -> None:
+    import pytest
+
+    store = ArtifactStore(tmp_path)
+    perf = store.write_json(
+        "performance_rows",
+        rows_to_payload([_row(day, "g-1", "10", "1") for day in range(2, 30)]),
+        schema_version=ROWS_SCHEMA_VERSION,
+        platform="google_ads",
+        account_ref="demo-google",
+        requested_window="2026-08-01..2026-08-29",
+    )
+    # 1 September, data through 29 August from the 2nd: July is not in the data at all.
+    with pytest.raises(ComputeError, match=r"previous window 2026-07-01\.\.2026-07-29 is entirely"):
+        run_compare_periods(
+            store,
+            ComparePeriodsArgs(artifact_ids=[perf.artifact_id], window="month_to_date"),
+            today=date(2026, 9, 1),
+        )
+    # A previous window that is only partly before the data: those days do not exist.
+    with pytest.raises(ComputeError, match=r"the source has no data before 2026-08-02"):
+        run_compare_periods(
+            store,
+            ComparePeriodsArgs(
+                artifact_ids=[perf.artifact_id],
+                current_start=date(2026, 8, 9),
+                current_end=date(2026, 8, 16),
+            ),
+        )

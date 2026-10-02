@@ -12,6 +12,7 @@ import hmac
 import secrets
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
@@ -22,7 +23,7 @@ import jsonschema
 from pydantic import BaseModel, ConfigDict
 
 from paid_media_agent.config import AccountRegistry
-from paid_media_agent.domain.common import JsonValue, RiskLevel
+from paid_media_agent.domain.common import JsonValue, Platform, RiskLevel
 from paid_media_agent.domain.proposals import (
     ApprovalClaim,
     ChangeSet,
@@ -37,20 +38,30 @@ from paid_media_agent.domain.proposals import (
     stamp_digest,
     transition,
 )
-from paid_media_agent.middleware.redaction import sanitize_exception
 from paid_media_agent.persistence.interfaces import (
     ApprovalRepository,
+    ChangeLog,
     ProposalRepository,
     ReceiptRepository,
 )
+from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.tools.catalog import (
     CatalogEntry,
     CatalogProvider,
     ToolClass,
 )
+from paid_media_agent.tools.host_writes import (
+    ALIAS_ARG as HOST_ALIAS_ARG,
+)
+from paid_media_agent.tools.host_writes import (
+    HostOperation,
+    HostOperationError,
+    is_host_tool,
+)
 from paid_media_agent.tools.providers import (
     ProviderError,
     ProviderTimeout,
+    ProviderUnknownOutcome,
     ReadProvider,
     WriteProvider,
 )
@@ -140,6 +151,10 @@ class ApprovalPolicy(BaseModel):
             return False, "self-approval is not allowed"
         return True, "ok"
 
+    def may_decide(self, actor_ref: str, requester_ref: str) -> bool:
+        """Edit or reject: the requester or an approver, nobody else."""
+        return actor_ref == requester_ref or actor_ref in self.approver_refs
+
 
 class ApprovalSigner:
     """HMAC-SHA256 over the claim material. The key never leaves the host."""
@@ -158,6 +173,15 @@ class ApprovalSigner:
 
     def verify(self, material: str, signature: str) -> bool:
         return hmac.compare_digest(self.sign(material), signature)
+
+
+HOST_THREAD_PREFIX = "host:"
+"""Proposals the host makes itself (the budget bandit) live in threads with this prefix. They have
+no conversation to resume, so an approval executes them directly; callers cannot use the prefix."""
+
+
+def is_host_thread(thread_id: str) -> bool:
+    return thread_id.startswith(HOST_THREAD_PREFIX)
 
 
 class WriteDenied(Exception):
@@ -267,6 +291,32 @@ def values_equal(left: JsonValue, right: JsonValue) -> bool:
         return str(left) == str(right)
 
 
+HOST_REVISION = "host"
+"""`catalog_revision` of a host operation's proposal: it never depends on a provider catalog."""
+
+
+@dataclass(frozen=True)
+class _Planned:
+    """What a proposal will record, from either a provider mutation or a host operation."""
+
+    platform: Platform
+    args: dict[str, JsonValue]
+    before: dict[str, JsonValue]
+    after: dict[str, JsonValue]
+    units: dict[str, str]
+    risk: RiskLevel
+    risk_flags: tuple[str, ...]
+    catalog_revision: str
+    schema_hash: str
+    policy_digest: str
+
+    def fields(self, values: Mapping[str, JsonValue]) -> tuple[FieldValue, ...]:
+        return tuple(
+            FieldValue(field=f, value=_json_ready(v), unit=self.units.get(f))
+            for f, v in values.items()
+        )
+
+
 class ProposalService:
     """Creates, revises, rejects, and approves proposals. Only this code makes claims."""
 
@@ -282,9 +332,13 @@ class ProposalService:
         approvals: ApprovalRepository,
         read_provider: ReadProvider,
         clock: Clock = utc_now,
+        change_log: ChangeLog | None = None,
+        host_operations: Mapping[str, HostOperation] | None = None,
     ) -> None:
         self._catalog_provider = catalog_provider
         self._accounts = accounts
+        self._change_log = change_log
+        self._host_operations = dict(host_operations or {})
         self._write_policy = write_policy
         self._approval_policy = approval_policy
         self._signer = signer
@@ -321,7 +375,68 @@ class ProposalService:
                     "readback_tool": op.readback_tool,
                 }
             )
+        for host in self._host_operations.values():
+            rows.append(
+                {
+                    "tool_name": host.tool_name,
+                    "platform": "host",
+                    "description": host.description,
+                    "target_arg": "the account alias itself (target_ref = account_alias)",
+                    "editable_fields": list(host.editable_fields),
+                    "units": dict(host.units),
+                    "risk": host.risk.value,
+                    "readback_tool": "host",
+                }
+            )
         return rows
+
+    def host_operation(self, tool_name: str) -> HostOperation | None:
+        """The host operation for a `host__` tool name; unknown host names are refused."""
+        if not is_host_tool(tool_name):
+            return None
+        operation = self._host_operations.get(tool_name)
+        if operation is None:
+            raise WriteDenied("unknown_tool", "not an admitted host operation")
+        return operation
+
+    def _plan_host(
+        self,
+        operation: HostOperation,
+        alias: str,
+        target_ref: str,
+        changes: dict[str, JsonValue],
+        before: Mapping[str, JsonValue] | None = None,
+    ) -> _Planned:
+        binding = self._accounts.resolve(alias)
+        if binding is None:
+            raise WriteDenied("unknown_account_alias", alias)
+        if target_ref != alias:
+            raise WriteDenied("invalid_target", "a host change targets the account alias itself")
+        try:
+            clean = operation.validate(changes)
+        except HostOperationError as exc:
+            raise WriteDenied("invalid_change", str(exc)) from None
+        if before is None:
+            current = operation.read(alias)
+            before = {f: current.get(f) for f in clean}
+        return _Planned(
+            platform=binding.platform,
+            args={HOST_ALIAS_ARG: alias, **clean},
+            before=dict(before),
+            after=dict(clean),
+            units=dict(operation.units),
+            risk=operation.risk,
+            risk_flags=operation.risk_flags(clean, before),
+            catalog_revision=HOST_REVISION,
+            schema_hash=operation.digest(),
+            policy_digest=operation.digest(),
+        )
+
+    def _currency(self, alias: str) -> str:
+        binding = self._accounts.resolve(alias)
+        if binding is None:
+            raise WriteDenied("unknown_account_alias", alias)
+        return binding.currency
 
     def _resolve_mutation(self, tool_name: str) -> tuple[CatalogEntry, WriteOperation, str]:
         catalog = self._catalog_provider.current()
@@ -363,7 +478,12 @@ class ProposalService:
             entry.account_arg: binding.provider_account_id,
             operation.target_arg: target_ref,
         }
-        args.update({k: _json_ready(v) for k, v in changes.items()})
+        args.update(
+            {
+                k: operation.to_provider(k, _json_ready(v), binding.currency)
+                for k, v in changes.items()
+            }
+        )
         try:
             jsonschema.validate(instance=args, schema=entry.input_schema)
         except jsonschema.ValidationError as exc:
@@ -386,6 +506,32 @@ class ProposalService:
         except ProviderError as exc:
             raise WriteDenied("target_not_readable", sanitize_exception(exc)) from None
 
+    async def _plan_provider(
+        self, tool_name: str, alias: str, target_ref: str, changes: dict[str, JsonValue]
+    ) -> _Planned:
+        entry, operation, catalog_revision = self._resolve_mutation(tool_name)
+        args = self._scoped_args(entry, alias, target_ref, operation, changes)
+        state = await self._current_state(entry, operation, args)
+        currency = self._currency(alias)
+        before = {
+            f: operation.to_currency(
+                f, _json_ready(state.get(operation.readback_fields[f])), currency
+            )
+            for f in changes
+        }
+        return _Planned(
+            platform=entry.platform,
+            args=args,
+            before=before,
+            after={f: operation.as_sent(f, _json_ready(v), currency) for f, v in changes.items()},
+            units=dict(operation.units),
+            risk=operation.risk,
+            risk_flags=classify_risk(entry, operation, changes, before),
+            catalog_revision=catalog_revision,
+            schema_hash=entry.schema_hash,
+            policy_digest=operation.digest(),
+        )
+
     async def propose(
         self,
         *,
@@ -399,40 +545,33 @@ class ProposalService:
         measurement_plan: str = "",
         reversal_plan: str = "",
     ) -> ProposalRecord:
-        entry, operation, catalog_revision = self._resolve_mutation(tool_name)
-        args = self._scoped_args(entry, account_alias, target_ref, operation, changes)
-        state = await self._current_state(entry, operation, args)
-        before_values = {f: _json_ready(state.get(operation.readback_fields[f])) for f in changes}
-        before = tuple(
-            FieldValue(field=f, value=v, unit=operation.units.get(f))
-            for f, v in before_values.items()
-        )
-        after = tuple(
-            FieldValue(field=f, value=_json_ready(v), unit=operation.units.get(f))
-            for f, v in changes.items()
-        )
+        host = self.host_operation(tool_name)
+        if host is not None:
+            planned = self._plan_host(host, account_alias, target_ref, changes)
+        else:
+            planned = await self._plan_provider(tool_name, account_alias, target_ref, changes)
         changeset = stamp_digest(
             ChangeSet(
                 proposal_id=uuid.uuid4(),
                 revision=1,
-                platform=entry.platform,
+                platform=planned.platform,
                 account_ref=account_alias,
                 tool_name=tool_name,
                 target_ref=target_ref,
-                canonical_args=args,
-                before=before,
-                after=after,
+                canonical_args=planned.args,
+                before=planned.fields(planned.before),
+                after=planned.fields(planned.after),
                 reason=reason,
-                risk=operation.risk,
-                catalog_revision=catalog_revision,
+                risk=planned.risk,
+                catalog_revision=planned.catalog_revision,
                 payload_digest="",
                 requester_ref=requester_ref,
                 thread_id=thread_id,
                 measurement_plan=measurement_plan,
                 reversal_plan=reversal_plan,
-                schema_hash=entry.schema_hash,
-                policy_digest=operation.digest(),
-                risk_flags=classify_risk(entry, operation, changes, before_values),
+                schema_hash=planned.schema_hash,
+                policy_digest=planned.policy_digest,
+                risk_flags=planned.risk_flags,
             )
         )
         state_value = transition(
@@ -445,6 +584,7 @@ class ProposalService:
             routing_id=secrets.token_urlsafe(18),
         )
         self._save(record)
+        self.log_change(record, "proposed")
         return record
 
     def get(self, proposal_id: UUID) -> ProposalRecord | None:
@@ -458,30 +598,47 @@ class ProposalService:
         self, proposal_id: UUID, *, editor_ref: str, changes: dict[str, JsonValue]
     ) -> ProposalRecord:
         record = self._require(proposal_id)
-        entry, operation, catalog_revision = self._resolve_mutation(record.changeset.tool_name)
+        cs = record.changeset
+        if not self._approval_policy.may_decide(editor_ref, cs.requester_ref):
+            raise WriteDenied("not_permitted", "only the requester or an approver can edit it")
         next_state = transition(record.state, ProposalEvent.EDIT)
-        args = self._scoped_args(
-            entry, record.changeset.account_ref, record.changeset.target_ref, operation, changes
-        )
-        after = tuple(
-            FieldValue(field=f, value=_json_ready(v), unit=operation.units.get(f))
-            for f, v in changes.items()
-        )
-        before = tuple(fv for fv in record.changeset.before if fv.field in changes)
+        before = tuple(fv for fv in cs.before if fv.field in changes)
         if {fv.field for fv in before} != set(changes):
             raise WriteDenied("field_not_editable", "edits must keep the proposed fields")
         before_values = {fv.field: fv.value for fv in before}
+        host = self.host_operation(cs.tool_name)
+        if host is not None:
+            planned = self._plan_host(
+                host, cs.account_ref, cs.target_ref, changes, before=before_values
+            )
+        else:
+            entry, operation, catalog_revision = self._resolve_mutation(cs.tool_name)
+            currency = self._currency(cs.account_ref)
+            planned = _Planned(
+                platform=entry.platform,
+                args=self._scoped_args(entry, cs.account_ref, cs.target_ref, operation, changes),
+                before=before_values,
+                after={
+                    f: operation.as_sent(f, _json_ready(v), currency) for f, v in changes.items()
+                },
+                units=dict(operation.units),
+                risk=operation.risk,
+                risk_flags=classify_risk(entry, operation, changes, before_values),
+                catalog_revision=catalog_revision,
+                schema_hash=entry.schema_hash,
+                policy_digest=operation.digest(),
+            )
         changeset = stamp_digest(
-            record.changeset.model_copy(
+            cs.model_copy(
                 update={
-                    "revision": record.changeset.revision + 1,
-                    "canonical_args": args,
+                    "revision": cs.revision + 1,
+                    "canonical_args": planned.args,
                     "before": before,
-                    "after": after,
-                    "catalog_revision": catalog_revision,
-                    "schema_hash": entry.schema_hash,
-                    "policy_digest": operation.digest(),
-                    "risk_flags": classify_risk(entry, operation, changes, before_values),
+                    "after": planned.fields(planned.after),
+                    "catalog_revision": planned.catalog_revision,
+                    "schema_hash": planned.schema_hash,
+                    "policy_digest": planned.policy_digest,
+                    "risk_flags": planned.risk_flags,
                 }
             )
         )
@@ -493,11 +650,17 @@ class ProposalService:
             routing_id=secrets.token_urlsafe(18),
         )
         self._save(updated, expected=record)
+        self.log_change(updated, "revised")
         return updated
 
     def reject(self, proposal_id: UUID, *, actor_ref: str, message: str = "") -> ProposalRecord:
         record = self._require(proposal_id)
-        state_value = transition(record.state, ProposalEvent.REJECT)
+        if not self._approval_policy.may_decide(actor_ref, record.changeset.requester_ref):
+            raise WriteDenied("not_permitted", "only the requester or an approver can reject it")
+        try:
+            state_value = transition(record.state, ProposalEvent.REJECT)
+        except InvalidTransition as exc:
+            raise WriteDenied("not_awaiting_approval", record.state.value) from exc
         updated = record.model_copy(
             update={
                 "state": state_value,
@@ -508,6 +671,7 @@ class ProposalService:
             }
         )
         self._save(updated, expected=record)
+        self.log_change(updated, "rejected")
         return updated
 
     def approve(self, proposal_id: UUID, *, approver_ref: str) -> ApprovalClaim:
@@ -548,7 +712,16 @@ class ProposalService:
             expected=record,
         )
         self._approvals.save(claim)
+        self.log_change(record, "approved")
         return claim
+
+    def log_change(self, record: ProposalRecord, status: str) -> None:
+        if self._change_log is not None:
+            self._change_log.proposal_event(record, status)
+
+    def log_receipt(self, record: ProposalRecord, receipt: WriteReceipt) -> None:
+        if self._change_log is not None:
+            self._change_log.receipt_event(record, receipt)
 
     def _save(self, record: ProposalRecord, *, expected: ProposalRecord | None = None) -> None:
         if not self._proposals.save(record, expected=expected):
@@ -702,6 +875,7 @@ class WriteExecutor:
             readback_attempts=readback_attempts,
         )
         self._receipts.save(receipt)
+        self._service.log_receipt(record, receipt)
         return receipt
 
     async def _readback(
@@ -720,6 +894,8 @@ class WriteExecutor:
         }
         expected = {fv.field: fv.value for fv in cs.after}
         before = {fv.field: fv.value for fv in cs.before}
+        binding = self._accounts.resolve(cs.account_ref)
+        currency = binding.currency if binding is not None else "USD"
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._readback_seconds
         attempts = 0
@@ -742,7 +918,9 @@ class WriteExecutor:
                 observed = tuple(
                     FieldValue(
                         field=f,
-                        value=_json_ready(state.get(operation.readback_fields[f])),
+                        value=operation.to_currency(
+                            f, _json_ready(state.get(operation.readback_fields[f])), currency
+                        ),
                         unit=operation.units.get(f),
                     )
                     for f in expected
@@ -772,6 +950,90 @@ class WriteExecutor:
             reason=reason,
         )
 
+    def _execute_host(
+        self,
+        proposal_id: UUID,
+        record: ProposalRecord,
+        claim: ApprovalClaim,
+        operation: HostOperation,
+    ) -> WriteReceipt:
+        """A host change: the same claim checks and single use, then apply once and read back.
+
+        The provider gate governs provider mutations; a host change only honours the kill switch.
+        """
+        cs = record.changeset
+        try:
+            self._verify_claim(record, claim)
+            if cs.policy_digest != operation.digest():
+                raise WriteDenied("stale_policy", "the host operation changed since the proposal")
+            if self._accounts.resolve(cs.account_ref) is None:
+                raise WriteDenied("account_scope", "the account alias no longer resolves")
+            if self._gate.kill_switch_engaged():
+                raise WriteDenied(
+                    "kill_switch",
+                    f"{self._gate.kill_switch_path} exists; remove it after the incident review",
+                )
+        except WriteDenied as exc:
+            self._service.mark(
+                proposal_id,
+                ProposalEvent.REJECT,
+                f"{self._clock().isoformat()} execution refused: {exc.reason}",
+                expected=record,
+            )
+            return self._rejected(record, HOST_REVISION, f"{exc.reason}: {exc.detail}".rstrip(": "))
+        record = self._service.mark(
+            proposal_id,
+            ProposalEvent.APPROVE,
+            f"{self._clock().isoformat()} executing with claim {claim.claim_id}",
+            expected=record,
+        )
+        if not self._approvals.mark_used(claim.claim_id):
+            self._service.mark(
+                proposal_id, ProposalEvent.FAIL, "approval replay refused", expected=record
+            )
+            return self._rejected(record, HOST_REVISION, "approval already used")
+        changes = {k: v for k, v in cs.canonical_args.items() if k != HOST_ALIAS_ARG}
+        try:
+            operation.apply(cs.account_ref, changes, cs.proposal_id)
+        except Exception as exc:
+            self._service.mark(proposal_id, ProposalEvent.FAIL, "host change failed")
+            return self._receipt(
+                record,
+                "failed",
+                attempted=True,
+                acknowledged=False,
+                op_ref=None,
+                verified=(),
+                catalog_revision=HOST_REVISION,
+                reason=f"host change failed: {sanitize_exception(exc)}",
+            )
+        record = self._service.mark(proposal_id, ProposalEvent.START_VERIFY, "readback started")
+        state = operation.read(cs.account_ref)
+        expected = {fv.field: fv.value for fv in cs.after}
+        observed = tuple(
+            FieldValue(field=f, value=state.get(f), unit=operation.units.get(f)) for f in expected
+        )
+        if all(values_equal(state.get(f), v) for f, v in expected.items()):
+            self._service.mark(
+                proposal_id, ProposalEvent.VERIFIED, "readback matched the approved change"
+            )
+            status: ReceiptStatus = "verified"
+            reason = "readback matched the approved change"
+        else:
+            self._service.mark(proposal_id, ProposalEvent.FAIL, "readback differs from the change")
+            status, reason = "failed", "readback differs from the approved change"
+        return self._receipt(
+            record,
+            status,
+            attempted=True,
+            acknowledged=True,
+            op_ref=None,
+            verified=observed,
+            catalog_revision=HOST_REVISION,
+            reason=reason,
+            readback_attempts=1,
+        )
+
     async def execute(self, proposal_id: UUID) -> WriteReceipt:
         record = self._service.get(proposal_id)
         if record is None:
@@ -787,6 +1049,9 @@ class WriteExecutor:
         )
         if claim is None:
             raise WriteDenied("approval_required", "no valid approval claim for this revision")
+        host = self._service.host_operation(record.changeset.tool_name)
+        if host is not None:
+            return self._execute_host(proposal_id, record, claim, host)
         try:
             self._verify_claim(record, claim)
             entry, operation, readback_entry, catalog_revision = self._verify_catalog(record)
@@ -854,6 +1119,13 @@ class WriteExecutor:
             op_ref = str(ref) if ref is not None else None
         except (ProviderTimeout, TimeoutError):
             outcome_reason = "provider timed out after submission; no retry was attempted"
+        except ProviderUnknownOutcome as exc:
+            # The connection failed without an answer, so the change may have been applied:
+            # read it back rather than record a failure.
+            outcome_reason = (
+                f"connection failed after submission ({sanitize_exception(exc)}); "
+                "no retry was attempted"
+            )
         except ProviderError as exc:
             self._service.mark(
                 proposal_id, ProposalEvent.FAIL, f"provider error: {sanitize_exception(exc)}"

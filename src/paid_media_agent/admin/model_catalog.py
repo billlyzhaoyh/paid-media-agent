@@ -16,7 +16,6 @@ from paid_media_agent.domain.common import JsonValue
 
 # Never accept a URL from the browser or follow a provider redirect with credentials.
 CATALOG_URLS = {
-    "langsmith": "https://gateway.smith.langchain.com/v1/models",
     "anthropic": "https://api.anthropic.com/v1/models",
     "openai": "https://api.openai.com/v1/models",
     "google": "https://generativelanguage.googleapis.com/v1beta/models",
@@ -136,7 +135,7 @@ def list_models(root: Path, provider: str, *, api_key: str = "") -> dict[str, Js
             "id": spec,
             "name": name if isinstance(name, str) else model_id,
             "provider": model_id.split("/", 1)[0].lstrip("~")
-            if provider in ("langsmith", "openrouter")
+            if provider == "openrouter"
             else provider,
         }
     return {

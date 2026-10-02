@@ -17,10 +17,11 @@ conversion, audience, or another provider resource.
 5. Call `propose_change` with the account alias, the admitted operation name, the target id, the
    changed fields, the reason, a measurement plan, and a reversal plan. The host reads the current
    value, derives risk flags, builds the typed proposal, and persists it. Nothing executes.
-6. In one reply: write the proposal fields and risk flags exactly as returned as your message text,
-   and call `execute_change` with the proposal id and revision in that same message. The runtime interrupts and
-   shows a generic approve or reject card under your text, so the text is the reviewer's evidence.
-   Do not ask for approval in prose and do not wait for a chat reply first.
+6. In your next reply, call `execute_change` with the proposal id and revision. The runtime pauses
+   and shows the reviewer the proposal's summary, written from the record (before, after, risk
+   flags, reason, measurement and reversal plans), with an approve or reject card, in place of any
+   text you write. Do not ask for approval in prose or wait for a chat reply first; a turn that
+   ends without the call is paused on the proposal anyway.
    Only the runtime approval action authorizes execution; chat text does not.
 7. On edit, the host creates a new revision; earlier approvals are invalid. Re-present the new
    revision.
@@ -35,6 +36,18 @@ conversion, audience, or another provider resource.
 If execution returns `proposal_changed`, reload it with `get_proposal`. Do not resubmit a proposal
 that is executing or verifying. If its worker stopped, check the provider through read-only tools
 before proposing another change.
+
+To apply a `recommend_budgets` recommendation, call `propose_change` with the account alias, the
+campaign as `target_ref`, and the recommendation's `run_id` as `bandit_run_id`, leaving `tool_name`
+and `changes` out. The host takes the recommended budget, reason, and plans from the run; never type
+the budget. A run more than 2 days old is refused: run `recommend_budgets` again.
+Proposals from the budget bandit itself (requester `bandit`) are reviewed by an approver outside
+the conversation; do not re-propose them.
+
+To change an account's goals when the user asks (for example "set our target CPA to 40"), propose
+`host__set_account_goals` with the account alias as `target_ref` and only the fields that change
+(`target_cpa`, `target_roas`, `monthly_budget`; null clears one). It is approved and verified like
+any change and takes effect from today in the account's timezone. It never touches a platform.
 
 Never call a provider mutation directly, reveal raw ids or credentials, or suggest that a prompt can
 bypass the approval policy.

@@ -47,19 +47,86 @@ attempts to bypass the dispatcher.
 - `propose_change` builds the `ChangeSet` from the current catalog entry and the reviewed
   `WritePolicy` (`WriteOperation` names the readback tool, target argument, editable fields, and
   risk). The before value comes from the authorized read provider, never from the model.
-- `execute_change` is the only tool under `interrupt_on` (`approve`/`reject`). Resuming the graph
-  grants nothing by itself: the executor loads the persisted proposal and the latest unused
+- `execute_change` is the only gated tool. The loop persists the call in `pending_tool_calls` and
+  stops; other calls in the same batch still run. A pause survives a restart, and a paused call is
+  taken exactly once, so two approvals cannot run it twice. Resuming grants nothing by itself: the executor loads the persisted proposal and the latest unused
   `ApprovalClaim` for that revision, verifies the HMAC signature, digest, scope, requester, and
   expiry, checks the current catalog entry and schema, then claims the proposal and consumes the
   approval exactly once. Multiple valid approval claims cannot create multiple execution attempts.
+- **An approval decides exactly one paused call.** Approving or rejecting proposal P resumes
+  only the paused `execute_change` whose `proposal_id` is P. Any other paused calls stay paused,
+  and the model does not run until every call has its result.
+  - A proposal with no paused call is refused (`conversation_expired`), so a stale approval
+    button can never execute a newer proposal.
+  - The review card shows the proposal the paused call would execute, not merely the thread's
+    newest one.
+  - Ids are compared as parsed UUIDs, as the gate parses them, so an upper-cased id still names
+    its call.
+  - Approving one of two paused changes returns the approved change's receipt, with the other
+    as the next card.
+  - The paused calls are chosen inside the thread's turn, after any queued message, so a claim
+    is only created for a call that is still paused.
+- **A decided proposal never holds a thread.** Only a proposal still awaiting approval pauses;
+  `execute_change` on a rejected or executed one runs at once and is refused. A call paused on a
+  proposal decided elsewhere is denied (`already_decided`) when the thread next resumes, and
+  rejecting a decided proposal is refused (`not_awaiting_approval`) rather than failing.
+- **The reviewer always gets a summary.** When a turn pauses for approval and the model wrote
+  nothing alongside the call, the loop writes the summary from the proposal: before and after,
+  risk and flags, reason, measurement and reversal. Some models otherwise pause silently.
+- **Who may decide.** Only the requester or an approver may edit or reject (`not_permitted`,
+  HTTP 403), and only an approver may approve.
+- **One turn at a time per thread.** `Agent.send` and `Agent.resume` hold a per-thread lock, so
+  two quick messages or an approval arriving mid-turn never give a call two results. A lock
+  lives only while a turn holds or awaits it.
 - Only `ProposalService.approve` creates claims. Surfaces call it with an opaque routing id or
   proposal id; Slack button values carry no payload.
 - Readback runs through the authorized read path with bounded attempts and wall time. A timeout
-  after submission is reconciled by readback: matched after-state is `verified`, matched before-state
+  after submission, or a connection that fails without an answer or with a 5xx
+  (`ProviderUnknownOutcome`), is reconciled by readback. A 4xx, or a connection never made, is
+  a plain failure: the provider refused or never saw it. Readback outcomes: matched after-state is `verified`, matched before-state
   is `failed`, anything else is `unknown`. No mutation is ever retried.
 - `WriteGate` admits fakes unconditionally and refuses live providers while
   `PAID_MEDIA_WRITES_ENABLED` is false or the live-write release gates are not met (see
   `docs/operations/live-write-runbook.md`).
+
+## Host proposals
+
+The budget bandit (`bandit/proposals.py`) proposes budget changes itself, outside any
+conversation. They use the normal `ProposalService.propose`, with the same admitted operations,
+schema checks, live before-value, digest, and risk flags. They live in threads named
+`host:bandit:<run_id>` with requester `bandit`. Callers cannot use the `host:` prefix:
+`AgentRunner` refuses it, so no conversation can claim or pause in that namespace.
+
+With no paused call to resume, approving a host proposal (`POST /proposals/{id}/approve`, or
+`paid-media-agent proposals approve`) creates the claim and runs `WriteExecutor.execute`
+directly. The checks are the same as after a resume: claim signature, digest, scope, requester,
+expiry, catalog and schema, the write gate, one mutation, and readback. Approving again returns
+the stored receipt. Rejecting needs no conversation either.
+
+`GET /proposals` (approvers only) and `paid-media-agent proposals list` show everything awaiting
+a decision, because nothing else surfaces host proposals. A newer bandit run rejects the older
+run's proposals that still await a decision for the same campaigns, with the note "superseded".
+Slack cards are not posted for host proposals.
+
+## Host operations
+
+Some changes are to this deployment's own data but still need a person's approval: today, an
+account's goals (`host__set_account_goals`, in `tools/host_writes.py`).
+- **The same path.** A host operation goes through `ProposalService` and `WriteExecutor` like a
+  provider mutation, so the pause at `execute_change`, approval cards, signed claims, replay
+  refusal, receipts, and `change_events` all apply.
+- **What differs.**
+  - It is never in the provider catalog: the `host__` prefix cannot occur in a catalog name, and
+    an unknown `host__` name is refused.
+  - Its `target_ref` is the account alias, and its canonical arguments are the alias plus the
+    validated fields.
+  - Its schema and policy digests are the operation's own, and its catalog revision is `host`.
+  - The executor checks the claim exactly as for a mutation, then only the kill switch (the
+    provider gate governs provider mutations). It applies the change once and reads it back
+    from the goals store.
+- **Change log.** Change events for it are recorded against the account (`entity_type =
+  account`). A person can also set goals directly (CLI, console, `POST /goals` for approvers);
+  those are recorded in the goals table with their source rather than as proposals.
 
 ## Live-write notes
 
@@ -73,14 +140,20 @@ attempts to bypass the dispatcher.
 - `classify_risk` derives reviewer facts from the operation, schema, and actual change:
   `status_flip`, `starts_delivery`, `budget_delta`, `budget_increase`, `publishes_live`,
   `access_change`, `destructive_change`, `sensitive_data_transfer`, `standing_automation`,
-  `bulk_capable`, `policy_high_risk`. They are shown on cards and in the interrupt description.
-- `execute_change` interrupts only when the proposal id exists on the current thread. Unknown ids,
+  `bulk_capable`, `policy_high_risk`. They are shown on cards and in the proposal view.
+- `execute_change` pauses only when the proposal id exists on the current thread. Unknown ids,
   malformed ids, and proposals from other threads run straight into the executor's refusal, so a
   reviewer is never asked to approve something that cannot execute.
 - When the policy row names a `validate_only_arg`, the executor calls the provider in validation
   mode first; a refusal yields `failed` with `mutation_attempted=false`. The single real attempt
   follows. `provider_acknowledged` on the receipt separates "the provider answered" from
   "readback proved it".
+- Money stays in account currency everywhere a person sees it: proposals, cards, receipts, change
+  events, and the bandit. A policy row's `provider_units` (`minor` or `micros`) converts the
+  approved value into the provider's unit in the canonical arguments, rounded to the currency's
+  smallest unit first, and converts readback values back before comparing. The proposal's
+  "after" value is what the provider will hold, so a proposal of 57.555 USD reads 57.56. See
+  [Live data contracts](live-data-contracts.md#money-units).
 - `WriteGate` order: kill-switch file, then for live providers `writes_enabled`, pinned reviewed
   revision equal to the current one, and the canary tool allowlist. Fakes pass after the kill
   switch. The live `PipeboardWriteProvider` refuses any tool whose `readOnlyHint` is not `false`.

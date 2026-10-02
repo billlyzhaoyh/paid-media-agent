@@ -28,6 +28,33 @@ METRIC_NAMES: tuple[str, ...] = (
 )
 
 
+LOWER_IS_BETTER = frozenset({"cpa", "cpc", "cpm"})
+HIGHER_IS_BETTER = frozenset({"roas", "conversions", "conversion_value", "ctr", "cvr"})
+"""Which way is good for each metric. Spend, impressions, and clicks are neither: more is not
+better on its own."""
+FLAT = Decimal("0.005")
+"""A change smaller than half a percent is flat."""
+
+
+def verdict(metric: str, relative: Decimal | float | None) -> str | None:
+    """better, worse, or flat for a change in `metric`; None for a neutral metric or no change."""
+    if relative is None or (metric not in LOWER_IS_BETTER and metric not in HIGHER_IS_BETTER):
+        return None
+    if abs(Decimal(str(relative))) < FLAT:
+        return "flat"
+    rose = Decimal(str(relative)) > 0
+    return "better" if rose == (metric in HIGHER_IS_BETTER) else "worse"
+
+
+def change_text(metric: str, relative: Decimal | float | None) -> str:
+    """'+8.2% (worse)', '-3.0%' for a neutral metric, or 'n/a'."""
+    if relative is None:
+        return "n/a"
+    text = f"{float(relative):+.1%}"
+    judged = verdict(metric, relative)
+    return f"{text} ({judged})" if judged and judged != "flat" else text
+
+
 class MetricSet(BaseModel):
     """Aggregated metrics for one entity or platform in one window."""
 
@@ -63,6 +90,8 @@ class MetricDelta(BaseModel):
     absolute: Decimal | None
     relative: Decimal | None
     """Fraction (0.10 == +10%). None when the previous value is missing or zero."""
+    direction: str | None = None
+    """better, worse, or flat by the metric's polarity; None for spend and other neutral ones."""
 
 
 class EntityComparison(BaseModel):
@@ -149,6 +178,13 @@ class PlatformHeadline(BaseModel):
     quality_flags: tuple[DataQualityFlag, ...]
     attention: tuple[str, ...]
     """Code-selected entities that moved most, as short strings with exact values."""
+    conversions_change: str = "n/a"
+    cpa_change: str = "n/a"
+    roas_change: str = "n/a"
+    """Changes with their verdict by the metric's polarity, e.g. "+8.2% (worse)" for CPA."""
+    rankings: tuple[str, ...] = ()
+    """Code-ranked campaigns: best and worst CPA and ROAS, the largest CPA rise, and spend up
+    while ROAS fell. Only campaigns with enough conversions to judge are ranked."""
 
 
 class AnalysisSummary(BaseModel):

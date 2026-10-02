@@ -1,14 +1,15 @@
-"""Surface parity: Slack, the API, the MDA definition, and the self-hosted runtime share one assembly."""
+"""Surface parity: Slack, the API, and the self-hosted runtime share one assembly."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
 from paid_media_agent.config import Settings
-from paid_media_agent.persistence.memory import InMemoryDedupeStore, InMemoryThreadOwnershipStore
+from paid_media_agent.store import Store
 from paid_media_agent.surfaces.api.app import create_app
 from paid_media_agent.surfaces.runner import AgentRunner
 from paid_media_agent.surfaces.slack.blocks import ACTION_APPROVE
@@ -33,7 +34,7 @@ def _slack_event(team: str, channel: str, ts: str, user: str, text: str, event_i
     }
 
 
-async def test_slack_review_and_button_approval_resume_the_same_graph(
+async def test_slack_review_and_button_approval_resume_the_same_agent(
     settings: Settings, project_root: Path
 ) -> None:
     state = FixtureState()
@@ -50,14 +51,14 @@ async def test_slack_review_and_button_approval_resume_the_same_graph(
         write_provider=provider,
         approval_policy=policy,
     )
-    threads = InMemoryThreadOwnershipStore()
+    threads = Store().repositories.threads
     runner = AgentRunner(
-        graph=runtime.graph,
+        agent=runtime.agent,
         service=runtime.components.proposal_service,
         receipts=runtime.profile.receipts,
         threads=threads,
     )
-    slack = SlackApplicationService(runner=runner, dedupe=InMemoryDedupeStore())
+    slack = SlackApplicationService(runner=runner, dedupe=Store().repositories.dedupe)
 
     events = []
 
@@ -99,6 +100,10 @@ async def test_slack_review_and_button_approval_resume_the_same_graph(
         }
     )
     assert own is not None and "refused" in own.message.text and provider.mutation_calls == []
+    assert any(
+        e.kind == "text" and e.text.startswith("Proposed change for review") for e in events
+    ), "the pause streamed the code-written summary"
+    events.clear()
     approved = await slack.handle_action(
         {
             "actions": [{"action_id": ACTION_APPROVE, "value": routing_id}],
@@ -147,11 +152,11 @@ async def test_api_and_slack_share_persisted_state(settings: Settings, project_r
 
     holder = Holder()
     holder.settings = api_settings  # type: ignore[attr-defined]
-    holder.graph = runtime.graph  # type: ignore[attr-defined]
+    holder.agent = runtime.agent  # type: ignore[attr-defined]
     holder.components = runtime.components  # type: ignore[attr-defined]
     holder.profile = runtime.profile  # type: ignore[attr-defined]
     holder.catalog = runtime.catalog  # type: ignore[attr-defined]
-    holder.threads = InMemoryThreadOwnershipStore()  # type: ignore[attr-defined]
+    holder.threads = Store().repositories.threads  # type: ignore[attr-defined]
     holder.persistence = "memory"  # type: ignore[attr-defined]
     app = create_app(holder)
     client = TestClient(app)
@@ -181,35 +186,6 @@ async def test_api_and_slack_share_persisted_state(settings: Settings, project_r
     assert fastapi is not None
 
 
-def test_mda_definition_uses_shared_components(
-    project_root: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import importlib
-    import sys
-
-    monkeypatch.delenv("PIPEBOARD_API_TOKEN", raising=False)
-    # The import reads the developer's .env; pin the model so a local typo cannot fail the suite.
-    monkeypatch.setenv("PAID_MEDIA_MODEL", "anthropic:claude-sonnet-4-6")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-never-used")
-    monkeypatch.chdir(project_root)
-    sys.modules.pop("agent", None)
-    module = importlib.import_module("agent")
-    definition = module.agent
-    config = definition.config
-    assert config["name"] == "paid-media-agent"
-    names = {t.name for t in config["tools"]}
-    assert {"discover_tools", "compare_periods", "propose_change", "execute_change"} <= names
-    assert not any(n.endswith("__mutate") or "delete" in n for n in names)
-    assert "execute_change" in config["interrupt_on"]
-    middleware_names = {m.name for m in config["middleware"]}
-    assert {
-        "PaidMediaInvocationGuard",
-        "PaidMediaRedaction",
-        "PaidMediaResultOffload",
-    } <= middleware_names
-    assert (project_root / "channels" / "slack.py").exists()
-
-
 def test_configured_runtime_compiles_the_deployment_profile_locally(
     settings: Settings, project_root: Path
 ) -> None:
@@ -219,7 +195,7 @@ def test_configured_runtime_compiles_the_deployment_profile_locally(
     runtime = build_configured_runtime(
         settings, project_root=project_root, model=ScriptedChatModel(steps=[])
     )
-    assert runtime.profile.name == "mda"
+    assert runtime.profile.name == "local"
     assert runtime.components.metadata.catalog_source == "fixture"
     assert runtime.profile.write_provider_is_fake is True, "no live adapter without credentials"
     assert {t.name for t in runtime.components.tools} >= {
@@ -229,16 +205,21 @@ def test_configured_runtime_compiles_the_deployment_profile_locally(
     }
 
 
-async def test_self_hosted_runtime_uses_the_same_profile(
-    settings: Settings, project_root: Path
+def test_self_hosted_runtime_uses_the_same_profile_over_a_state_file(
+    settings: Settings, project_root: Path, tmp_path: Path
 ) -> None:
     from paid_media_agent.runtime.self_hosted import build_self_hosted_runtime
     from paid_media_agent.testing.scripted_model import ScriptedChatModel
 
-    runtime = await build_self_hosted_runtime(
-        settings, project_root=project_root, model=ScriptedChatModel(steps=[])
+    state = tmp_path / "state" / "pma.duckdb"
+    runtime = build_self_hosted_runtime(
+        settings.model_copy(update={"paid_media_state_path": state}),
+        project_root=project_root,
+        model=ScriptedChatModel(steps=[]),
     )
-    assert runtime.persistence == "memory" and runtime.profile.name == "self_hosted"
+    assert runtime.persistence == "duckdb" and runtime.profile.name == "self_hosted"
+    assert state.is_file() and runtime.threads.claim("t-1", "alice")
+    runtime.store.close()
     assert runtime.components.metadata.catalog_source == "fixture"
     assert runtime.profile.write_provider_is_fake is True
     assert {t.name for t in runtime.components.tools} >= {
@@ -296,13 +277,13 @@ async def test_signed_http_ack_precedes_agent_work_and_verifies_requests(
     app = create_app(
         SimpleNamespace(
             settings=configured,
-            graph=runtime.graph,
+            agent=runtime.agent,
             components=runtime.components,
             profile=runtime.profile,
             catalog=runtime.catalog,
             persistence="memory",
-            dedupe=InMemoryDedupeStore(),
-            threads=InMemoryThreadOwnershipStore(),
+            dedupe=Store().repositories.dedupe,
+            threads=Store().repositories.threads,
         )
     )
     body = json.dumps(_slack_event("T1", "C1", "1.0", "U1", "Analyze spend", "Ev-ack")).encode()
@@ -347,34 +328,36 @@ async def test_artifacts_require_thread_owner_and_persisted_report_reference(
     from types import SimpleNamespace
 
     import httpx
-    from langchain_core.messages import ToolMessage
     from pydantic import SecretStr
+
+    from paid_media_agent.harness.messages import AssistantMessage, ToolCall, ToolMessage
 
     configured = settings.model_copy(
         update={"paid_media_api_tokens": SecretStr("alice-token:alice,bob-token:bob")}
     )
     runtime, _ = build_runtime(configured, project_root, [final_step])
-    threads = InMemoryThreadOwnershipStore()
+    threads = Store().repositories.threads
     threads.claim("alice-thread", "alice")
     output = runtime.profile.workspace_root / "out"
     (output / "report.html").write_text("<p>Alice's report</p>")
     (output / "other.html").write_text("<p>Other report</p>")
-    await runtime.graph.aupdate_state(
-        {"configurable": {"thread_id": "alice-thread", "caller_ref": "alice"}},
-        {
-            "messages": [
-                ToolMessage(
-                    name="render_report",
-                    tool_call_id="report-1",
-                    content=json.dumps({"files": [{"path": "report.html"}]}),
-                )
-            ]
-        },
+    conversations = runtime.agent.conversations
+    conversations.append(
+        "alice-thread",
+        AssistantMessage(tool_calls=(ToolCall("report-1", "render_report", {}),)),
+    )
+    conversations.append(
+        "alice-thread",
+        ToolMessage(
+            tool_call_id="report-1",
+            name="render_report",
+            content=json.dumps({"files": [{"path": "report.html"}]}),
+        ),
     )
     app = create_app(
         SimpleNamespace(
             settings=configured,
-            graph=runtime.graph,
+            agent=runtime.agent,
             components=runtime.components,
             profile=runtime.profile,
             catalog=runtime.catalog,
@@ -394,3 +377,129 @@ async def test_artifacts_require_thread_owner_and_persisted_report_reference(
             await client.get("/threads/alice-thread/artifacts/other.html", headers=alice)
         ).status_code == 404
         assert (await client.get("/artifacts/report.html", headers=alice)).status_code == 404
+
+
+async def test_restart_keeps_the_paused_approval_and_executes_it_once(
+    settings: Settings, project_root: Path, tmp_path: Path
+) -> None:
+    """Proposals, claims, thread owners, and the paused call all live in the state file."""
+    import httpx
+    from pydantic import SecretStr
+
+    from paid_media_agent.runtime.self_hosted import build_self_hosted_runtime
+    from paid_media_agent.testing.demo_script import write_demo_steps
+    from paid_media_agent.testing.scripted_model import ScriptedChatModel
+
+    configured = settings.model_copy(
+        update={
+            "paid_media_state_path": tmp_path / "pma.duckdb",
+            "paid_media_api_tokens": SecretStr("tok-req:alice,tok-rev:bob"),
+            "paid_media_approver_ids": "bob",
+        }
+    )
+    requester, reviewer = {"Authorization": "Bearer tok-req"}, {"Authorization": "Bearer tok-rev"}
+    first = build_self_hosted_runtime(
+        configured, project_root=project_root, model=ScriptedChatModel(steps=write_demo_steps())
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(create_app(first)), base_url="http://test"
+    ) as client:
+        sent = await client.post(
+            "/threads/t1/messages", json={"text": "lower the budget"}, headers=requester
+        )
+    assert sent.json()["interrupted"] is True
+    proposal_id = sent.json()["proposal"]["proposal_id"]
+    assert first.profile.write_provider.mutation_calls == []  # type: ignore[attr-defined]
+    first.store.close()
+
+    restarted = build_self_hosted_runtime(
+        configured, project_root=project_root, model=ScriptedChatModel(steps=[final_step])
+    )
+    assert restarted.agent.conversation("t1").awaiting_approval, "the pause survives a restart"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(create_app(restarted)), base_url="http://test"
+    ) as client:
+        stored = await client.get(f"/proposals/{proposal_id}", headers=reviewer)
+        foreign = await client.post("/threads/t1/messages", json={"text": "hi"}, headers=reviewer)
+        approved = await client.post(f"/proposals/{proposal_id}/approve", headers=reviewer)
+        again = await client.post(f"/proposals/{proposal_id}/approve", headers=reviewer)
+    assert stored.json()["proposal"]["state"] == "awaiting_approval"
+    assert foreign.status_code == 403, "thread ownership survives the restart"
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["receipt"]["status"] == "verified"
+    assert again.status_code == 409 and "conversation_expired" in again.json()["detail"]
+    assert not restarted.agent.conversation("t1").awaiting_approval
+    assert restarted.profile.approvals.latest_unused(UUID(proposal_id), 1) is None
+    assert len(restarted.profile.write_provider.mutation_calls) == 1  # type: ignore[attr-defined]
+    restarted.store.close()
+
+
+async def test_approving_after_the_conversation_moved_on_is_expired(
+    settings: Settings, project_root: Path, tmp_path: Path
+) -> None:
+    """A new message abandons the paused call, so a later approval has nothing to resume."""
+    import httpx
+    from pydantic import SecretStr
+
+    from paid_media_agent.harness.loop import ABANDONED
+    from paid_media_agent.harness.messages import ToolMessage
+    from paid_media_agent.runtime.self_hosted import build_self_hosted_runtime
+    from paid_media_agent.testing.demo_script import write_demo_steps
+    from paid_media_agent.testing.scripted_model import ScriptedChatModel
+
+    configured = settings.model_copy(
+        update={
+            "paid_media_state_path": tmp_path / "pma.duckdb",
+            "paid_media_api_tokens": SecretStr("tok-req:alice,tok-rev:bob"),
+            "paid_media_approver_ids": "bob",
+        }
+    )
+    requester, reviewer = {"Authorization": "Bearer tok-req"}, {"Authorization": "Bearer tok-rev"}
+    runtime = build_self_hosted_runtime(
+        configured,
+        project_root=project_root,
+        model=ScriptedChatModel(steps=[*write_demo_steps()[:2], final_step]),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(create_app(runtime)), base_url="http://test"
+    ) as client:
+        sent = await client.post(
+            "/threads/t1/messages", json={"text": "lower the budget"}, headers=requester
+        )
+        proposal_id = sent.json()["proposal"]["proposal_id"]
+        moved_on = await client.post(
+            "/threads/t1/messages", json={"text": "actually, never mind"}, headers=requester
+        )
+        approved = await client.post(f"/proposals/{proposal_id}/approve", headers=reviewer)
+    assert sent.json()["interrupted"] is True
+    assert moved_on.status_code == 200 and moved_on.json()["interrupted"] is False
+    assert approved.status_code == 409 and "conversation_expired" in approved.json()["detail"]
+    abandoned = [
+        m
+        for m in runtime.agent.conversation("t1").messages
+        if isinstance(m, ToolMessage) and m.name == "execute_change"
+    ]
+    assert [(m.status, m.content) for m in abandoned] == [("error", ABANDONED)]
+    assert runtime.profile.approvals.latest_unused(UUID(proposal_id), 1) is None
+    assert runtime.profile.write_provider.mutation_calls == []  # type: ignore[attr-defined]
+    runtime.store.close()
+
+
+def test_sample_reads_and_fake_writes_share_one_fixture_state_with_a_direct_adapter(
+    settings: Settings, project_root: Path
+) -> None:
+    from pydantic import SecretStr
+
+    from paid_media_agent.runtime.local import build_configured_runtime
+    from paid_media_agent.testing.scripted_model import ScriptedChatModel
+
+    runtime = build_configured_runtime(
+        settings.model_copy(update={"openai_ads_api_key": SecretStr("sk-test-direct-adapter")}),
+        project_root=project_root,
+        model=ScriptedChatModel(steps=[]),
+    )
+    reads = runtime.profile.read_provider
+    default = getattr(reads, "_default", None)
+    assert default is not None and default.state is runtime.profile.write_provider.state, (
+        "a fake write must be visible to the readback"
+    )

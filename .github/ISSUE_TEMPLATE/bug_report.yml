@@ -26,7 +26,7 @@ body:
     id: runtime
     attributes:
       label: Runtime
-      options: [local, langgraph dev, mda dev, mda deploy, serve, slack]
+      options: [ask or demo, serve, Slack, Docker, setup console]
   - type: textarea
     id: logs
     attributes:

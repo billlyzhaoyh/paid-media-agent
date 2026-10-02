@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import json
 import shutil
+from dataclasses import asdict
 from pathlib import Path
 
-from langchain_core.messages import AIMessage, ToolMessage
-
 from paid_media_agent.config import Settings
+from paid_media_agent.harness.messages import AssistantMessage, ToolMessage
 from paid_media_agent.testing.demo_script import DEMO_QUESTION, demo_steps
 from paid_media_agent.testing.scripted_model import tool_call_message
 from paid_media_agent.tools.fixtures import build_fixture_catalog
-from tests.contract.helpers import build_runtime, config
+from tests.contract.helpers import build_runtime, config, run_until_interrupt
 
 
 async def test_runtime_loads_only_runtime_skills_and_keeps_them_read_only(
@@ -33,23 +33,55 @@ async def test_runtime_loads_only_runtime_skills_and_keeps_them_read_only(
         lambda _m: tool_call_message(
             "write_file", {"file_path": "/workspace/note.txt", "content": "analysis notes"}
         ),
-        lambda _m: AIMessage(content="done"),
+        lambda _m: AssistantMessage(content="done"),
     ]
     runtime, _ = build_runtime(settings, tmp_path, steps)
 
-    state = await runtime.graph.ainvoke(
-        {"messages": [{"role": "user", "content": "Read the runtime skills."}]}, config=config()
-    )
+    conversation = await run_until_interrupt(runtime, config(), "Read the runtime skills.")
 
     expected = {p.parent.name for p in (project_root / "workspace" / "skills").glob("*/SKILL.md")}
-    checkpoint = await runtime.graph.aget_state(config())
-    assert {skill["name"] for skill in checkpoint.values["skills_metadata"]} == expected
-    messages = [m for m in state["messages"] if isinstance(m, ToolMessage)]
+    prompt = runtime.agent.system_prompt
+    assert "## Skills" in prompt
+    for name in expected:
+        assert f"/skills/{name}/SKILL.md" in prompt
+    assert "paid-media-onboarding" not in prompt, "coding-agent skills stay out of the index"
+    messages = [m for m in conversation.messages if isinstance(m, ToolMessage)]
     assert "Paid-media business context" in str(messages[0].content)
     assert "permission denied" in str(messages[1].content)
     assert "permission denied" in str(messages[2].content)
     assert not (tmp_path / "workspace" / "skills" / "unwanted.md").exists()
     assert (tmp_path / "workspace" / "note.txt").read_text() == "analysis notes"
+
+
+async def test_model_cannot_read_or_write_the_state_file(
+    settings: Settings, project_root: Path, tmp_path: Path
+) -> None:
+    """Approval claims live in the state file; the model's file tools must never reach it."""
+    shutil.copy(project_root / "instructions.md", tmp_path / "instructions.md")
+    shutil.copytree(project_root / "workspace" / "skills", tmp_path / "workspace" / "skills")
+    (tmp_path / "skills").symlink_to("workspace/skills", target_is_directory=True)
+    state_file = tmp_path / "workspace" / "state" / "pma.duckdb"
+    state_file.parent.mkdir(parents=True)
+    state_file.write_bytes(b"state")
+    steps = [
+        lambda _m: tool_call_message("read_file", {"file_path": "/workspace/state/pma.duckdb"}),
+        lambda _m: tool_call_message(
+            "write_file", {"file_path": "/workspace/state/pma.duckdb", "content": "forged"}
+        ),
+        lambda _m: tool_call_message(
+            "write_file", {"file_path": "/workspace/state/other.duckdb", "content": "forged"}
+        ),
+        lambda _m: AssistantMessage(content="done"),
+    ]
+    runtime, _ = build_runtime(settings, tmp_path, steps)
+
+    conversation = await run_until_interrupt(runtime, config(), "Inspect the state.")
+
+    messages = [m for m in conversation.messages if isinstance(m, ToolMessage)]
+    assert len(messages) == 3
+    assert all("permission denied" in str(m.content) for m in messages)
+    assert state_file.read_bytes() == b"state"
+    assert not (state_file.parent / "other.duckdb").exists()
 
 
 async def test_manually_authored_company_context_uses_runtime_skills(
@@ -76,17 +108,14 @@ async def test_manually_authored_company_context_uses_runtime_skills(
         ),
         lambda _m: tool_call_message("read_file", {"file_path": "/workspace/sources/brief.md"}),
         lambda _m: tool_call_message("read_file", {"file_path": "/config/accounts.toml"}),
-        lambda _m: AIMessage(content="done"),
+        lambda _m: AssistantMessage(content="done"),
     ]
     runtime, _ = build_runtime(settings, tmp_path, steps)
 
-    state = await runtime.graph.ainvoke(
-        {"messages": [{"role": "user", "content": "Read our business goals."}]}, config=config()
-    )
+    conversation = await run_until_interrupt(runtime, config(), "Read our business goals.")
 
-    checkpoint = await runtime.graph.aget_state(config())
-    assert "company-context" in {skill["name"] for skill in checkpoint.values["skills_metadata"]}
-    messages = [m for m in state["messages"] if isinstance(m, ToolMessage)]
+    assert "/skills/company-context/SKILL.md" in runtime.agent.system_prompt
+    messages = [m for m in conversation.messages if isinstance(m, ToolMessage)]
     assert "Target CPA: 90 USD" in str(messages[0].content)
     assert "permission denied" in str(messages[1].content)
     assert "permission denied" in str(messages[2].content)
@@ -99,16 +128,14 @@ async def test_fixture_demo_reconciles_and_cites_artifacts(
     settings: Settings, project_root: Path
 ) -> None:
     runtime, model = build_runtime(settings, project_root, demo_steps())
-    state = await runtime.graph.ainvoke(
-        {"messages": [{"role": "user", "content": DEMO_QUESTION}]}, config=config()
-    )
-    answer = state["messages"][-1].content
+    conversation = await run_until_interrupt(runtime, config(), DEMO_QUESTION)
+    answer = conversation.messages[-1].content
     assert "reconciled=yes" in answer
     assert "art_" in answer and "conversion_value" in answer and "unavailable, not zero" in answer
     assert "No cross-platform total" in answer
     assert len(runtime.components.read_dispatcher.audit) == 3
     # Raw provider ids never reach the model transcript.
-    transcript = json.dumps([m.model_dump() for m in state["messages"]], default=str)
+    transcript = json.dumps([asdict(m) for m in conversation.messages], default=str)
     assert "fixture-google-0001" not in transcript
     assert model.bound_tool_batches, "the scripted model must have been bound with tools"
     names = {t["function"]["name"] for t in model.bound_tool_batches[-1]}
@@ -138,20 +165,19 @@ async def test_guard_denies_hallucinated_and_hidden_tools(
         lambda _m: tool_call_message(
             "google_ads__mutate", {"account_alias": "demo-google", "operations": []}
         ),
-        lambda _m: AIMessage(content="stopped"),
+        lambda _m: AssistantMessage(content="stopped"),
     ]
     runtime, _ = build_runtime(settings, project_root, steps)
-    state = await runtime.graph.ainvoke(
-        {"messages": [{"role": "user", "content": "Do it."}]}, config=config()
-    )
-    tool_messages = [m for m in state["messages"] if isinstance(m, ToolMessage)]
+    conversation = await run_until_interrupt(runtime, config(), "Do it.")
+    tool_messages = [m for m in conversation.messages if isinstance(m, ToolMessage)]
     assert len(tool_messages) == 3
     for message in tool_messages:
         body = json.loads(message.content)
         assert body["denied"] is True and message.status == "error"
     assert runtime.profile.write_provider.mutation_calls == []  # type: ignore[attr-defined]
-    guard = next(m for m in runtime.components.middleware if m.name == "PaidMediaInvocationGuard")
-    assert {reason for _, reason in guard.denials} == {"outside_tool_surface"}
+    assert {reason for _, reason in runtime.components.dispatcher.denials} == {
+        "outside_tool_surface"
+    }
 
 
 async def test_stale_catalog_selection_fails_closed(settings: Settings, project_root: Path) -> None:
@@ -163,7 +189,7 @@ async def test_stale_catalog_selection_fails_closed(settings: Settings, project_
             "google_ads__get_campaign_performance",
             {"account_alias": "demo-google", "start_date": "2026-08-01", "end_date": "2026-08-28"},
         ),
-        lambda _m: AIMessage(content="end"),
+        lambda _m: AssistantMessage(content="end"),
     ]
     runtime, _ = build_runtime(settings, project_root, steps)
     changed = []
@@ -176,18 +202,98 @@ async def test_stale_catalog_selection_fails_closed(settings: Settings, project_
     runtime.profile.catalog_provider.replace(
         build_authorized_catalog(changed, policy=FIXTURE_LOCAL_POLICY, source="fixture")
     )  # type: ignore[attr-defined]
-    state = await runtime.graph.ainvoke(
-        {"messages": [{"role": "user", "content": "read"}]}, config=config()
-    )
-    body = json.loads(next(m for m in state["messages"] if isinstance(m, ToolMessage)).content)
+    conversation = await run_until_interrupt(runtime, config(), "read")
+    body = json.loads(next(m for m in conversation.messages if isinstance(m, ToolMessage)).content)
     assert body["denied"] and body["reason"] == "stale_selection"
 
 
 def test_fixture_catalog_never_binds_mutations_to_model_tools(
     settings: Settings, project_root: Path
 ) -> None:
-    runtime, _ = build_runtime(settings, project_root, [lambda _m: AIMessage(content="x")])
+    runtime, _ = build_runtime(settings, project_root, [lambda _m: AssistantMessage(content="x")])
     bound = {t.name for t in runtime.components.tools}
     mutation_names = {e.qualified_name for e in build_fixture_catalog().mutation_entries()}
     denied_names = {e.qualified_name for e in build_fixture_catalog().denied_entries()}
     assert not bound & mutation_names and not bound & denied_names
+
+
+async def test_the_host_lists_a_failed_read_so_the_model_never_has_to(
+    settings: Settings, project_root: Path
+) -> None:
+    from datetime import timedelta
+
+    from paid_media_agent.harness.messages import ToolCall
+    from paid_media_agent.testing.scripted_model import last_tool_results
+    from paid_media_agent.tools.fixtures import fixture_anchor
+
+    end = fixture_anchor(None)
+    span = {"start_date": (end - timedelta(days=13)).isoformat(), "end_date": end.isoformat()}
+
+    def read_both(_m: object) -> AssistantMessage:
+        return AssistantMessage(
+            tool_calls=tuple(
+                ToolCall(
+                    f"r-{alias}",
+                    f"{platform}__get_campaign_performance",
+                    {"account_alias": alias, **span},
+                )
+                for alias, platform in (("demo-google", "google_ads"), ("demo-meta", "meta_ads"))
+            )  # fmt: skip
+        )
+
+    def summarise(name: str, **args: object) -> object:
+        def step(messages: object) -> AssistantMessage:
+            ids = [
+                r["artifact_id"]
+                for r in last_tool_results(messages)  # type: ignore[arg-type]
+                if r.get("artifact_kind") == "performance_rows"
+            ]
+            return tool_call_message(name, {"artifact_ids": ids, **args})
+
+        return step
+
+    steps = [
+        read_both,
+        summarise("summarize_window", window="last_n_days_of_data", days=7),
+        lambda _m: AssistantMessage("done"),
+    ]
+    runtime, _ = build_runtime(settings, project_root, steps)
+    reads = runtime.profile.read_provider
+    reads.fail_reads["meta_ads__get_campaign_performance"] = 2  # type: ignore[attr-defined]
+    conversation = await runtime.agent.send("f-1", "local-user", "How did last week go?")
+    window = next(
+        json.loads(m.content)
+        for m in conversation.messages
+        if isinstance(m, ToolMessage) and m.name == "summarize_window"
+    )
+    assert window["unavailable_sources"] == ["demo-meta: provider call timed out"]
+    assert any("missing, not zero" in c for c in window["caveats"])
+    assert [h["account"] for h in window["headline"]] == ["demo-google"]
+
+    # compare_periods, in the same turn, reads the same failures from the thread.
+    google = window["platforms"]["google_ads"]["demo-google"]["source_artifacts"]
+    compare = runtime.components.dispatcher.tools["compare_periods"]
+    context = runtime.agent._context("f-1", "local-user")
+    body = json.loads(
+        compare.handler(  # type: ignore[arg-type]
+            {"artifact_ids": google, "window": "last_n_days_of_data", "days": 7}, context
+        )
+    )
+    assert body["cross_platform_total"] is None
+    assert body["unavailable_sources"] == ["demo-meta: provider call timed out"]
+
+    # A retry that works clears the failure; a new question starts a new turn.
+    retried, _ = build_runtime(
+        settings, project_root,
+        [read_both, read_both, summarise("summarize_window", window="last_n_days_of_data", days=7),
+         lambda _m: AssistantMessage("done")],
+    )  # fmt: skip
+    retried.profile.read_provider.fail_reads["meta_ads__get_campaign_performance"] = 2  # type: ignore[attr-defined]
+    conversation = await retried.agent.send("f-2", "local-user", "How did last week go?")
+    window = next(
+        json.loads(m.content)
+        for m in conversation.messages
+        if isinstance(m, ToolMessage) and m.name == "summarize_window"
+    )
+    assert "unavailable_sources" not in window
+    assert {h["account"] for h in window["headline"]} == {"demo-google", "demo-meta"}

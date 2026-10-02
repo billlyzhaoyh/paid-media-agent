@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from paid_media_agent.config import Settings
 from paid_media_agent.reports.cadence import report_windows, run_cadence_report
@@ -96,3 +99,33 @@ async def test_report_reconciles_accounts_on_the_same_platform(
     assert reconcile_report(payload, comparison) == ()
     missing = payload.model_copy(update={"platform_sections": payload.platform_sections[:1]})
     assert any("second-account" in issue for issue in reconcile_report(missing, comparison))
+
+
+async def test_a_read_with_more_pages_than_allowed_is_unavailable_not_reconciled(
+    settings: Settings, project_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from paid_media_agent.reports import cadence
+
+    runtime = build_local_runtime(settings, project_root=project_root, model=build_demo_model())
+    original = runtime.components.read_dispatcher.execute
+
+    async def endless(name: str, arguments: dict[str, Any], **kwargs: Any) -> Any:
+        result = await original(name, arguments, **kwargs)
+        if result.account_alias != "demo-google":
+            return result
+        again = {k: v for k, v in arguments.items() if k != "account_alias"}
+        return result.model_copy(update={"next_page": again})
+
+    monkeypatch.setattr(runtime.components.read_dispatcher, "execute", endless)
+    monkeypatch.setattr(cadence, "MAX_PAGES", 2)
+    run = await run_cadence_report(
+        cadence="weekly",
+        end=date(2026, 8, 28),
+        accounts=runtime.profile.accounts,
+        catalog=runtime.catalog,
+        dispatcher=runtime.components.read_dispatcher,
+        artifacts=runtime.profile.artifacts,
+        aliases=["demo-google", "demo-meta"],
+        render=False,
+    )
+    assert run.unavailable == ("demo-google: more than 2 pages; the read is incomplete",)

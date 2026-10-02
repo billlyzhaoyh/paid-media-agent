@@ -1,19 +1,19 @@
-"""Builders for real-graph contract tests: scripted models, local runtimes, and step helpers."""
+"""Builders for real-loop contract tests: scripted models, local runtimes, and step helpers."""
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import AIMessage, BaseMessage
-from langchain_core.runnables import RunnableConfig
-from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.types import Command
-
 from paid_media_agent.config import Settings
+from paid_media_agent.harness.loop import Decision
+from paid_media_agent.harness.messages import AssistantMessage, Conversation, Message
 from paid_media_agent.runtime.local import LocalRuntime, build_local_runtime
 from paid_media_agent.runtime.profiles import RuntimeProfile, fixture_profile
+from paid_media_agent.store import Store
 from paid_media_agent.testing.scripted_model import (
     ScriptedChatModel,
     Step,
@@ -25,8 +25,14 @@ from paid_media_agent.tools.fixtures import FakeWriteProvider, FixtureState, bui
 from paid_media_agent.tools.writes import ApprovalPolicy
 
 
-def config(thread_id: str = "t-1", caller: str = "local-user") -> RunnableConfig:
-    return RunnableConfig(configurable={"thread_id": thread_id, "caller_ref": caller})
+@dataclass(frozen=True)
+class RunConfig:
+    thread_id: str
+    caller_ref: str
+
+
+def config(thread_id: str = "t-1", caller: str = "local-user") -> RunConfig:
+    return RunConfig(thread_id=thread_id, caller_ref=caller)
 
 
 def propose_step(**overrides: Any) -> Step:
@@ -41,19 +47,21 @@ def propose_step(**overrides: Any) -> Step:
     return lambda _messages: tool_call_message("propose_change", args)
 
 
-def execute_step(messages: Sequence[BaseMessage]) -> AIMessage:
+def execute_step(messages: Sequence[Message]) -> AssistantMessage:
     proposal = next((r for r in last_tool_results(messages) if "proposal" in r), None)
     if proposal is None:
-        return AIMessage(content=f"proposal failed: {last_tool_results(messages)}")
+        return AssistantMessage(content=f"proposal failed: {last_tool_results(messages)}")
     view = proposal["proposal"]
     return tool_call_message(
         "execute_change", {"proposal_id": view["proposal_id"], "revision": view["revision"]}
     )
 
 
-def final_step(messages: Sequence[BaseMessage]) -> AIMessage:
+def final_step(messages: Sequence[Message]) -> AssistantMessage:
     results = last_tool_results(messages)
-    return AIMessage(content=f"done: {results[-1] if results else 'no results'}")
+    return AssistantMessage(
+        content=f"done: {json.dumps(results[-1], default=str) if results else 'no results'}"
+    )
 
 
 def build_runtime(
@@ -67,7 +75,7 @@ def build_runtime(
     write_provider: FakeWriteProvider | None = None,
     approval_policy: ApprovalPolicy | None = None,
     profile: RuntimeProfile | None = None,
-    checkpointer: BaseCheckpointSaver[Any] | None = None,
+    store: Store | None = None,
 ) -> tuple[LocalRuntime, ScriptedChatModel]:
     model = ScriptedChatModel(steps=steps)
     resolved_catalog = catalog or build_fixture_catalog()
@@ -81,6 +89,7 @@ def build_runtime(
         fixture_state=state,
         write_provider=write_provider,
         approval_policy=approval_policy,
+        store=store,
     )
     runtime = build_local_runtime(
         settings,
@@ -89,24 +98,17 @@ def build_runtime(
         catalog=resolved_catalog,
         catalog_provider=provider,
         profile=resolved_profile,
-        checkpointer=checkpointer,
     )
     return runtime, model
 
 
 async def run_until_interrupt(
-    runtime: LocalRuntime, cfg: RunnableConfig, text: str = "Change the budget."
-) -> dict[str, Any]:
-    state = await runtime.graph.ainvoke(
-        {"messages": [{"role": "user", "content": text}]}, config=cfg
-    )
-    return dict(state)
+    runtime: LocalRuntime, cfg: RunConfig, text: str = "Change the budget."
+) -> Conversation:
+    return await runtime.agent.send(cfg.thread_id, cfg.caller_ref, text)
 
 
 async def resume(
-    runtime: LocalRuntime, cfg: RunnableConfig, decision: str = "approve"
-) -> dict[str, Any]:
-    state = await runtime.graph.ainvoke(
-        Command(resume={"decisions": [{"type": decision}]}), config=cfg
-    )
-    return dict(state)
+    runtime: LocalRuntime, cfg: RunConfig, decision: Decision = "approve"
+) -> Conversation:
+    return await runtime.agent.resume(cfg.thread_id, cfg.caller_ref, decision)

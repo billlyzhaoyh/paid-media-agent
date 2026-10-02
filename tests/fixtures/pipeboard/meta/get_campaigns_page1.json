@@ -1,0 +1,29 @@
+{
+  "_provenance": "Graph /act_<id>/campaigns response as returned by get_campaigns in pipeboard-co/meta-ads-mcp @ 093062c6 (fields id,name,objective,status,daily_budget,lifetime_budget,buying_type,start_time,stop_time,created_time,updated_time,bid_strategy,special_ad_categories). Budgets are minor-unit strings. From published source; unverified live.",
+  "data": [
+    {
+      "id": "120210000000001",
+      "name": "Prospecting - Broad",
+      "objective": "OUTCOME_SALES",
+      "status": "ACTIVE",
+      "daily_budget": "5000",
+      "buying_type": "AUCTION",
+      "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
+      "special_ad_categories": []
+    },
+    {
+      "id": "120210000000002",
+      "name": "Retargeting - 30d",
+      "objective": "OUTCOME_SALES",
+      "status": "ACTIVE",
+      "daily_budget": "2500",
+      "buying_type": "AUCTION",
+      "bid_strategy": "COST_CAP",
+      "special_ad_categories": []
+    }
+  ],
+  "paging": {
+    "cursors": {"before": "QVFIUk", "after": "QVFIUm"},
+    "next": "https://graph.facebook.com/v24.0/act_1234567890/campaigns?after=QVFIUm"
+  }
+}

@@ -24,7 +24,7 @@ try {
   assert.match(page.url(), /step=model/);
   assert.equal(await page.getByRole("button", { name: "Continue", exact: true }).count(), 0);
   await page.screenshot({ path: `${out}/04-missing-key.png`, fullPage: true });
-  // Reach deployment with fixture data; no real keys or deploy request are sent.
+  // Reach the Run step with fixture data; no real keys are sent and the agent is never started.
   const accounts = new URL(url);
   accounts.hash = "view=wizard&step=pipeboard";
   await page.goto(accounts.href);
@@ -39,84 +39,65 @@ try {
   assert.match(page.url(), /view=wizard&step=pipeboard/);
   assert.equal(await page.getByRole("group", { name: "Ad platform integrations" }).getByRole("button").count(), 3);
   await page.getByRole("button", { name: "Use sample data", exact: true }).click();
-  await page.getByRole("heading", { name: "Deploy your agent", exact: true }).waitFor();
-  assert.match(page.url(), /step=deployment/);
-  await page.getByRole("button", { name: /Managed Deep Agents/ }).waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy agent", exact: true }).isEnabled(), false);
-  assert.equal(await page.getByRole("button", { name: "Set up self-hosting", exact: true }).isVisible(), false);
-  await page.getByRole("button", { name: /^Self-host Docker/ }).click();
-  await page.getByRole("button", { name: "Set up self-hosting", exact: true }).waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy agent", exact: true }).isVisible(), false);
-  await page.getByRole("button", { name: /Managed Deep Agents/ }).click();
-  // Switching paths keeps the mounted customization draft and live preview intact.
-  await page.getByRole("heading", { name: "Agent settings", exact: true }).waitFor();
-  assert.equal(await page.locator("#deployment-mda-action").evaluate(node => {
-    const visible = [...node.parentElement.children].filter(child => !child.hidden);
-    return visible.at(-1) === node;
-  }), true);
-  assert.equal(await page.getByRole("link", { name: "Create account ↗", exact: true }).getAttribute("href"), "https://smith.langchain.com");
-  assert.equal(await page.getByRole("link", { name: "Choose a plan ↗", exact: true }).getAttribute("target"), "_blank");
-  await page.getByText("Slack appearance", { exact: true }).click();
-  await page.getByLabel("Name in Slack", { exact: true }).fill("Campaign Analyst");
-  await page.getByRole("button", { name: /^Self-host Docker/ }).click();
-  await page.getByRole("button", { name: /Managed Deep Agents/ }).click();
-  assert.equal(await page.getByLabel("Name in Slack", { exact: true }).inputValue(), "Campaign Analyst");
-  assert.match(await page.locator(".slack-preview").textContent(), /Campaign Analyst/);
-  assert.equal(await page.getByRole("button", { name: "Save settings", exact: true }).count(), 0);
-  // Polling must preserve focus and output disclosure while updating the action.
-  let processState = { name: "mda-deploy", running: false, state: "stopped", command: "mda deploy", log_tail: "Old deployment output" };
+  await page.getByRole("heading", { name: "Run your agent", exact: true }).waitFor();
+  assert.match(page.url(), /step=run/);
+  const runOptions = page.getByRole("group", { name: "Run options", exact: true });
+  assert.equal(await runOptions.getByRole("button").count(), 2);
+  assert.equal(await page.getByRole("button", { name: /^Run locally/ }).getAttribute("aria-expanded"), "true");
+  assert.equal(await page.getByRole("button", { name: "Start agent", exact: true }).isVisible(), true);
+  assert.equal(await page.getByText("docker compose up -d --build", { exact: true }).isVisible(), false);
+  assert.equal(await page.getByText(/LangSmith|Managed Deep Agents|Postgres/).count(), 0);
+  await page.getByRole("button", { name: /^Docker/ }).click();
+  await page.getByText("docker compose up -d --build", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Start agent", exact: true }).isVisible(), false);
+  await page.getByRole("button", { name: /^Run locally/ }).click();
+  // The state check opens the throwaway project's DuckDB file; it never starts the agent.
+  await page.getByRole("button", { name: "Check state", exact: true }).click();
+  await page.locator("#run-local").getByText(/state ready at/).waitFor();
+  await page.getByText("Connect Slack (optional)", { exact: true }).click();
+  await page.getByLabel("Bot token", { exact: true }).waitFor();
+  await page.screenshot({ path: `${out}/06-run.png`, fullPage: true });
+  // Polling must preserve focus and output disclosure while updating the process controls.
+  let processState = { name: "serve", running: false, state: "stopped", command: "uv run paid-media-agent serve", log_tail: "Old agent output" };
   const processRequests = [];
   await page.route("**/api/status", async (route) => {
     const response = await route.fetch();
     const data = await response.json();
-    data.result.detail.model = { provider: "scripted", package_installed: true };
-    data.result.detail.model_key_env = null;
-    data.result.detail.mda = { cli_installed: true, langsmith_key_set: true };
     data.processes = [processState];
     await route.fulfill({ json: data });
   });
   await page.route("**/api/processes/**", async (route) => {
     processRequests.push(new URL(route.request().url()).pathname);
     if (route.request().url().endsWith("/start")) {
-      await route.fulfill({ status: 409, json: { detail: "Fixture preflight rejected" } });
+      await route.fulfill({ status: 409, json: { detail: "Fixture start rejected" } });
       return;
     }
-    processState = { ...processState, running: false, state: "completed", returncode: 0, log_tail: "Fixture deployment complete" };
-    await route.fulfill({ json: { ok: true } });
+    processState = { ...processState, running: false, state: "completed", returncode: 0, log_tail: "Fixture agent stopped" };
+    await route.fulfill({ json: processState });
   });
   await page.reload();
-  await page.getByRole("button", { name: "Deploy agent", exact: true }).waitFor();
-  assert.equal(await page.getByText("Deployment output", { exact: true }).isVisible(), false);
-  processState = { ...processState, running: true, state: "active", log_tail: "Starting fixture deployment" };
+  await page.getByRole("button", { name: "Start agent", exact: true }).waitFor();
+  assert.equal(await page.getByText("Process output", { exact: true }).isVisible(), false);
+  processState = { ...processState, running: true, state: "active", log_tail: "Starting fixture agent" };
   await page.reload();
-  const controls = page.locator(".process-controls").filter({ has: page.getByRole("button", { name: "Cancel deployment", exact: true }) });
+  const controls = page.locator(".process-controls").filter({ has: page.getByRole("button", { name: "Stop agent", exact: true }) });
   await controls.locator("summary").click();
-  await page.getByRole("button", { name: "Cancel deployment", exact: true }).focus();
-  processState = { ...processState, state: "waiting_for_authorization", log_tail: "Authorize at https://slack.com/fixture" };
-  await page.getByRole("button", { name: "Continue deployment", exact: true }).waitFor();
-  assert.equal(await page.locator(":focus").textContent(), "Cancel deployment");
+  await page.getByRole("button", { name: "Stop agent", exact: true }).focus();
+  processState = { ...processState, log_tail: "Fixture agent ready" };
+  await controls.getByText("Fixture agent ready").waitFor();
+  assert.equal(await page.locator(":focus").textContent(), "Stop agent");
   assert.equal(await controls.locator("details").getAttribute("open"), "");
-  await page.getByRole("button", { name: "Continue deployment", exact: true }).click();
-  await page.getByRole("button", { name: "Deploy again", exact: true }).waitFor();
-  assert.equal(await page.locator(":focus").textContent(), "Deploy again");
-  await page.getByText("Slack appearance", { exact: true }).click();
-  await page.getByLabel("Name in Slack", { exact: true }).fill("Campaign Analyst");
-  await page.getByLabel("Weekly report", { exact: true }).selectOption("2");
-  await page.getByLabel("Monthly report day", { exact: true }).selectOption("15");
-  await page.getByLabel("Run at", { exact: true }).selectOption("09:15");
-  const customizationSaved = page.waitForResponse((response) => response.url().endsWith("/api/config") && response.request().postDataJSON()?.updates?.PAID_MEDIA_SLACK_NAME === "Campaign Analyst");
+  await page.getByRole("button", { name: "Stop agent", exact: true }).click();
+  await page.getByRole("button", { name: "Start agent", exact: true }).waitFor();
+  assert.equal(await page.locator(":focus").textContent(), "Start agent");
   await Promise.all([
-    page.waitForResponse((response) => response.url().endsWith("/api/processes/mda-deploy/start")),
-    page.getByRole("button", { name: "Deploy again", exact: true }).click(),
+    page.waitForResponse((response) => response.url().endsWith("/api/processes/serve/start")),
+    page.getByRole("button", { name: "Start agent", exact: true }).click(),
   ]);
-  const savedCustomization = await customizationSaved;
-  assert.equal((await savedCustomization.json()).ok, true);
-  assert.equal(savedCustomization.request().postDataJSON().updates.PAID_MEDIA_WEEKLY_REPORT_DAY, "2");
-  assert.equal(savedCustomization.request().postDataJSON().updates.PAID_MEDIA_MONTHLY_REPORT_DAY, "15");
-  assert.equal(savedCustomization.request().postDataJSON().updates.PAID_MEDIA_REPORT_TIME, "09:15");
-  await page.getByRole("button", { name: "Retry deployment", exact: true }).waitFor();
-  assert.equal(await page.locator("#deployment-mda-action").getByText("Deployment complete", { exact: true }).isVisible(), false);
-  assert.deepEqual(processRequests, ["/api/processes/mda-deploy/continue", "/api/processes/mda-deploy/start"]);
+  await page.locator(".process-controls").getByText("Fixture start rejected").waitFor();
+  assert.deepEqual(processRequests, ["/api/processes/serve/stop", "/api/processes/serve/start"]);
+  await page.unroute("**/api/status");
+  await page.unroute("**/api/processes/**");
 
   // Equal provider IDs on different platforms must remain independent rows.
   const discovered = [
@@ -147,7 +128,7 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: `${out}/05-mobile.png`, fullPage: true });
   assert.deepEqual(errors, []);
-  console.log("Guided setup, missing key, deployment controls, independent accounts, and mobile layout passed.");
+  console.log("Guided setup, missing key, run controls, independent accounts, and mobile layout passed.");
 } finally {
   await browser.close();
 }

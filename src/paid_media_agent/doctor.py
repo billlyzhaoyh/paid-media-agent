@@ -5,17 +5,12 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import os
-import shutil
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from paid_media_agent.assembly import TOOL_SELECTION
 from paid_media_agent.config import Settings
-from paid_media_agent.middleware.tool_selection import (
-    PROVIDER_DISTRIBUTIONS,
-    capabilities_for,
-    plan_selection,
-)
+from paid_media_agent.harness.models import PROVIDERS
 from paid_media_agent.runtime.profiles import load_accounts, load_write_policy_file
 from paid_media_agent.tools.fixtures import build_fixture_catalog
 
@@ -28,8 +23,7 @@ SECRET_ENV_NAMES = (
     "SLACK_APP_TOKEN",
     "SLACK_SIGNING_SECRET",
     "PAID_MEDIA_APPROVAL_SIGNING_KEY",
-    "DATABASE_URL",
-    "LANGSMITH_API_KEY",
+    "TABPFN_TOKEN",
 )
 
 
@@ -52,30 +46,16 @@ def run_doctor(settings: Settings, *, project_root: Path) -> list[Check]:
     checks: list[Check] = []
     try:
         model = settings.model_settings()
-        caps = capabilities_for(model)
-        plan = plan_selection(model, max_tools=settings.paid_media_max_selected_tools)
+        known = model.provider in PROVIDERS or model.provider == "scripted"
         checks.append(
-            Check("model", "ok", f"{model.spec}; selection={plan.strategy.value} ({plan.reason})")
+            Check(
+                "model",
+                "ok" if known or model.base_url is not None else "fail",
+                f"{model.spec}; tools bound through {TOOL_SELECTION}"
+                if known or model.base_url is not None
+                else f"unknown provider {model.provider}; set PAID_MEDIA_MODEL_BASE_URL",
+            )
         )
-        package = PROVIDER_DISTRIBUTIONS.get(model.provider, caps.integration_package)
-        if package and package != "paid-media-agent":
-            module = package.replace("-", "_")
-            status = "ok" if _module_available(module) else "fail"
-            checks.append(
-                Check(
-                    "model_package",
-                    status,
-                    f"{package} {'installed' if status == 'ok' else 'missing; install the extra'}",
-                )
-            )
-        if not caps.verified:
-            checks.append(
-                Check(
-                    "model_registry",
-                    "warn",
-                    "model is not in the tested capability registry; portable selection applies",
-                )
-            )
         if model.base_url is not None:
             checks.append(
                 Check(
@@ -100,18 +80,10 @@ def run_doctor(settings: Settings, *, project_root: Path) -> list[Check]:
             "ok" if direct else "warn",
             ", ".join(p.value for p in direct)
             if direct
-            else "none configured (LinkedIn, X, OpenAI Ads are direct adapters)",
+            else "none configured (X Ads and OpenAI Ads are direct adapters; LinkedIn is read "
+            "through Pipeboard)",
         )
     )
-    gateway = os.environ.get("LANGSMITH_GATEWAY", "")
-    if gateway:
-        checks.append(
-            Check(
-                "model_gateway",
-                "ok",
-                f"LANGSMITH_GATEWAY={gateway}; provider SDKs route through LangSmith",
-            )
-        )
     if settings.pipeboard_api_token is None:
         checks.append(Check("pipeboard", "warn", "no token: fixture catalog only"))
     else:
@@ -119,6 +91,19 @@ def run_doctor(settings: Settings, *, project_root: Path) -> list[Check]:
             Check("pipeboard", "ok", "token configured; live catalog will be loaded host-side")
         )
 
+    for label, path in (
+        ("account_config", settings.paid_media_account_config_path),
+        ("write_policy_config", settings.paid_media_write_policy_path),
+    ):
+        if path.name.endswith(".example.toml"):
+            checks.append(
+                Check(
+                    label,
+                    "ok" if settings.paid_media_data_mode == "sample" else "warn",
+                    f"{path} is the example file (fixture ids and fixture tool names); copy it and "
+                    "point the setting at your own for live accounts",
+                )
+            )
     accounts = load_accounts(settings, project_root)
     if accounts.bindings:
         checks.append(
@@ -234,20 +219,9 @@ def run_doctor(settings: Settings, *, project_root: Path) -> list[Check]:
                 else "slack extra not installed",
             )
         )
-        if settings.database_url is None:
-            checks.append(
-                Check("persistence", "warn", "DATABASE_URL not set; in-memory state (local only)")
-            )
-        else:
-            checks.append(
-                Check(
-                    "persistence",
-                    "ok" if _module_available("psycopg") else "fail",
-                    "Postgres configured"
-                    if _module_available("psycopg")
-                    else "psycopg missing; install the self-host extra",
-                )
-            )
+        checks.append(
+            Check("persistence", "ok", f"DuckDB state file {settings.paid_media_state_path}")
+        )
 
     from paid_media_agent.reports.render import pdf_renderer_available
 
@@ -257,20 +231,6 @@ def run_doctor(settings: Settings, *, project_root: Path) -> list[Check]:
             "report_pdf",
             "ok" if pdf_ok else "warn",
             "WeasyPrint ready" if pdf_ok else f"HTML only; {pdf_detail}",
-        )
-    )
-    sandbox_recipe = all(
-        (project_root / "sandbox" / name).is_file() for name in ("__init__.py", "setup.sh")
-    )
-    checks.append(
-        Check(
-            "sandbox_snapshot",
-            "ok" if sandbox_recipe else "warn",
-            f"custom bake base: {settings.paid_media_sandbox_snapshot}"
-            if settings.paid_media_sandbox_snapshot
-            else "recipe configured; MDA builds the snapshot on deploy"
-            if sandbox_recipe
-            else "sandbox declaration or setup.sh missing; restore the sandbox/ files",
         )
     )
     checks.append(
@@ -289,75 +249,42 @@ def run_doctor(settings: Settings, *, project_root: Path) -> list[Check]:
     return checks
 
 
-def run_snapshot_checks(project_root: Path) -> list[Check]:
-    """Sandbox compatibility contract from docs/architecture/sandbox-and-snapshots.md."""
-    checks: list[Check] = []
-    version = sys.version_info
-    checks.append(
-        Check(
-            "python",
-            "ok" if version >= (3, 11) else "fail",
-            f"{version.major}.{version.minor}.{version.micro}",
-        )
-    )
-    for binary in ("rg", "jq"):
-        path = shutil.which(binary)
-        checks.append(Check(f"binary:{binary}", "ok" if path else "warn", path or "not found"))
-    for module in ("deepagents", "langchain", "langgraph", "pydantic", "jinja2"):
-        checks.append(
-            Check(
-                f"import:{module}",
-                "ok" if _module_available(module) else "fail",
-                "importable" if _module_available(module) else "missing",
-            )
-        )
-    leaked = [name for name in SECRET_ENV_NAMES if os.environ.get(name)]
-    checks.append(
-        Check(
-            "secrets_absent",
-            "ok" if not leaked else "fail",
-            "no secret env values visible"
-            if not leaked
-            else f"secret env visible in sandbox: {', '.join(leaked)}",
-        )
-    )
-    workspace = project_root / "workspace"
-    checks.append(
-        Check(
-            "workspace_writable", "ok" if os.access(workspace, os.W_OK) else "fail", str(workspace)
-        )
-    )
-    outside = Path.home() / ".ssh"
-    checks.append(
-        Check(
-            "outside_paths",
-            "ok" if not os.access(outside, os.R_OK) else "warn",
-            "home SSH material not readable"
-            if not os.access(outside, os.R_OK)
-            else "home SSH directory is readable from this process",
-        )
-    )
-    from paid_media_agent.reports.render import pdf_renderer_available
-
-    pdf_ok, pdf_detail = pdf_renderer_available()
-    checks.append(
-        Check(
-            "report_render",
-            "ok" if pdf_ok else "warn",
-            "PDF rendering ready" if pdf_ok else f"HTML only; {pdf_detail}",
-        )
-    )
-    checks.append(
-        Check(
-            "network_policy",
-            "warn",
-            "outbound network policy must be enforced by the sandbox runtime; not verifiable from inside",
-        )
-    )
-    return checks
-
-
 def format_checks(checks: list[Check]) -> str:
     width = max(len(c.name) for c in checks)
     lines = [f"{c.status.upper():<5} {c.name:<{width}}  {c.detail}" for c in checks]
     return "\n".join(lines)
+
+
+def usage_check(settings: Settings, *, project_root: Path, days: int = 7) -> Check:
+    """Model calls over the last week, from the state file (never created here)."""
+    from datetime import UTC, datetime, timedelta
+
+    from paid_media_agent.harness.usage import usage_summary
+    from paid_media_agent.runtime.self_hosted import state_path
+    from paid_media_agent.store import Store, StoreBusy
+
+    path = state_path(settings, project_root)
+    if not path.exists():
+        return Check("model usage", "ok", "no state file yet; nothing recorded")
+    try:
+        store = Store(path)
+    except StoreBusy:
+        return Check("model usage", "warn", "`serve` holds the state file; run `usage` there")
+    try:
+        since = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days)
+        totals = usage_summary(store, since=since)["totals"]
+    finally:
+        store.close()
+    if not totals["calls"]:
+        return Check("model usage", "ok", f"no model calls in the last {days} days")
+    cost = "cost not reported" if totals["cost_usd"] is None else f"${totals['cost_usd']:.2f}"
+    hit = totals["cache_hit_rate"]
+    failed = totals["failed"] / totals["calls"]
+    return Check(
+        "model usage",
+        "warn" if failed > 0.2 else "ok",
+        f"last {days} days: {totals['calls']} calls ({failed:.0%} failed), {cost}, "
+        f"{totals['input_tokens']:,} input tokens"
+        + (f" ({hit:.0%} from cache)" if hit is not None else "")
+        + f", p95 latency {totals['p95_latency_ms']} ms",
+    )

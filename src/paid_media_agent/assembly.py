@@ -2,50 +2,70 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import json
+import uuid
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
-from langchain.agents.middleware import (
-    AgentMiddleware,
-    InterruptOnConfig,
-    ModelCallLimitMiddleware,
-    ModelRetryMiddleware,
+from paid_media_agent.analytics.changes import ChangeRecorder
+from paid_media_agent.analytics.goals import GoalStore, account_today
+from paid_media_agent.analytics.ingest import AnalyticsRecorder
+from paid_media_agent.bandit.live import live_config
+from paid_media_agent.bandit.proposals import propose_decision
+from paid_media_agent.config import Settings
+from paid_media_agent.domain.presentation import ProposalView, proposal_summary
+from paid_media_agent.domain.proposals import ProposalState
+from paid_media_agent.grounding import answer_check
+from paid_media_agent.harness.files import build_file_tools
+from paid_media_agent.harness.loop import (
+    Agent,
+    AnswerCheck,
+    ApprovalGate,
+    AutoPause,
+    PauseSummary,
 )
-from langchain_core.language_models import BaseChatModel
-from langchain_core.tools import BaseTool
-
-from paid_media_agent.config import ModelConfig, Settings
-from paid_media_agent.middleware.authorization import (
-    HIDDEN_BUILTIN_TOOLS,
-    InvocationGuardMiddleware,
-    ToolSurfacePolicy,
+from paid_media_agent.harness.messages import (
+    AssistantMessage,
+    Message,
+    ToolCall,
+    ToolMessage,
+    UserMessage,
 )
-from paid_media_agent.middleware.current_date import CurrentDateMiddleware
-from paid_media_agent.middleware.offload import ResultOffloadMiddleware
-from paid_media_agent.middleware.redaction import RedactionMiddleware
-from paid_media_agent.middleware.timeout import ModelTimeoutMiddleware
-from paid_media_agent.middleware.tool_selection import (
-    SelectionPlan,
-    SelectionStrategy,
-    build_selection_middleware,
-    lenient_selector,
-    plan_selection,
-)
+from paid_media_agent.harness.models import ChatModel, cache_session, resolve_model
+from paid_media_agent.harness.skills import discover_skills, skills_prompt
+from paid_media_agent.harness.tools import ToolContext, ToolDispatcher, ToolSpec
+from paid_media_agent.harness.usage import LlmCallRecorder
+from paid_media_agent.predict.factory import build_predictor
 from paid_media_agent.runtime.profiles import RuntimeProfile
+from paid_media_agent.store import Store
+from paid_media_agent.store.conversations import ConversationStore
+from paid_media_agent.tools.anomalies import CHECK_ANOMALIES_TOOL, build_check_anomalies_tool
+from paid_media_agent.tools.artifact_read import READ_ARTIFACT_TOOL, build_read_artifact_tool
+from paid_media_agent.tools.bandit import RECOMMEND_BUDGETS_TOOL, build_recommend_budgets_tool
+from paid_media_agent.tools.calculate import CALCULATE_TOOL, build_calculate_tool
 from paid_media_agent.tools.catalog import AuthorizedToolCatalog
 from paid_media_agent.tools.compare_periods import COMPARE_PERIODS_TOOL, build_compare_periods_tool
 from paid_media_agent.tools.discovery import (
     DISCOVER_TOOLS_TOOL,
     LIST_ACCOUNTS_TOOL,
+    account_lines,
     build_discover_tools_tool,
     build_list_accounts_tool,
 )
+from paid_media_agent.tools.drivers import EXPLAIN_CHANGE_TOOL, build_explain_change_tool
+from paid_media_agent.tools.history import QUERY_HISTORY_TOOL, build_query_history_tool
+from paid_media_agent.tools.host_writes import HostOperation, goals_operation
+from paid_media_agent.tools.pacing import CHECK_PACING_TOOL, build_check_pacing_tool
 from paid_media_agent.tools.reads import ReadDispatcher, build_platform_read_tools
 from paid_media_agent.tools.reports import RENDER_REPORT_TOOL, build_render_report_tool
 from paid_media_agent.tools.summary import SUMMARIZE_WINDOW_TOOL, build_summarize_window_tool
-from paid_media_agent.tools.write_tools import build_execute_interrupt, build_write_tools
+from paid_media_agent.tools.whatif import WHAT_IF_BUDGETS_TOOL, build_what_if_budgets_tool
+from paid_media_agent.tools.write_tools import build_execute_gate, build_write_tools
 from paid_media_agent.tools.writes import (
     DISCOVER_WRITE_OPERATIONS_TOOL,
     EXECUTE_CHANGE_TOOL,
@@ -55,7 +75,6 @@ from paid_media_agent.tools.writes import (
     WriteExecutor,
 )
 
-# Deep Agents filesystem tools the model keeps for skills, wiki pages, and workspace notes.
 FILESYSTEM_TOOLS: tuple[str, ...] = ("ls", "read_file", "write_file", "edit_file", "glob", "grep")
 CORE_TOOLS: tuple[str, ...] = (
     LIST_ACCOUNTS_TOOL,
@@ -63,6 +82,14 @@ CORE_TOOLS: tuple[str, ...] = (
     COMPARE_PERIODS_TOOL,
     SUMMARIZE_WINDOW_TOOL,
     RENDER_REPORT_TOOL,
+    QUERY_HISTORY_TOOL,
+    CHECK_ANOMALIES_TOOL,
+    RECOMMEND_BUDGETS_TOOL,
+    CHECK_PACING_TOOL,
+    EXPLAIN_CHANGE_TOOL,
+    WHAT_IF_BUDGETS_TOOL,
+    READ_ARTIFACT_TOOL,
+    CALCULATE_TOOL,
 )
 WRITE_TOOLS: tuple[str, ...] = (
     DISCOVER_WRITE_OPERATIONS_TOOL,
@@ -70,13 +97,15 @@ WRITE_TOOLS: tuple[str, ...] = (
     EXECUTE_CHANGE_TOOL,
     GET_PROPOSAL_TOOL,
 )
-MODEL_RETRY_ATTEMPTS = 2
+TOOL_SELECTION = "discover_tools"
+"""Platform read tools are bound once discover_tools activates them for the thread."""
 
 
 @dataclass(frozen=True)
 class AssemblyMetadata:
     model_spec: str
-    selection: SelectionPlan
+    selection: str
+    max_active_reads: int
     catalog_revision: str
     catalog_source: str
     read_tool_count: int
@@ -89,33 +118,42 @@ class AssemblyMetadata:
 
 @dataclass(frozen=True)
 class AgentComponents:
-    model: BaseChatModel
-    tools: tuple[BaseTool, ...]
-    middleware: tuple[AgentMiddleware[Any, Any, Any], ...]
-    interrupt_on: Mapping[str, InterruptOnConfig]
+    model: ChatModel
+    tools: tuple[ToolSpec, ...]
+    dispatcher: ToolDispatcher
+    gate: ApprovalGate
     system_prompt: str
-    skills: tuple[str, ...]
     metadata: AssemblyMetadata
     proposal_service: ProposalService
     write_executor: WriteExecutor
     read_dispatcher: ReadDispatcher
+    max_model_calls: int
+    model_timeout_seconds: int
+    context_budget_tokens: int = 0
+    read_tools_budget_tokens: int = 6000
+    prompt_context: Callable[[], str] | None = None
+    """Per-call additions to the system prompt: the accounts and their goals."""
+    check_answer: AnswerCheck | None = None
+    """Grounds each final answer's figures in the thread's tool results."""
 
 
-@dataclass(frozen=True)
-class AssemblyServices:
-    """Host services created once per assembly so surfaces can reuse the same objects."""
+def host_operations(runtime: RuntimeProfile) -> dict[str, HostOperation]:
+    """Changes to this deployment's own data that need approval: today, account goals."""
+    goals = goals_operation(
+        GoalStore(runtime.store), lambda alias: account_today(runtime.accounts, alias)
+    )
+    return {goals.tool_name: goals}
 
-    read_dispatcher: ReadDispatcher
-    proposal_service: ProposalService
-    write_executor: WriteExecutor
 
-
-def _build_services(settings: Settings, runtime: RuntimeProfile) -> AssemblyServices:
+def _services(
+    settings: Settings, runtime: RuntimeProfile
+) -> tuple[ReadDispatcher, ProposalService, WriteExecutor]:
     dispatcher = ReadDispatcher(
         catalog_provider=runtime.catalog_provider,
         accounts=runtime.accounts,
         provider=runtime.read_provider,
         artifacts=runtime.artifacts,
+        recorder=AnalyticsRecorder(runtime.store),
     )
     service = ProposalService(
         catalog_provider=runtime.catalog_provider,
@@ -126,6 +164,8 @@ def _build_services(settings: Settings, runtime: RuntimeProfile) -> AssemblyServ
         proposals=runtime.proposals,
         approvals=runtime.approvals,
         read_provider=runtime.read_provider,
+        change_log=ChangeRecorder(runtime.store, runtime.accounts),
+        host_operations=host_operations(runtime),
     )
     executor = WriteExecutor(
         service=service,
@@ -139,41 +179,18 @@ def _build_services(settings: Settings, runtime: RuntimeProfile) -> AssemblyServ
         read_provider=runtime.read_provider,
         gate=runtime.write_gate(settings),
     )
-    return AssemblyServices(
-        read_dispatcher=dispatcher, proposal_service=service, write_executor=executor
-    )
+    return dispatcher, service, executor
 
 
-def resolve_model(
-    config: ModelConfig,
-    override: BaseChatModel | None = None,
-    *,
-    api_key_env: str | None = None,
-    timeout_seconds: int = 120,
-) -> BaseChatModel:
-    """Initialize the configured provider model. No implicit gateway: `langsmith:` specs opt in.
-
-    `api_key_env` names the environment variable holding the key when the provider does not read
-    its default one (for example an OpenAI-compatible endpoint with its own key). Every request
-    gets a timeout and two SDK retries; the retry middleware handles what remains.
-    """
-    if override is not None:
-        return override
-    import os
-
-    from langchain.chat_models import init_chat_model
-
-    kwargs: dict[str, Any] = {"timeout": timeout_seconds, "max_retries": 2}
-    if config.base_url is not None:
-        kwargs["base_url"] = str(config.base_url)
-    if api_key_env and os.environ.get(api_key_env):
-        kwargs["api_key"] = os.environ[api_key_env]
-    resolved: BaseChatModel = init_chat_model(config.spec, **kwargs)
-    return resolved
-
-
-def load_system_prompt(project_root: Path) -> str:
-    return (project_root / "instructions.md").read_text(encoding="utf-8")
+def system_prompt_for(project_root: Path) -> str:
+    """`instructions.md` plus an index of the runtime skills the model can read on demand."""
+    instructions = project_root / "instructions.md"
+    base = instructions.read_text(encoding="utf-8") if instructions.exists() else ""
+    skills_dir = project_root / "skills"
+    if not skills_dir.is_dir():
+        skills_dir = project_root / "workspace" / "skills"
+    index = skills_prompt(discover_skills(skills_dir))
+    return "\n\n".join(part for part in (base.strip(), index) if part)
 
 
 def build_agent_components(
@@ -181,113 +198,220 @@ def build_agent_components(
     settings: Settings,
     runtime: RuntimeProfile,
     catalog: AuthorizedToolCatalog,
-    model: BaseChatModel | None = None,
-    selector_model: BaseChatModel | None = None,
+    model: ChatModel | None = None,
     system_prompt: str | None = None,
 ) -> AgentComponents:
-    """Compose model, tools, middleware, and interrupt policy. No network, no global state."""
+    """Compose model, tools, dispatcher, and approval gate. No network, no global state."""
     model_config = settings.model_settings()
-    resolved_model = resolve_model(
+    resolved: ChatModel = model or resolve_model(
         model_config,
-        model,
         api_key_env=settings.paid_media_model_api_key_env,
         timeout_seconds=settings.paid_media_model_timeout_seconds,
+        zero_data_retention=settings.paid_media_model_zero_data_retention,
+        prompt_cache=settings.paid_media_prompt_cache,
+        session_id=cache_session(str(settings.paid_media_state_path.resolve())),
     )
-    services = _build_services(settings, runtime)
-
+    read_dispatcher, service, executor = _services(settings, runtime)
     project_root = runtime.skills_root or Path.cwd()
-
-    platform_tools = build_platform_read_tools(catalog, services.read_dispatcher)
-    core_tools: list[BaseTool] = [
-        build_list_accounts_tool(runtime.accounts),
+    goals = GoalStore(runtime.store)
+    predictor = build_predictor(settings, runtime.store)
+    bandit_config = live_config(settings.paid_media_bandit_policy)
+    secrets = tuple(
+        s
+        for s in (
+            *_secret_values(settings),
+            *runtime.extra_secrets,
+            *_provider_id_forms(runtime.accounts.provider_ids()),
+        )
+        if s
+    )
+    core = [
+        build_list_accounts_tool(runtime.accounts, goals),
         build_discover_tools_tool(runtime.catalog_provider),
-        build_compare_periods_tool(runtime.artifacts),
-        build_summarize_window_tool(runtime.artifacts),
+        build_compare_periods_tool(runtime.artifacts, goals.current),
+        build_summarize_window_tool(runtime.artifacts, goals.current),
         build_render_report_tool(runtime.artifacts),
-    ]
-    write_tools = build_write_tools(services.proposal_service, services.write_executor)
-    tools: tuple[BaseTool, ...] = (*core_tools, *write_tools, *platform_tools)
-
-    allowed = frozenset({*FILESYSTEM_TOOLS, *(t.name for t in tools)})
-    surface = ToolSurfacePolicy(allowed_tool_names=allowed, hidden_tool_names=HIDDEN_BUILTIN_TOOLS)
-    plan = plan_selection(model_config, max_tools=settings.paid_media_max_selected_tools)
-    selection_model = selector_model
-    if selection_model is None and plan.strategy is SelectionStrategy.PORTABLE_SELECTOR:
-        if plan.selector_model:
-            selector_config = ModelConfig.parse(plan.selector_model)
-            selected = resolve_model(
-                selector_config, timeout_seconds=settings.paid_media_model_timeout_seconds
-            )
-            selection_model = lenient_selector(selected, selector_config) or selected
-        else:
-            selection_model = lenient_selector(resolved_model, model_config)
-    selection = build_selection_middleware(
-        plan,
-        searchable_tool_names=[t.name for t in platform_tools],
-        always_include=[
-            *FILESYSTEM_TOOLS,
-            *(t.name for t in core_tools),
-            *(t.name for t in write_tools),
-        ],
-        selector_model=selection_model,
-    )
-    secrets = tuple(s for s in _secret_values(settings) if s)
-    retry: tuple[AgentMiddleware[Any, Any, Any], ...] = ()
-    if model_config.provider != "scripted":
-        # Transient model failures should not kill a run; bounded, and tool effects never repeat.
-        # A run also ends after a fixed number of model calls instead of looping on tools.
-        retry = (
-            ModelRetryMiddleware(max_retries=MODEL_RETRY_ATTEMPTS, on_failure="continue"),
-            ModelTimeoutMiddleware(settings.paid_media_model_timeout_seconds),
-            ModelCallLimitMiddleware(
-                run_limit=settings.paid_media_max_model_calls, exit_behavior="end"
-            ),
-        )
-    middleware: tuple[AgentMiddleware[Any, Any, Any], ...] = (
-        *retry,
-        CurrentDateMiddleware(),
-        *selection,
-        InvocationGuardMiddleware(surface=surface, catalog_provider=runtime.catalog_provider),
-        ResultOffloadMiddleware(
-            runtime.artifacts, max_chars=settings.paid_media_result_offload_chars
+        build_read_artifact_tool(runtime.artifacts, secrets),
+        build_calculate_tool(),
+        build_query_history_tool(runtime.store, runtime.accounts),
+        build_check_pacing_tool(runtime.store, runtime.accounts),
+        build_check_anomalies_tool(
+            runtime.store,
+            runtime.accounts,
+            build_predictor(settings, runtime.store),
+            band=settings.paid_media_anomaly_band,
         ),
-        RedactionMiddleware(secrets=(*secrets, *runtime.extra_secrets)),
+        build_recommend_budgets_tool(
+            runtime.store,
+            runtime.accounts,
+            predictor,
+            config=bandit_config,
+        ),
+        build_explain_change_tool(runtime.store, runtime.accounts, predictor, config=bandit_config),
+        build_what_if_budgets_tool(
+            runtime.store, runtime.accounts, predictor, config=bandit_config
+        ),
+    ]
+    tools = (
+        *core,
+        *build_write_tools(service, executor, partial(propose_decision, runtime.store, service)),
+        *build_file_tools(project_root),
+        *build_platform_read_tools(catalog, read_dispatcher),
     )
-    interrupt_on: dict[str, InterruptOnConfig] = {}
-    if write_tools:
-        interrupt_on[EXECUTE_CHANGE_TOOL] = build_execute_interrupt(services.proposal_service)
-
-    prompt = system_prompt
-    if prompt is None:
-        prompt = (
-            load_system_prompt(project_root) if (project_root / "instructions.md").exists() else ""
-        )
+    dispatcher = ToolDispatcher(
+        tools={t.name: t for t in tools},
+        catalog_provider=runtime.catalog_provider,
+        artifacts=runtime.artifacts,
+        secrets=secrets,
+        offload_chars=settings.paid_media_result_offload_chars,
+    )
     metadata = AssemblyMetadata(
         model_spec=model_config.spec,
-        selection=plan,
+        selection=TOOL_SELECTION,
+        max_active_reads=settings.paid_media_max_selected_tools,
         catalog_revision=catalog.revision,
         catalog_source=catalog.source,
-        read_tool_count=len(platform_tools),
+        read_tool_count=sum(1 for t in tools if t.kind == "read"),
         mutation_entry_count=len(catalog.mutation_entries()),
         denied_entry_count=len(catalog.denied_entries()),
         tool_names=tuple(t.name for t in tools),
-        write_gate=services.write_executor.gate.describe(),
+        write_gate=executor.gate.describe(),
         write_policy_issues=tuple(
             f"{i.tool_name}: {i.reason}" for i in runtime.write_policy_issues
         ),
     )
+    prompt = system_prompt if system_prompt is not None else system_prompt_for(project_root)
     return AgentComponents(
-        model=resolved_model,
+        model=resolved,
         tools=tools,
-        middleware=middleware,
-        interrupt_on=interrupt_on,
+        dispatcher=dispatcher,
+        gate=build_execute_gate(service),
         system_prompt=prompt,
-        skills=("/skills/",),
         metadata=metadata,
-        proposal_service=services.proposal_service,
-        write_executor=services.write_executor,
-        read_dispatcher=services.read_dispatcher,
+        proposal_service=service,
+        write_executor=executor,
+        read_dispatcher=read_dispatcher,
+        max_model_calls=settings.paid_media_max_model_calls,
+        model_timeout_seconds=settings.paid_media_model_timeout_seconds,
+        context_budget_tokens=settings.paid_media_context_budget_tokens,
+        read_tools_budget_tokens=settings.paid_media_read_tools_budget_tokens,
+        prompt_context=lambda: account_lines(runtime.accounts, goals),
+        check_answer=answer_check(
+            runtime.artifacts, context=lambda: account_lines(runtime.accounts, goals)
+        )
+        if settings.paid_media_answer_repair
+        else None,
     )
+
+
+def build_agent(
+    components: AgentComponents, store: Store, *, clock: Callable[[], datetime] | None = None
+) -> Agent:
+    """The loop over these components, with conversations in the profile's state store."""
+    extra: dict[str, Any] = {"clock": clock} if clock is not None else {}
+    return Agent(
+        **extra,
+        model=components.model,
+        system_prompt=components.system_prompt,
+        dispatcher=components.dispatcher,
+        conversations=ConversationStore(store),
+        gate=components.gate,
+        max_model_calls=components.max_model_calls,
+        model_timeout_seconds=components.model_timeout_seconds,
+        max_active_reads=components.metadata.max_active_reads,
+        call_log=LlmCallRecorder(store),
+        context_budget_tokens=components.context_budget_tokens,
+        pause_summary=_pause_summary(components.proposal_service),
+        read_tools_budget_tokens=components.read_tools_budget_tokens,
+        prompt_context=components.prompt_context,
+        check_answer=components.check_answer,
+        auto_pause=_unpaused_proposals(components.proposal_service),
+    )
+
+
+def _unpaused_proposals(service: ProposalService) -> AutoPause:
+    """Proposals made this turn, still awaiting approval, that no `execute_change` paused on.
+
+    A model sometimes stages a change and then describes it instead of pausing; the reviewer
+    would get no card. The runtime pauses each one itself, at its current revision.
+    """
+
+    def unpaused(messages: Sequence[Message], context: ToolContext) -> list[ToolCall]:
+        start = max(
+            (i + 1 for i, m in enumerate(messages)
+             if isinstance(m, UserMessage) and m.origin == "user"),
+            default=0,
+        )  # fmt: skip
+        proposed: dict[UUID, None] = {}
+        executed: set[str] = set()
+        for message in messages[start:]:
+            if isinstance(message, AssistantMessage):
+                executed |= {
+                    str(c.args.get("proposal_id"))
+                    for c in message.tool_calls
+                    if c.name == EXECUTE_CHANGE_TOOL
+                }
+            elif isinstance(message, ToolMessage) and message.name == PROPOSE_CHANGE_TOOL:
+                try:
+                    body = json.loads(message.content)
+                    proposed[UUID(str(body["proposal"]["proposal_id"]))] = None
+                except (ValueError, KeyError, TypeError):
+                    continue
+        calls = []
+        for proposal_id in proposed:
+            if str(proposal_id) in executed:
+                continue
+            record = service.get(proposal_id)
+            if (
+                record is None
+                or record.changeset.thread_id != context.thread_id
+                or record.state is not ProposalState.AWAITING_APPROVAL
+            ):
+                continue
+            calls.append(
+                ToolCall(
+                    id=f"host-pause-{uuid.uuid4().hex[:12]}",
+                    name=EXECUTE_CHANGE_TOOL,
+                    args={
+                        "proposal_id": str(proposal_id),
+                        "revision": record.changeset.revision,
+                    },
+                )
+            )
+        return calls
+
+    return unpaused
+
+
+def _pause_summary(service: ProposalService) -> PauseSummary:
+    def summarize(calls: Sequence[ToolCall], context: ToolContext) -> str:
+        parts = []
+        for call in calls:
+            try:
+                record = service.get(UUID(str(call.args.get("proposal_id"))))
+            except ValueError:
+                continue
+            if record is not None and record.changeset.thread_id == context.thread_id:
+                parts.append(proposal_summary(ProposalView.from_record(record)))
+        return "\n\n".join(parts)
+
+    return summarize
+
+
+def _provider_id_forms(ids: frozenset[str]) -> tuple[str, ...]:
+    """Every way a provider account id shows up in results: the model only ever sees aliases.
+
+    Meta ids appear with and without `act_`; Google's ten digits also as 123-456-7890.
+    """
+    forms: set[str] = set()
+    for raw in ids:
+        bare = raw.removeprefix("act_")
+        forms |= {raw, bare, f"act_{bare}"}
+        digits = bare.replace("-", "")
+        if digits.isdigit() and len(digits) == 10:
+            forms |= {digits, f"{digits[:3]}-{digits[3:6]}-{digits[6:]}"}
+    # Longest first, so a prefixed form is replaced whole before its bare part.
+    return tuple(sorted(forms, key=len, reverse=True))
 
 
 def _secret_values(settings: Settings) -> tuple[str, ...]:
@@ -298,8 +422,8 @@ def _secret_values(settings: Settings) -> tuple[str, ...]:
         settings.slack_bot_token,
         settings.slack_app_token,
         settings.slack_signing_secret,
-        settings.database_url,
         settings.paid_media_api_tokens,
+        settings.tabpfn_token,
     ):
         if secret is not None:
             values.append(secret.get_secret_value())

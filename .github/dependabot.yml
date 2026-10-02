@@ -5,13 +5,12 @@ updates:
     schedule:
       interval: "weekly"
     groups:
-      langchain-stack:
+      runtime-stack:
         patterns:
-          - "deepagents"
-          - "managed-deepagents"
-          - "langchain*"
-          - "langgraph*"
+          - "duckdb"
+          - "httpx"
           - "mcp"
+          - "numpy"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

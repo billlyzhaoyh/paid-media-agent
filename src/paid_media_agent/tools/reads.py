@@ -4,17 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Sequence
 from datetime import date
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import jsonschema
-from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, ConfigDict
 
 from paid_media_agent.config import AccountRegistry
 from paid_media_agent.domain.common import DataQualityFlag, EntityType, JsonValue, Platform
-from paid_media_agent.middleware.redaction import sanitize_exception
+from paid_media_agent.harness.tools import ToolContext, ToolSpec
+from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.tools.artifacts import ArtifactStore
 from paid_media_agent.tools.catalog import (
     AuthorizedToolCatalog,
@@ -22,6 +23,7 @@ from paid_media_agent.tools.catalog import (
     CatalogProvider,
     ToolClass,
 )
+from paid_media_agent.tools.contracts import HOST_CONTRACT, contract_for_tool
 from paid_media_agent.tools.normalize import (
     PERFORMANCE_PLATFORMS,
     ROWS_SCHEMA_VERSION,
@@ -35,6 +37,11 @@ from paid_media_agent.tools.providers import (
     ProviderTimeout,
     ReadProvider,
 )
+
+if TYPE_CHECKING:
+    from paid_media_agent.analytics.ingest import AnalyticsRecorder, AnalyticsSource
+
+log = logging.getLogger(__name__)
 
 ACCOUNT_ALIAS_ARG = "account_alias"
 PROVIDER_RESULT_SCHEMA_VERSION = "provider-result/1"
@@ -63,6 +70,8 @@ def entity_type_for(tool_name: str, declared: JsonValue | None = None) -> Entity
 
 
 AUDIT_LIMIT = 500
+MAX_PAGES = 20
+"""Pages one model-facing read follows before it calls itself incomplete (as sync does)."""
 """Reads kept in the in-memory audit trail; the demo prints it, long-running servers do not."""
 
 
@@ -94,6 +103,9 @@ class ReadResult(BaseModel):
     missing_fields: tuple[str, ...]
     quality_flags: tuple[DataQualityFlag, ...]
     preview: dict[str, JsonValue]
+    next_page: dict[str, JsonValue] | None = None
+    """Arguments for the next page when the provider paged the result. The model-facing tool
+    follows them itself; host jobs page on their own."""
     note: str = "Rows are stored in the artifact. Use compare_periods for numbers; do not compute from previews."
 
 
@@ -128,12 +140,14 @@ class ReadDispatcher:
         provider: ReadProvider,
         artifacts: ArtifactStore,
         timeout_seconds: float = DEFAULT_READ_TIMEOUT_SECONDS,
+        recorder: AnalyticsRecorder | None = None,
     ) -> None:
         self._catalog_provider = catalog_provider
         self._accounts = accounts
         self._provider = provider
         self._artifacts = artifacts
         self._timeout = timeout_seconds
+        self._recorder = recorder
         self.audit: list[dict[str, JsonValue]] = []
 
     @property
@@ -196,7 +210,9 @@ class ReadDispatcher:
         arguments: dict[str, JsonValue],
         *,
         selection_schema_hash: str | None = None,
+        source: AnalyticsSource = "agent_read",
     ) -> ReadResult:
+        """Run one read. Its rows also land in the analytics history, labelled with `source`."""
         catalog, entry = self.resolve(qualified_name, selection_schema_hash=selection_schema_hash)
         alias, scoped = self.scope_arguments(entry, arguments)
         try:
@@ -205,8 +221,10 @@ class ReadDispatcher:
             )
         except TimeoutError as exc:
             raise ProviderTimeout("provider read timed out") from exc
-        # Normalization plus the artifact write (disk, and the sandbox mirror) stay off the loop.
-        summary = await asyncio.to_thread(self._store, entry, catalog, alias, scoped, result)
+        # Normalization plus the artifact write stay off the loop.
+        summary = await asyncio.to_thread(
+            self._store, entry, catalog, alias, scoped, result, source
+        )
         del self.audit[:-AUDIT_LIMIT]
         self.audit.append(
             {
@@ -226,31 +244,40 @@ class ReadDispatcher:
         alias: str,
         scoped: dict[str, JsonValue],
         result: ProviderResult,
+        source: AnalyticsSource = "agent_read",
     ) -> ReadResult:
         binding = self._accounts.resolve(alias)
         assert binding is not None  # noqa: S101 - resolved by scope_arguments
-        requested_window = None
-        if isinstance(scoped.get("start_date"), str) and isinstance(scoped.get("end_date"), str):
-            requested_window = f"{scoped['start_date']}..{scoped['end_date']}"
+        contract = contract_for_tool(catalog, entry.platform, entry.name)
+        reader = contract or HOST_CONTRACT
+        window = reader.requested_window(scoped)
+        own_args = {k: v for k, v in scoped.items() if k != entry.account_arg}
+        # The model's own reads reach history only when they are the contract's complete call;
+        # a filtered or partial read must never replace a synced snapshot.
+        keep = source != "agent_read" or reader.canonical(entry.name, own_args)
+        requested_window = f"{window[0].isoformat()}..{window[1].isoformat()}" if window else None
         complete_through = (
             date.fromisoformat(result.data_complete_through)
             if result.data_complete_through
             else None
         )
-        rows = result.payload.get("rows")
-        if entry.platform in PERFORMANCE_PLATFORMS and isinstance(rows, list) and rows:
+        next_page = reader.next_page(
+            entry.name, result.payload, {k: v for k, v in scoped.items() if k != entry.account_arg}
+        )
+        # A contract's own tools are read only its way: a Google signals query must never be
+        # mistaken for performance rows just because its list happens to be called `rows`.
+        extracted = reader.rows(entry.name, result.payload, binding)
+        if entry.platform in PERFORMANCE_PLATFORMS and extracted is not None:
+            entity_type = extracted.entity_type or entity_type_for(entry.name)
             try:
                 normalized, missing = normalize_rows(
                     platform=entry.platform,
                     account_ref=alias,
                     currency=result.currency or binding.currency,
                     timezone=result.timezone or binding.timezone,
-                    rows=[r for r in rows if isinstance(r, dict)],
-                    entity_type=entity_type_for(entry.name, result.payload.get("entity_type")),
-                    entity_names={
-                        str(k): str(v)
-                        for k, v in (result.payload.get("entity_names") or {}).items()
-                    },
+                    rows=extracted.rows,
+                    entity_type=entity_type,
+                    entity_names=extracted.entity_names,
                     data_complete_through=complete_through,
                 )
             except NormalizationError as exc:
@@ -272,14 +299,30 @@ class ReadDispatcher:
                 row_count=len(normalized),
                 platform=entry.platform.value,
                 account_ref=alias,
-                entity_type=entity_type_for(entry.name, result.payload.get("entity_type")).value,
+                entity_type=entity_type.value,
                 requested_window=requested_window,
                 actual_window=actual_window,
                 quality_flags=tuple(sorted(flags)),
                 tool_name=entry.qualified_name,
                 catalog_revision=catalog.revision,
             )
-            columns = tuple(sorted({k for r in rows if isinstance(r, dict) for k in r}))
+            columns = tuple(sorted({k for r in extracted.rows for k in r}))
+            if self._recorder is not None and keep:
+                try:
+                    self._recorder.record_performance(
+                        source=source,
+                        binding=binding,
+                        tool_name=entry.qualified_name,
+                        catalog_revision=catalog.revision,
+                        rows=normalized,
+                        requested=window,
+                        data_complete_through=complete_through,
+                        artifact_id=metadata.artifact_id,
+                        quality_flags=[flag.value for flag in flags],
+                    )
+                except Exception:
+                    # History is best effort; the read and its artifact already succeeded.
+                    log.warning("history write failed for %s", entry.qualified_name, exc_info=True)
             return ReadResult(
                 tool=entry.qualified_name,
                 platform=entry.platform.value,
@@ -298,11 +341,33 @@ class ReadDispatcher:
                 preview={
                     "entities": len({r.entity_ref for r in normalized}),
                     "currency": normalized[0].currency,
+                    **extracted.observed,
                 },
+                next_page=next_page,
             )
+        try:
+            # The contract's view in account currency (Google micros and Meta minor units
+            # converted), so budgets read from this artifact are never raw provider units.
+            settings = reader.settings(entry.name, result.payload, binding)
+        except Exception:
+            log.warning("settings normalization failed for %s", entry.qualified_name, exc_info=True)
+            settings = None
+        stored: dict[str, JsonValue] = {
+            "schema_version": PROVIDER_RESULT_SCHEMA_VERSION,
+            "result": result.payload,
+        }
+        if isinstance(settings, dict) and isinstance(settings.get("campaigns"), list):
+            stored["settings"] = dict(settings)
+        empty = empty_read_note(
+            requested_window, _count_rows(result.payload), result.data_complete_through
+        )
+        if empty:
+            # A dated read with no rows, typically past the newest day of data: say so, here and
+            # to any summary tool it is passed to.
+            stored["empty_read"] = empty
         metadata = self._artifacts.write_json(
             "provider_result",
-            {"schema_version": PROVIDER_RESULT_SCHEMA_VERSION, "result": result.payload},
+            stored,
             schema_version=PROVIDER_RESULT_SCHEMA_VERSION,
             platform=entry.platform.value,
             account_ref=alias,
@@ -310,6 +375,35 @@ class ReadDispatcher:
             tool_name=entry.qualified_name,
             catalog_revision=catalog.revision,
         )
+        if self._recorder is not None and keep:
+            try:
+                self._recorder.record_settings(
+                    source=source,
+                    binding=binding,
+                    tool_name=entry.qualified_name,
+                    catalog_revision=catalog.revision,
+                    payload=settings if settings is not None else {},
+                    artifact_id=metadata.artifact_id,
+                    currency=result.currency,
+                )
+            except Exception:
+                log.warning("settings history failed for %s", entry.qualified_name, exc_info=True)
+            signals = reader.signals(entry.name, result.payload, binding)
+            if signals:
+                try:
+                    self._recorder.record_signals(
+                        source=source,
+                        binding=binding,
+                        tool_name=entry.qualified_name,
+                        catalog_revision=catalog.revision,
+                        daily=signals.daily,
+                        status=signals.status,
+                        artifact_id=metadata.artifact_id,
+                    )
+                except Exception:
+                    log.warning(
+                        "signals history failed for %s", entry.qualified_name, exc_info=True
+                    )
         preview = _bounded_preview(result.payload)
         return ReadResult(
             tool=entry.qualified_name,
@@ -327,7 +421,25 @@ class ReadDispatcher:
             missing_fields=(),
             quality_flags=(),
             preview=preview,
+            next_page=next_page,
+            **({"note": empty} if empty else {}),
         )
+
+
+def empty_read_note(
+    requested_window: str | None, rows: int | None, data_complete_through: str | None
+) -> str | None:
+    """Why a dated read returned nothing, or None when it has rows or no window."""
+    if not requested_window or rows != 0:
+        return None
+    note = f"No rows for {requested_window}"
+    start = requested_window.split("..")[0]
+    if data_complete_through and start > data_complete_through:
+        note += f": the data runs through {data_complete_through}"
+    return (
+        note + ". Read a window that ends by then, or pass a window preset to summarize_window "
+        "or compare_periods."
+    )
 
 
 def _count_rows(payload: dict[str, JsonValue]) -> int | None:
@@ -346,46 +458,76 @@ def _bounded_preview(payload: dict[str, JsonValue], limit: int = 1200) -> dict[s
 
 def build_platform_read_tools(
     catalog: AuthorizedToolCatalog, dispatcher: ReadDispatcher
-) -> list[BaseTool]:
+) -> list[ToolSpec]:
     """One model-facing tool per authorized read entry. Mutation entries are never bound."""
     aliases_by_platform = {
         platform: dispatcher.accounts.aliases(platform)
         for platform in {e.platform for e in catalog.entries}
     }
-    tools: list[BaseTool] = []
-    for entry in catalog.read_entries():
-        tools.append(
-            _make_read_tool(entry, aliases_by_platform.get(entry.platform, ()), dispatcher)
-        )
-    return tools
+    return [
+        _make_read_tool(entry, aliases_by_platform.get(entry.platform, ()), dispatcher)
+        for entry in catalog.read_entries()
+    ]
+
+
+def _paged_json(pages: Sequence[ReadResult]) -> str:
+    """One page as is; several as the first page's summary with every page's artifact."""
+    if len(pages) == 1:
+        return pages[0].model_dump_json()
+    body = pages[0].model_dump(mode="json")
+    windows = [p.actual_window.split("..") for p in pages if p.actual_window]
+    counts = [p.row_count for p in pages]
+    body.update(
+        artifact_ids=[p.artifact_id for p in pages],
+        pages=len(pages),
+        row_count=None if None in counts else sum(c for c in counts if c is not None),
+        actual_window=f"{min(w[0] for w in windows)}..{max(w[-1] for w in windows)}"
+        if windows
+        else None,
+        next_page=None,
+        note=f"The provider returned {len(pages)} pages, each in its own artifact. Pass all "
+        "artifact_ids to summarize_window or compare_periods; they merge them.",
+    )
+    return json.dumps(body, default=str)
 
 
 def _make_read_tool(
     entry: CatalogEntry, aliases: Sequence[str], dispatcher: ReadDispatcher
-) -> BaseTool:
+) -> ToolSpec:
     schema_hash = entry.schema_hash
     name = entry.qualified_name
 
-    async def _run(**kwargs: Any) -> str:
+    async def _run(kwargs: dict[str, Any], _context: ToolContext) -> str:
         try:
-            result = await dispatcher.execute(name, kwargs, selection_schema_hash=schema_hash)
+            pages = [await dispatcher.execute(name, kwargs, selection_schema_hash=schema_hash)]
+            while (following := pages[-1].next_page) is not None:
+                if len(pages) >= MAX_PAGES:
+                    return json.dumps(
+                        {
+                            "error": True,
+                            "detail": f"more than {MAX_PAGES} pages; the read is incomplete. "
+                            "Read a shorter window or fewer entities.",
+                        }
+                    )
+                alias = {ACCOUNT_ALIAS_ARG: kwargs.get(ACCOUNT_ALIAS_ARG)}
+                pages.append(
+                    await dispatcher.execute(
+                        name, {**alias, **following}, selection_schema_hash=schema_hash
+                    )
+                )
         except ReadDenied as exc:
             return json.dumps({"denied": True, "reason": exc.reason, "detail": exc.detail})
+        except ProviderTimeout:
+            raise  # the dispatcher retries an idempotent read once
         except ProviderError as exc:
             return json.dumps({"error": True, "detail": sanitize_exception(exc)})
-        return result.model_dump_json()
+        return _paged_json(pages)
 
     description = f"[{entry.platform.value}] {entry.description}".strip()
-    return StructuredTool(
+    return ToolSpec(
         name=name,
         description=description[:1024],
-        args_schema=model_facing_schema(entry, aliases),
-        coroutine=_run,
-        metadata={
-            "paid_media": {
-                "platform": entry.platform.value,
-                "schema_hash": schema_hash,
-                "class": "read",
-            }
-        },
+        parameters=model_facing_schema(entry, aliases),
+        handler=_run,
+        kind="read",
     )

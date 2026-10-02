@@ -1,0 +1,284 @@
+"""Tools the model can call, and the single path every call takes.
+
+Dispatch decides, in order: the tool is registered; it is not a provider mutation (those run only
+through propose_change and execute_change); its arguments validate against the schema the model
+saw. Then it runs, a transient provider timeout on a read is retried once, oversized results are
+offloaded to an artifact, and secrets are redacted. A failure becomes an error result for the
+model, never an exception out of the loop.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import inspect
+import json
+import logging
+from collections.abc import Awaitable, Callable, Collection, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Literal, cast
+
+import jsonschema
+from pydantic import BaseModel
+
+from paid_media_agent.harness.messages import (
+    AssistantMessage,
+    Message,
+    ToolCall,
+    ToolMessage,
+    UserMessage,
+)
+from paid_media_agent.harness.models import ToolSchema
+from paid_media_agent.redaction import redact, sanitize_exception
+from paid_media_agent.tools.artifacts import ArtifactStore
+from paid_media_agent.tools.catalog import CatalogProvider, ToolClass
+from paid_media_agent.tools.providers import ProviderTimeout
+
+logger = logging.getLogger(__name__)
+
+ToolKind = Literal["core", "read", "write", "file"]
+OFFLOAD_SCHEMA_VERSION = "tool-result/1"
+PREVIEW_CHARS = 400
+
+
+@dataclass(frozen=True)
+class FailedRead:
+    """A platform read in this turn that failed and was not later retried successfully."""
+
+    source: str
+    """The account alias it asked for, or the tool's name when it named none."""
+    tool: str
+    reason: str
+
+    def text(self) -> str:
+        return f"{self.source}: {self.reason}"
+
+
+@dataclass
+class ToolContext:
+    """What a tool may know about the run that called it."""
+
+    thread_id: str
+    caller_ref: str
+    activate: Callable[[Sequence[str]], None] = lambda _names: None
+    """Bind these read tools to later model calls in this thread (used by discover_tools)."""
+    failed_reads: Callable[[], tuple[FailedRead, ...]] = lambda: ()
+    """Platform reads that failed this turn, found by the host, so the model never lists them."""
+
+
+def _failure(message: ToolMessage) -> str | None:
+    """Why a read's result is a failure, or None when it returned data."""
+    if message.content.startswith("Tool failed"):
+        return message.content.removeprefix("Tool failed:").strip() or "failed"
+    try:
+        body = json.loads(message.content)
+    except ValueError:
+        return "failed" if message.status == "error" else None
+    if isinstance(body, dict):
+        if body.get("denied"):
+            return str(body.get("reason") or "denied")
+        if body.get("error"):
+            return str(body.get("detail") or body.get("error"))
+    return "failed" if message.status == "error" else None
+
+
+def failed_reads(
+    messages: Sequence[Message], read_tools: Collection[str]
+) -> tuple[FailedRead, ...]:
+    """Reads in the current turn (after the last user message) that failed, newest outcome wins.
+
+    A later successful call of the same tool for the same account clears a failure, so a retry
+    that worked does not suppress anything.
+    """
+    start = 0
+    for i, message in enumerate(messages):
+        if isinstance(message, UserMessage) and message.origin == "user":
+            start = i + 1
+    args: dict[str, dict[str, Any]] = {}
+    outcome: dict[tuple[str, str], FailedRead | None] = {}
+    for message in messages[start:]:
+        if isinstance(message, AssistantMessage):
+            args.update({call.id: call.args for call in message.tool_calls})
+        elif isinstance(message, ToolMessage) and message.name in read_tools:
+            alias = args.get(message.tool_call_id, {}).get("account_alias")
+            source = str(alias) if alias else message.name
+            reason = _failure(message)
+            key = (message.name, source)
+            outcome.pop(key, None)
+            outcome[key] = FailedRead(source, message.name, reason[:200]) if reason else None
+    return tuple(f for f in outcome.values() if f is not None)
+
+
+SyncHandler = Callable[[dict[str, Any], ToolContext], str]
+AsyncHandler = Callable[[dict[str, Any], ToolContext], Awaitable[str]]
+Handler = SyncHandler | AsyncHandler
+
+
+@dataclass(frozen=True)
+class ToolSpec:
+    name: str
+    description: str
+    parameters: dict[str, Any]
+    handler: Handler
+    kind: ToolKind = "core"
+    gated: bool = False
+    """Pauses the run for a human decision before the handler runs (execute_change)."""
+    offload: bool = True
+    """False for file tools, which page with offset and limit instead."""
+
+    @property
+    def schema(self) -> ToolSchema:
+        return ToolSchema(self.name, self.description, self.parameters)
+
+
+def parameters_for(model: type[BaseModel]) -> dict[str, Any]:
+    schema = model.model_json_schema()
+    schema.pop("title", None)
+    schema.setdefault("properties", {})
+    return schema
+
+
+def _error(call: ToolCall, body: dict[str, Any]) -> ToolMessage:
+    return ToolMessage(call.id, call.name, json.dumps(body), status="error")
+
+
+KEPT_FIELDS = (
+    "headline",
+    "summary",
+    "reading",
+    "against_goals",
+    "comparisons",
+    "resolved_window",
+    "resolved_windows",
+    "budget_totals",
+    "unavailable_sources",
+    "flags",
+    "caveats",
+    "notes",
+    "note",
+)
+"""What a result means, in order: verdicts written by code come before notes, so they are the
+last to be dropped when the stub reaches its cap."""
+KEPT_CHARS = 2000
+
+
+def _kept_fields(content: str) -> dict[str, Any]:
+    """The top-level fields that say what a result means, kept whole in an offload stub."""
+    try:
+        body = json.loads(content)
+    except ValueError:
+        return {}
+    if not isinstance(body, dict):
+        return {}
+    kept: dict[str, Any] = {}
+    used = 0
+    for key in KEPT_FIELDS:
+        if key not in body:
+            continue
+        size = len(json.dumps(body[key], default=str))
+        if used + size > KEPT_CHARS:
+            continue
+        kept[key] = body[key]
+        used += size
+    return kept
+
+
+@dataclass
+class ToolDispatcher:
+    tools: dict[str, ToolSpec]
+    catalog_provider: CatalogProvider
+    artifacts: ArtifactStore
+    secrets: tuple[str, ...] = ()
+    offload_chars: int = 6000
+    denials: list[tuple[str, str]] = field(default_factory=list)
+
+    def _refuse(self, call: ToolCall) -> ToolMessage | None:
+        if call.name not in self.tools:
+            self.denials.append((call.name, "outside_tool_surface"))
+            logger.warning("denied tool call outside surface: %s", call.name)
+            return _error(
+                call,
+                {
+                    "denied": True,
+                    "reason": "tool is not part of the authorized surface; use discover_tools",
+                    "tool": call.name,
+                },
+            )
+        entry = self.catalog_provider.current().get(call.name)
+        if entry is not None and entry.tool_class is not ToolClass.READ:
+            self.denials.append((call.name, "mutation_or_denied_class"))
+            return _error(
+                call,
+                {
+                    "denied": True,
+                    "reason": "provider mutations run only through propose_change and execute_change",
+                    "tool": call.name,
+                },
+            )
+        if call.invalid_arguments is not None:
+            return _error(
+                call, {"error": "invalid_arguments", "detail": "arguments must be a JSON object"}
+            )
+        try:
+            jsonschema.validate(call.args, self.tools[call.name].parameters)
+        except jsonschema.ValidationError as exc:
+            path = "/".join(str(p) for p in exc.absolute_path) or "arguments"
+            return _error(
+                call, {"error": "invalid_arguments", "detail": f"{path}: {exc.message}"[:300]}
+            )
+        return None
+
+    async def _run(self, spec: ToolSpec, args: dict[str, Any], context: ToolContext) -> str:
+        if inspect.iscoroutinefunction(spec.handler):
+            return await cast(AsyncHandler, spec.handler)(args, context)
+        return await asyncio.to_thread(cast(SyncHandler, spec.handler), args, context)
+
+    def _offload(self, spec: ToolSpec, content: str) -> str:
+        if not spec.offload or len(content) <= self.offload_chars:
+            return content
+        metadata = self.artifacts.write_json(
+            "tool_result",
+            {"tool_name": spec.name, "content": content},
+            schema_version=OFFLOAD_SCHEMA_VERSION,
+            tool_name=spec.name,
+        )
+        stub: dict[str, Any] = {
+            "offloaded": True,
+            "artifact_id": metadata.artifact_id,
+            "byte_size": metadata.byte_size,
+            "sha256": metadata.sha256,
+        }
+        stub.update(_kept_fields(content))
+        stub["preview"] = content[:PREVIEW_CHARS]
+        stub["note"] = (
+            "Result exceeded the context budget; the preview is partial and never the whole "
+            "result. Read more with read_artifact, or pass the artifact id to deterministic tools."
+        )
+        return json.dumps(stub)
+
+    async def dispatch(self, call: ToolCall, context: ToolContext) -> ToolMessage:
+        refusal = self._refuse(call)
+        if refusal is not None:
+            return refusal
+        spec = self.tools[call.name]
+        attempts = 2 if spec.kind == "read" else 1
+        for attempt in range(attempts):
+            try:
+                content = await self._run(spec, call.args, context)
+                break
+            except ProviderTimeout:
+                if attempt + 1 < attempts:
+                    continue
+                return ToolMessage(
+                    call.id, call.name, "Tool failed: provider call timed out", status="error"
+                )
+            except Exception as exc:
+                return ToolMessage(
+                    call.id,
+                    call.name,
+                    f"Tool failed: {sanitize_exception(exc, self.secrets)}",
+                    status="error",
+                )
+        # Redact before offloading: the stored artifact and the preview sliced from it must never
+        # hold a secret, or half of one cut at the preview's edge.
+        content = await asyncio.to_thread(self._offload, spec, redact(content, self.secrets))
+        return ToolMessage(call.id, call.name, redact(content, self.secrets))

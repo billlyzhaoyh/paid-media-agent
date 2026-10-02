@@ -8,7 +8,7 @@ from datetime import date
 
 import httpx
 
-from paid_media_agent.middleware.redaction import sanitize_exception
+from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.tools.providers import ProviderError, ProviderTimeout
 
 DEFAULT_TIMEOUT = httpx.Timeout(30.0, connect=10.0)

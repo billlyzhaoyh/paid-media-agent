@@ -8,8 +8,10 @@ description: Analyze paid-media performance, compare periods or entities, diagno
 Use this skill for performance questions, audits, comparisons, diagnosis, budget reasoning, and
 recommendations.
 
-1. Read `/skills/company-context/SKILL.md` when present for this organization's goals, targets,
-   conversions, and naming. Ask for missing facts the analysis needs; do not guess. Then read
+1. Take each account's numeric goals (target CPA, target ROAS, monthly budget) from the
+   accounts in the system prompt (`list_accounts` refreshes them); they are authoritative. Read `/skills/company-context/SKILL.md` when present
+   for what they mean, conversions, and naming. Ask for missing facts the analysis needs; do not
+   guess. Then read
    `/skills/paid-media-wiki/decision-model.md` and the page the question calls for:
    `benchmarks.md` for "is this good", `anomaly-and-significance.md` for spikes and drops,
    `bidding-and-budget.md` for pacing or budget changes, `platform-playbooks.md` for a platform's
@@ -21,7 +23,8 @@ recommendations.
    (`data_complete_through`), not today; "this month" is the calendar month to date. When a
    platform's data ends inside the requested window, keep the requested window in the answer and
    name the missing days rather than silently shrinking it.
-3. Call `list_accounts` for aliases, then `discover_tools` with keywords. Never invent a tool name.
+3. Use the account aliases in the system prompt. Call platform reads directly, together when
+   they are independent; `discover_tools` searches them by keyword. Never invent a tool name.
    Platform tools are named `<platform>__<tool>` and take `account_alias`, never a provider id.
    Pipeboard loads all tools exposed by its eight configured MCP servers. Search the live catalog;
    availability depends on connected accounts and host policy. GA4 uses property aliases.
@@ -34,15 +37,44 @@ recommendations.
    Native analytics and platforms without verified spend-unit mappings stay as `provider_result`
    artifacts. Do not pass them to spend comparisons or treat GA4 conversions as ad-attributed conversions.
 5. Validate source coverage with `references/validation-checklist.md`.
-6. For pacing, anomalies, top spenders, or per-entity efficiency inside one window, call
+6. For pacing, top spenders, or per-entity efficiency inside one window, call
    `summarize_window` with the performance artifacts (and the `list_campaigns` artifacts for daily
-   budgets); it returns per-entity totals, pacing, and a daily series with flagged days. For
-   period-over-period change, call `compare_periods` with the artifact ids and both windows. List any failed read in
-   `unavailable_sources` so it stays visible and suppresses the cross-platform total.
+   budgets); it returns per-entity totals, pacing against daily budgets, and a daily series of
+   day-over-day changes. For month-to-date spend against the monthly budget, the projected month
+   end, and CPA or ROAS against target, call `check_pacing`. For
+   spikes, drops, or "anything unusual", call `check_anomalies`, which judges recent days against
+   their expected range from stored history. For how to split or shift budget between campaigns,
+   call `recommend_budgets` (see the wiki's bidding-and-budget page); read each campaign's
+   `constraint` before advising a budget change, because only a budget-limited campaign can use
+   more budget. For why a KPI moved (CPA, conversions, ROAS), call `explain_change`: it reads
+   stored history and returns exact drivers (spend mix, CPM, CTR, conversion rate, value per
+   conversion) that add up to the change, which moves are noise, and how much of a campaign's
+   rate change its own spend change explains (diminishing returns). For "what if I raise, cut, or
+   move budget", call `what_if_budgets` for that account; quote its reading, its ranges, and its
+   flags (`capped`: the campaign cannot spend more; `outside_history`: treat as a guess;
+   `step_advice`: how many changes it takes). For period-over-period change, call
+   `compare_periods` with the artifact ids and both windows. Pass every artifact a read returned
+   (`artifact_ids` when it had several pages). The host lists failed reads under
+   `unavailable_sources` itself; name them in the answer. For totals over raw rows, use
+   `query_history` or `read_artifact` with `group_by`; never add rows up. To compare accounts
+   from history, call `query_history` once with `group_by: ["account"]` and no alias, and quote
+   its `comparisons`, `caveats`, and `maturity`. When a tool names days it did not check
+   (`not_checked`), say they were not checked.
 7. Read the `analysis_summary`. Quote its values verbatim; never recompute from previews or rows.
-   `unavailable` means missing, not zero.
+   A figure the tools did not return (a difference, a share, a monthly amount) comes from
+   `calculate`, never from arithmetic in prose. Quote the tools' verdicts:
+   - better or worse on each change;
+   - `rankings`;
+   - `days_ago`;
+   - `over_budget_days`;
+   - `comparisons`.
+   Never judge direction, rank, or dates by eye.
+   `unavailable` means missing, not zero. `against_goals` holds code-written readings of the
+   window's CPA or ROAS against each account's target; quote them.
 8. Explain observation, business meaning, likely drivers, confidence, and next action separately.
 9. Include a measurement and reversal plan for any recommendation.
 10. Create a proposal only when the user asks to change provider state (see `paid-media-writes`).
 
-Do not use universal performance thresholds. Use configured goals or label the analysis as directional.
+Do not use universal performance thresholds. Judge against the configured goals (`list_accounts`,
+`against_goals`, `check_pacing`); only when an account has none, say so and label the analysis
+directional. When the user states a new target, offer to propose it (`host__set_account_goals`).

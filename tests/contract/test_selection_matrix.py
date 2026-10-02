@@ -1,235 +1,211 @@
-"""Model matrix: provider-native search vs portable selector, same authorized catalog."""
+"""Tool selection. Every authorized read is bound when they fit the budget, so the tool list is
+the same on every call; past it, reads are bound only after discover_tools activates them."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-import pytest
-from langchain_core.messages import AIMessage
-from langchain_core.messages.utils import count_tokens_approximately
-
+from paid_media_agent.assembly import CORE_TOOLS, FILESYSTEM_TOOLS, TOOL_SELECTION, WRITE_TOOLS
 from paid_media_agent.config import Settings
-from paid_media_agent.middleware.tool_selection import SelectionStrategy
-from paid_media_agent.runtime.profiles import fixture_profile
-from paid_media_agent.testing.fake_models import RecordingProviderModel
-from paid_media_agent.tools.catalog import StaticCatalogProvider
+from paid_media_agent.harness.messages import AssistantMessage, ToolMessage
+from paid_media_agent.testing.scripted_model import ScriptedChatModel, tool_call_message
 from paid_media_agent.tools.fixtures import build_fixture_catalog
-from tests.contract.helpers import config
+from tests.contract.helpers import build_runtime, config, run_until_interrupt
 
-PLATFORM_TOOL_COUNT = len(build_fixture_catalog().read_entries())
-
-
-def _settings(base: Settings, model_spec: str, selector: str | None = None) -> Settings:
-    return base.model_copy(
-        update={"paid_media_model": model_spec, "paid_media_tool_selector_model": selector}
-    )
+ALWAYS_BOUND = {*CORE_TOOLS, *WRITE_TOOLS, *FILESYSTEM_TOOLS}
+CATALOG = build_fixture_catalog()
+READ_NAMES = {e.qualified_name for e in CATALOG.read_entries()}
+MUTATION_NAMES = {e.qualified_name for e in CATALOG.mutation_entries()}
 
 
-def _runtime(
-    settings: Settings,
-    project_root: Path,
-    model: RecordingProviderModel,
-    selector: RecordingProviderModel | None = None,
-):  # type: ignore[no-untyped-def]
-    catalog = build_fixture_catalog()
-    provider = StaticCatalogProvider(catalog)
-    profile = fixture_profile(
-        settings,
-        project_root=project_root,
-        catalog_provider=provider,
-        workspace_root=settings.paid_media_workspace_root,
-    )
-    from langgraph.checkpoint.memory import InMemorySaver
-
-    from paid_media_agent.assembly import build_agent_components
-    from paid_media_agent.runtime.local import compile_graph
-
-    components = build_agent_components(
-        settings=settings, runtime=profile, catalog=catalog, model=model, selector_model=selector
-    )
-    graph = compile_graph(components, project_root=project_root, checkpointer=InMemorySaver())
-    return components, graph
+def _names(batch: list[dict]) -> set[str]:  # type: ignore[type-arg]
+    return {t["function"]["name"] for t in batch}
 
 
-def _schema_tokens(batch: list[dict]) -> int:  # type: ignore[type-arg]
-    return count_tokens_approximately([AIMessage(content=json.dumps(batch, default=str))])
+def _platform(batch: list[dict]) -> set[str]:  # type: ignore[type-arg]
+    return _names(batch) & READ_NAMES
 
 
-@pytest.mark.parametrize(
-    ("spec", "provider", "expected_strategy", "search_tool_type"),
-    [
-        (
-            "anthropic:claude-sonnet-4-6",
-            "anthropic",
-            SelectionStrategy.PROVIDER_NATIVE,
-            "tool_search_tool_bm25_20251119",
-        ),
-        ("openai:gpt-5.5", "openai", SelectionStrategy.PROVIDER_NATIVE, "tool_search"),
-    ],
-)
-async def test_provider_native_path_defers_platform_tools(
-    settings: Settings,
-    project_root: Path,
-    spec: str,
-    provider: str,
-    expected_strategy: SelectionStrategy,
-    search_tool_type: str,
-) -> None:
-    model = RecordingProviderModel(
-        provider=provider, model_name=spec.split(":")[1], responses=[AIMessage(content="ok")]
-    )
-    components, graph = _runtime(_settings(settings, spec), project_root, model)
-    assert components.metadata.selection.strategy is expected_strategy
-    await graph.ainvoke(
-        {"messages": [{"role": "user", "content": "Which campaigns need attention?"}]},
-        config=config(),
-    )
-    batch = model.bound_batches[-1]
-    deferred = [t for t in batch if isinstance(t, dict) and t.get("defer_loading")]
-    search_tools = [t for t in batch if isinstance(t, dict) and t.get("type") == search_tool_type]
-    assert len(deferred) == PLATFORM_TOOL_COUNT, "every authorized platform read is deferred"
-    assert len(search_tools) == 1, "exactly one provider search tool is injected"
-    named = {t["function"]["name"] for t in batch if "function" in t}
-    assert {"compare_periods", "discover_tools", "list_accounts", "propose_change"} <= named
-    assert not any(n.endswith("__mutate") or "delete" in n for n in named)
-    assert "task" not in named and "execute" not in named
-    print(
-        f"{spec}: bound={len(batch)} deferred={len(deferred)} schema_tokens={_schema_tokens(batch)}"
-    )
+def _discover(query: str, platform: str | None = None):  # type: ignore[no-untyped-def]
+    args: dict[str, str] = {"query": query}
+    if platform:
+        args["platform"] = platform
+    return lambda _m: tool_call_message("discover_tools", args)
 
 
-async def test_portable_selector_path_bounds_platform_tools(
+def _done(_messages: object) -> AssistantMessage:
+    return AssistantMessage(content="ok")
+
+
+def _discovery(settings: Settings) -> Settings:
+    """A catalog too large to bind whole: reads are bound as discover_tools finds them."""
+    return settings.model_copy(update={"paid_media_read_tools_budget_tokens": 0})
+
+
+async def test_a_catalog_that_fits_is_bound_whole_and_never_changes(
     settings: Settings, project_root: Path
 ) -> None:
-    spec = "google_genai:gemini-3-flash"
-    selector = RecordingProviderModel(
-        provider="google_genai",
-        model_name="selector",
-        responses=[AIMessage(content="")],
-        structured_selection=[
-            "google_ads__get_campaign_performance",
-            "meta_ads__get_campaign_performance",
-        ],
+    runtime, model = build_runtime(
+        settings, project_root, [_discover("campaign performance", "google_ads"), _done, _done]
     )
-    model = RecordingProviderModel(
-        provider="google_genai", model_name="gemini-3-flash", responses=[AIMessage(content="ok")]
-    )
-    components, graph = _runtime(_settings(settings, spec), project_root, model, selector)
-    assert components.metadata.selection.strategy is SelectionStrategy.PORTABLE_SELECTOR
-    await graph.ainvoke(
-        {"messages": [{"role": "user", "content": "Compare campaign performance."}]},
-        config=config(),
-    )
-    batch = model.bound_batches[-1]
-    named = {t["function"]["name"] for t in batch if "function" in t}
-    platform_bound = {n for n in named if "__" in n}
-    assert platform_bound == {
-        "google_ads__get_campaign_performance",
-        "meta_ads__get_campaign_performance",
-    }
-    assert {
-        "compare_periods",
-        "discover_tools",
-        "list_accounts",
-        "propose_change",
-        "read_file",
-    } <= named
-    assert not any(t.get("defer_loading") for t in batch if isinstance(t, dict))
-    assert not any(t.get("type") == "tool_search" for t in batch if isinstance(t, dict))
-    print(f"{spec}: bound={len(batch)} schema_tokens={_schema_tokens(batch)}")
+    assert runtime.agent.all_reads_bound
+    await run_until_interrupt(runtime, config(), "Compare campaign performance.")
+    await run_until_interrupt(runtime, config(thread_id="t-other"), "Anything else?")
+    first, *rest = model.bound_tool_batches
+    assert _platform(first) == READ_NAMES, "every authorized read, from the first call"
+    assert all(batch == first for batch in rest), "identical on every call and every thread"
+    names = [t["function"]["name"] for t in first]
+    reads = [n for n in names if n in READ_NAMES]
+    assert reads == sorted(reads) and names[-len(reads) :] == reads, "reads last, by name"
+    assert not _names(first) & MUTATION_NAMES
 
 
-async def test_portable_selector_hallucinated_name_cannot_reach_mutations(
+async def test_nothing_platform_specific_is_bound_before_discovery(
     settings: Settings, project_root: Path
 ) -> None:
-    selector = RecordingProviderModel(
-        provider="google_genai",
-        model_name="selector",
-        responses=[AIMessage(content="")],
-        structured_selection=[
-            "google_ads__update_campaign_budget",
-            "google_ads__mutate",
-            "google_ads__list_campaigns",
-        ],
-    )
-    model = RecordingProviderModel(
-        provider="google_genai", model_name="gemini-3-flash", responses=[AIMessage(content="ok")]
-    )
-    _, graph = _runtime(
-        _settings(settings, "google_genai:gemini-3-flash"), project_root, model, selector
-    )
-    await graph.ainvoke(
-        {"messages": [{"role": "user", "content": "Change budgets."}]}, config=config()
-    )
-    named = {t["function"]["name"] for t in model.bound_batches[-1] if "function" in t}
-    assert "google_ads__update_campaign_budget" not in named and "google_ads__mutate" not in named
-    # The whole hallucinated selection is discarded: only core tools remain this turn.
-    assert not any("__" in n for n in named)
-    assert {"discover_tools", "compare_periods", "list_accounts"} <= named
+    runtime, model = build_runtime(_discovery(settings), project_root, [_done])
+    assert runtime.components.metadata.selection == TOOL_SELECTION == "discover_tools"
+    await run_until_interrupt(runtime, config(), "Which campaigns need attention?")
+    batch = model.bound_tool_batches[-1]
+    assert _names(batch) == ALWAYS_BOUND
+    assert not _platform(batch)
+    assert not _names(batch) & MUTATION_NAMES
+    assert not {"task", "execute", "delete"} & _names(batch)
+    # Every authorized read is registered even though none is bound yet.
+    assert READ_NAMES <= set(runtime.components.metadata.tool_names)
 
 
-async def test_both_paths_expose_the_same_authorized_reachability(
+async def test_discover_tools_activates_matching_reads_for_the_thread(
     settings: Settings, project_root: Path
 ) -> None:
-    native_model = RecordingProviderModel(
-        provider="anthropic", model_name="claude-sonnet-4-6", responses=[AIMessage(content="ok")]
-    )
-    native_components, _ = _runtime(
-        _settings(settings, "anthropic:claude-sonnet-4-6"), project_root, native_model
-    )
-    portable_model = RecordingProviderModel(
-        provider="google_genai", model_name="gemini-3-flash", responses=[AIMessage(content="ok")]
-    )
-    portable_components, _ = _runtime(
-        _settings(settings, "google_genai:gemini-3-flash"), project_root, portable_model
-    )
-    assert set(native_components.metadata.tool_names) == set(
-        portable_components.metadata.tool_names
-    )
-    assert (
-        native_components.metadata.catalog_revision == portable_components.metadata.catalog_revision
-    )
-
-
-async def test_configured_gateway_selector_is_used(
-    settings: Settings, project_root: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from paid_media_agent import assembly
-    from paid_media_agent.middleware.tool_selection import LenientStructuredOutputModel
-
-    main = RecordingProviderModel(
-        provider="openai", model_name="main", responses=[AIMessage(content="ok")]
-    )
-    selector = RecordingProviderModel(
-        provider="openai",
-        model_name="selector",
-        responses=[],
-        structured_selection=["google_ads__get_campaign_performance"],
-    )
-    selector_spec = "langsmith:openai/gpt-5.4-mini"
-    resolved = []
-    original_resolve = assembly.resolve_model
-
-    def resolve(config, override=None, **kwargs):  # type: ignore[no-untyped-def]
-        if override is not None:
-            return original_resolve(config, override, **kwargs)
-        resolved.append(config.spec)
-        return selector
-
-    monkeypatch.setattr(assembly, "resolve_model", resolve)
-    components, graph = _runtime(
-        _settings(settings, "langsmith:anthropic/claude-sonnet-4-6", selector_spec),
+    runtime, model = build_runtime(
+        _discovery(settings),
         project_root,
-        main,
+        [_discover("campaign performance", "google_ads"), _done, _done],
     )
-    assert resolved == [selector_spec]
-    selection = next(m for m in components.middleware if m.name == "PaidMediaPortableToolSelector")
-    assert isinstance(selection.model, LenientStructuredOutputModel)
-    assert selection.model.inner is selector
-    await graph.ainvoke(
-        {"messages": [{"role": "user", "content": "Analyze campaign performance."}]},
-        config=config(),
+    conversation = await run_until_interrupt(runtime, config(), "Compare campaign performance.")
+    found = json.loads(next(m for m in conversation.messages if isinstance(m, ToolMessage)).content)
+    expected = {t["name"] for t in found["tools"]}
+    assert expected and all(name.startswith("google_ads__") for name in expected)
+    assert not _platform(model.bound_tool_batches[0]), "the discovery call itself binds nothing"
+    assert _platform(model.bound_tool_batches[1]) == expected
+    assert set(conversation.activated_tools) == expected
+    assert not _names(model.bound_tool_batches[1]) & MUTATION_NAMES
+
+    # Activation persists for the thread and does not leak into another thread.
+    await run_until_interrupt(runtime, config(), "And again.")
+    assert _platform(model.bound_tool_batches[2]) == expected
+    assert runtime.agent.conversation("other").activated_tools == ()
+    assert not {s.name for s in runtime.agent.bound_tools("other")} & READ_NAMES
+
+
+async def test_activation_is_capped_and_drops_the_oldest(
+    settings: Settings, project_root: Path
+) -> None:
+    capped = _discovery(settings).model_copy(update={"paid_media_max_selected_tools": 2})
+    runtime, model = build_runtime(
+        capped,
+        project_root,
+        [_discover("campaign performance"), _discover("list campaigns", "reddit_ads"), _done],
     )
-    named = {t["function"]["name"] for t in main.bound_batches[-1] if "function" in t}
-    assert {name for name in named if "__" in name} == {"google_ads__get_campaign_performance"}
+    assert runtime.components.metadata.max_active_reads == 2
+    conversation = await run_until_interrupt(runtime, config(), "Look at everything.")
+    first = json.loads(next(m for m in conversation.messages if isinstance(m, ToolMessage)).content)
+    assert len(first["tools"]) > 2, "the search found more tools than the cap"
+    after_first = _platform(model.bound_tool_batches[1])
+    assert after_first == {t["name"] for t in first["tools"][-2:]}
+    after_second = model.bound_tool_batches[2]
+    assert len(_platform(after_second)) == 2
+    assert "reddit_ads__list_campaigns" in _platform(after_second)
+    assert len(conversation.activated_tools) == 2
+    assert _names(after_second) >= ALWAYS_BOUND, "the cap never drops core, write, or file tools"
+
+
+async def test_unknown_names_never_widen_the_bound_set(
+    settings: Settings, project_root: Path
+) -> None:
+    runtime, model = build_runtime(
+        _discovery(settings),
+        project_root,
+        [
+            _discover("zzzz nothing matches this"),
+            lambda _m: tool_call_message(
+                "google_ads__update_campaign_budget",
+                {"account_alias": "demo-google", "campaign_id": "g-101", "daily_budget": 1},
+            ),
+            lambda _m: tool_call_message("google_ads__made_up_report", {}),
+            _done,
+        ],
+    )
+    conversation = await run_until_interrupt(runtime, config(), "Change budgets.")
+    for batch in model.bound_tool_batches:
+        assert not _platform(batch)
+        assert _names(batch) == ALWAYS_BOUND
+    assert conversation.activated_tools == ()
+    denied = [
+        json.loads(m.content)
+        for m in conversation.messages
+        if isinstance(m, ToolMessage) and m.status == "error"
+    ]
+    assert [d["tool"] for d in denied] == [
+        "google_ads__update_campaign_budget",
+        "google_ads__made_up_report",
+    ]
+    assert runtime.profile.write_provider.mutation_calls == []  # type: ignore[attr-defined]
+
+    # A stored activation naming a mutation or an unknown tool binds nothing either.
+    runtime.agent.conversations.set_activated(
+        "t-1", ["google_ads__update_campaign_budget", "made_up__tool", "google_ads__list_campaigns"]
+    )
+    bound = {s.name for s in runtime.agent.bound_tools("t-1")}
+    assert bound & (READ_NAMES | MUTATION_NAMES | {"made_up__tool"}) == {
+        "google_ads__list_campaigns"
+    }
+
+
+async def test_authorized_reads_are_callable_without_being_bound(
+    settings: Settings, project_root: Path
+) -> None:
+    runtime, model = build_runtime(
+        _discovery(settings),
+        project_root,
+        [
+            lambda _m: tool_call_message(
+                "google_ads__get_campaign_performance",
+                {
+                    "account_alias": "demo-google",
+                    "start_date": "2026-08-01",
+                    "end_date": "2026-08-28",
+                },
+            ),
+            _done,
+        ],
+    )
+    conversation = await run_until_interrupt(runtime, config(), "Read Google.")
+    result = json.loads(
+        next(m for m in conversation.messages if isinstance(m, ToolMessage)).content
+    )
+    assert result["kind"] == "read_result", result
+    assert len(runtime.components.read_dispatcher.audit) == 1
+    assert not runtime.components.dispatcher.denials
+    assert all(not _platform(batch) for batch in model.bound_tool_batches)
+
+
+async def test_every_model_spec_exposes_the_same_authorized_surface(
+    settings: Settings, project_root: Path
+) -> None:
+    surfaces = []
+    for spec in ("anthropic:claude-sonnet-4-6", "google_genai:gemini-3-flash", "openai:gpt-5.5"):
+        runtime, _ = build_runtime(
+            settings.model_copy(update={"paid_media_model": spec}), project_root, [_done]
+        )
+        assert isinstance(runtime.agent.model, ScriptedChatModel)
+        surfaces.append(
+            (
+                runtime.components.metadata.selection,
+                set(runtime.components.metadata.tool_names),
+                runtime.components.metadata.catalog_revision,
+            )
+        )
+    assert all(surface == surfaces[0] for surface in surfaces)

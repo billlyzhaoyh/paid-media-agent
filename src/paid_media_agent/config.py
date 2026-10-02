@@ -13,35 +13,26 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from paid_media_agent.domain.common import Platform
 
-RuntimeName = Literal["local", "mda", "self_hosted"]
-"""Which path the setup console guides you through. Managed Deep Agents is the recommended one."""
+RuntimeName = Literal["local", "self_hosted"]
+"""Which path the setup console guides you through."""
 SlackTransport = Literal["socket_mode", "http"]
 
 DEFAULT_MODEL_SPEC = "anthropic:claude-sonnet-4-6"
 
 
 class ModelConfig(BaseModel):
-    """Resolved `provider:model` configuration. A gateway is used only via an explicit `langsmith:` spec."""
+    """Resolved `provider:model` configuration."""
 
     model_config = ConfigDict(frozen=True)
 
     provider: str
     model: str
     base_url: AnyHttpUrl | None = None
-    tool_selector_model: str | None = None
 
     @classmethod
-    def parse(
-        cls,
-        spec: str,
-        *,
-        base_url: str | None = None,
-        tool_selector_model: str | None = None,
-    ) -> ModelConfig:
+    def parse(cls, spec: str, *, base_url: str | None = None) -> ModelConfig:
         """Parse a provider:model specification."""
         raw = spec.strip()
-        if raw and ":" not in raw and "/" in raw:
-            raw = f"langsmith:{raw}"
         provider, sep, model = raw.partition(":")
         if not sep or not provider.strip() or not model.strip():
             raise ValueError("PAID_MEDIA_MODEL must look like 'provider:model'")
@@ -49,7 +40,6 @@ class ModelConfig(BaseModel):
             provider=provider.strip().lower(),
             model=model.strip(),
             base_url=AnyHttpUrl(base_url) if base_url else None,
-            tool_selector_model=tool_selector_model or None,
         )
 
     @property
@@ -67,6 +57,10 @@ class AccountBinding(BaseModel):
     provider_account_id: str = Field(min_length=1)
     currency: str = Field(pattern=r"^[A-Z]{3}$")
     timezone: str = Field(min_length=1)
+    conversion_action: str | None = Field(default=None, min_length=1, max_length=200)
+    """Which action counts as a conversion where the platform reports several (Meta `actions`,
+    e.g. `offsite_conversion.fb_pixel_purchase`). Unset, those conversions are recorded as missing
+    rather than guessed; `doctor --live` lists the action types it sees."""
 
 
 class AccountRegistry(BaseModel):
@@ -112,29 +106,71 @@ class Settings(BaseSettings):
 
     paid_media_model: str = DEFAULT_MODEL_SPEC
     paid_media_model_base_url: str | None = None
-    paid_media_tool_selector_model: str | None = None
     paid_media_model_api_key_env: str | None = None
     """Env var holding the model API key when the provider does not read its default one."""
     paid_media_model_timeout_seconds: int = Field(default=120, ge=10)
-    """Per-request model timeout. A stalled gateway call otherwise blocks a run indefinitely."""
+    """Per-request model timeout. A stalled provider call otherwise blocks a run indefinitely."""
+    paid_media_model_zero_data_retention: bool = False
+    """Ask OpenRouter to route only to endpoints with a zero-data-retention policy."""
+    paid_media_prompt_cache: Literal["auto", "off"] = "auto"
+    """auto: OpenRouter prompt caching for Anthropic models (cache_control); off disables it."""
+    paid_media_context_budget_tokens: int = Field(default=60_000, ge=0)
+    """Estimated tokens per model call before old tool results are stubbed in the view; 0 is off."""
+    paid_media_eval_judge_model: str = "openrouter:anthropic/claude-sonnet-5.5"
+    """The model that judges eval answers (`paid-media-agent eval run`)."""
     paid_media_max_model_calls: int = Field(default=40, ge=5)
     """Model calls per run before the agent stops and reports; bounds runaway tool loops."""
     paid_media_runtime: RuntimeName = "local"
     """The deployment path chosen in the console; the command you run selects the runtime."""
     paid_media_data_mode: Literal["auto", "sample", "live"] = "auto"
     """Sample always uses fixtures. Live requires credentials. Auto preserves CLI defaults."""
-    paid_media_sandbox_snapshot: str | None = None
-    """Optional custom bake base. By default MDA builds sandbox/setup.sh during deployment."""
-    paid_media_sandbox_idle_ttl_seconds: int = Field(default=1800, ge=60)
-    """Idle seconds before MDA deletes a thread's sandbox; written into sandbox/__init__.py."""
     paid_media_log_level: str = "INFO"
     paid_media_workspace_root: Path = Path("workspace")
+    paid_media_state_path: Path = Path("workspace/state/pma.duckdb")
+    """DuckDB file for conversations, proposals, approvals, receipts, threads, and pulled history.
+    Relative to the project root."""
+    paid_media_jobs: str = "sync,report_weekly,report_monthly"
+    """Jobs `serve` runs on schedule: sync (daily), anomalies (daily, after sync), allocate
+    (Mondays: budget recommendations), report_weekly (Mondays), report_monthly (the 1st), backup
+    (daily Parquet export of the state file, keeping the newest 14). Empty
+    disables scheduling; `POST /jobs/{name}` still runs any job on demand."""
+    paid_media_job_hour_utc: int = Field(default=6, ge=0, le=23)
+    paid_media_sync_days: int = Field(default=28, ge=1, le=90)
+    """Trailing days each sync re-pulls, so late conversions arrive as newer snapshots. A platform
+    whose read contract needs one call per day re-pulls only its maturity window."""
+    paid_media_sync_max_calls: int = Field(default=200, ge=1)
+    """Provider calls one sync or backfill may make before it stops and reports what it skipped;
+    hosted MCP plans meter calls."""
+    paid_media_predictor: Literal["none", "local", "tabpfn"] = "local"
+    """Anomaly checks: `local` runs on this machine; `tabpfn` sends feature rows (no names or
+    account ids) to Prior Labs; `none` uses the ±50% day-over-day rule."""
+    paid_media_anomaly_band: float = Field(default=0.95, ge=0.5, lt=1.0)
+    """Share of normal days the expected range covers; lower catches more and alarms more."""
+    paid_media_bandit_policy: Literal["thompson", "greedy"] = "thompson"
+    """Budget recommendations: `thompson` explores within guardrails; `greedy` never explores."""
+    paid_media_bandit_propose: bool = False
+    """Whether the `allocate` job turns its recommendations into proposals awaiting approval."""
+    paid_media_bandit_min_change: float = Field(default=0.05, ge=0.0, lt=1.0)
+    """Recommended moves smaller than this share of the current budget are not proposed."""
+    tabpfn_token: SecretStr | None = None
+    tabpfn_base_url: str = "https://api.priorlabs.ai"
+    paid_media_tabpfn_daily_tokens: int = Field(default=1_000_000, ge=10_000)
+    """Local cap on TabPFN tokens per UTC day, below the account's own limit. Each call bills at
+    least 10,000."""
+    paid_media_tabpfn_monthly_tokens: int = Field(default=5_000_000, ge=10_000)
     paid_media_fixture_anchor: date | None = None
     """Last complete day of the synthetic data. Unset means two days ago, so the demo never ages
     out; tests pin it to the shipped dates. Set it only when reproducing a specific window."""
     paid_media_account_config_path: Path = Path("config/accounts.example.toml")
     paid_media_max_selected_tools: int = Field(default=6, ge=1, le=40)
+    """Platform read tools bound at once when they are not all bound (see the budget below)."""
+    paid_media_read_tools_budget_tokens: int = Field(default=6000, ge=0)
+    """Every authorized read tool is bound on every call while their schemas fit this many
+    tokens, so the prompt cache holds; a larger catalog is bound as discover_tools finds tools."""
     paid_media_result_offload_chars: int = Field(default=6000, ge=500)
+    paid_media_answer_repair: bool = True
+    """Check each final answer's figures against the tool results; send an answer with figures no
+    tool returned back once, then mark any that remain. Costs a model call only when it fires."""
 
     pipeboard_api_token: SecretStr | None = None
     pipeboard_google_ads_mcp_url: str = "https://google-ads.mcp.pipeboard.co/"
@@ -165,12 +201,11 @@ class Settings(BaseSettings):
     paid_media_approval_ttl_seconds: int = Field(default=900, ge=60, le=86400)
     paid_media_allow_self_approval: bool = False
 
-    # Self-hosted path: the Slack adapter, Postgres persistence, and the API boundary.
+    # Self-hosted path: the Slack adapter and the API boundary.
     slack_bot_token: SecretStr | None = None
     slack_app_token: SecretStr | None = None
     slack_signing_secret: SecretStr | None = None
     slack_transport: SlackTransport = "socket_mode"
-    database_url: SecretStr | None = None
     paid_media_api_tokens: SecretStr | None = None
     paid_media_api_host: str = "127.0.0.1"
     paid_media_api_port: int = Field(default=8080, ge=1, le=65535)
@@ -178,7 +213,6 @@ class Settings(BaseSettings):
     @field_validator(
         "paid_media_fixture_anchor",
         "paid_media_model_base_url",
-        "paid_media_tool_selector_model",
         "paid_media_model_api_key_env",
         "paid_media_live_write_catalog_revision",
         mode="before",
@@ -200,8 +234,8 @@ class Settings(BaseSettings):
         "slack_bot_token",
         "slack_app_token",
         "slack_signing_secret",
-        "database_url",
         "paid_media_api_tokens",
+        "tabpfn_token",
         mode="before",
     )
     @classmethod
@@ -210,12 +244,17 @@ class Settings(BaseSettings):
             return None
         return value
 
+    def scheduled_jobs(self) -> tuple[str, ...]:
+        from paid_media_agent.scheduler import JOB_NAMES
+
+        names = tuple(part.strip() for part in self.paid_media_jobs.split(",") if part.strip())
+        unknown = [name for name in names if name not in JOB_NAMES]
+        if unknown:
+            raise ValueError(f"unknown PAID_MEDIA_JOBS entries: {', '.join(unknown)}")
+        return names
+
     def model_settings(self) -> ModelConfig:
-        return ModelConfig.parse(
-            self.paid_media_model,
-            base_url=self.paid_media_model_base_url,
-            tool_selector_model=self.paid_media_tool_selector_model,
-        )
+        return ModelConfig.parse(self.paid_media_model, base_url=self.paid_media_model_base_url)
 
     def live_write_canary_tools(self) -> frozenset[str]:
         return frozenset(

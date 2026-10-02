@@ -1,0 +1,18 @@
+{
+  "_provenance": "Tool name and arguments (customer_id as ten digits, query, optional login_customer_id) from pipeboard-co/pipeboard-cli @ 116a17be cmd/debug.go. The server is closed source: the schema below is a guess, unverified live.",
+  "tools": [
+    {
+      "name": "execute_google_ads_gaql_query",
+      "description": "Execute a Google Ads Query Language (GAQL) query against a customer account.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "customer_id": {"type": "string"},
+          "query": {"type": "string"},
+          "login_customer_id": {"type": "string"}
+        },
+        "required": ["customer_id", "query"]
+      }
+    }
+  ]
+}

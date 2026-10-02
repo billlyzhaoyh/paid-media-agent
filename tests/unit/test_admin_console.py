@@ -21,17 +21,16 @@ from paid_media_agent.admin.processes import PROCESS_TEMPLATES, ProcessError, Pr
 from paid_media_agent.admin.routes import build_routes
 from paid_media_agent.config import AccountBinding
 from paid_media_agent.domain.common import Platform
+from paid_media_agent.store import StoreBusy
 
 
 @pytest.fixture
 def workspace(tmp_path: Path, project_root: Path) -> Path:
     """A throwaway project copy with the files the console reads and writes."""
-    for name in ("instructions.md", ".env.example", "agent.py"):
+    for name in ("instructions.md", ".env.example"):
         shutil.copy(project_root / name, tmp_path / name)
     shutil.copytree(project_root / "skills", tmp_path / "skills")
     shutil.copytree(project_root / "config", tmp_path / "config")
-    shutil.copytree(project_root / "channels", tmp_path / "channels")
-    shutil.copytree(project_root / "sandbox", tmp_path / "sandbox")
     (tmp_path / "workspace").mkdir()
     return tmp_path
 
@@ -94,30 +93,22 @@ def test_accounts_file_seeds_from_example_and_rejects_duplicates(workspace: Path
 def test_status_and_routes_reflect_configuration(
     workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "PIPEBOARD_API_TOKEN", "LANGSMITH_API_KEY"):
+    for name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "PIPEBOARD_API_TOKEN"):
         monkeypatch.delenv(name, raising=False)
     result = actions.status(workspace)
     assert result.action == "status"
     assert result.detail["pipeboard"]["token_set"] is False
     routes = {r.id: r for r in build_routes(result.detail)}
-    assert list(routes) == [
-        "local",
-        "pipeboard",
-        "org",
-        "direct",
-        "sandbox",
-        "mda",
-        "slack",
-        "self_hosted",
-    ]
-    assert {s.id for s in routes["mda"].steps} >= {"mda_check", "mda_deploy"}
+    assert list(routes) == ["local", "pipeboard", "org", "direct", "self_hosted", "slack"]
     assert all(
         "approvers" not in step.id and step.action.kind not in {"policy", "kill_switch"}
         for route in routes.values()
         for step in route.steps
         if step.action
     )
-    assert {s.id for s in routes["self_hosted"].steps} >= {"sh_docker", "sh_db", "sh_serve"}
+    assert {s.id for s in routes["self_hosted"].steps} >= {"sh_state", "sh_serve", "sh_docker"}
+    assert result.detail["self_hosted"]["state_path"] == "workspace/state/pma.duckdb"
+    assert {s.id: s.status for s in routes["self_hosted"].steps}["sh_state"] == "todo"
     statuses = {s.id: s.status for s in routes["pipeboard"].steps}
     assert statuses["pb_token"] == "todo" and statuses["pb_test"] == "blocked"
     assert all("--json" in s.cli or s.cli for s in routes["local"].steps)
@@ -134,7 +125,7 @@ def test_status_and_routes_reflect_configuration(
     routes = {r.id: r for r in build_routes(result.detail)}
     assert {s.id: s.status for s in routes["local"].steps}["model"] == "done"
     assert {s.id: s.status for s in routes["pipeboard"].steps}["pb_test"] == "todo"
-    assert result.detail["model"]["selection"] == "provider_native"
+    assert result.detail["model"]["selection"] == "discover_tools"
     assert "sk-ant-" not in actions.as_json(result)
 
 
@@ -149,12 +140,10 @@ def test_invalid_model_spec_is_reported_not_raised(
     assert "provider:model" in result.detail["model"]["error"]
     routes = {r.id: r for r in build_routes(result.detail)}
     assert {s.id: s.status for s in routes["local"].steps}["model"] == "todo"
-    check = actions.mda_check(workspace)
-    assert check.status == "warn" and "model_package" in check.summary
     write_env(workspace, {"PAID_MEDIA_MODEL": "anthropic/claude-sonnet-4-6"})
-    gateway = actions.status(workspace)
-    assert gateway.detail["model"]["spec"] == "langsmith:anthropic/claude-sonnet-4-6"
-    assert not gateway.detail["model"]["error"]
+    slash = actions.status(workspace)
+    assert slash.detail["model"]["spec"] == "anthropic/claude-sonnet-4-6"
+    assert "provider:model" in slash.detail["model"]["error"]
 
 
 def test_fixture_discovery_and_alias_mapping_switch_the_active_file(
@@ -187,9 +176,10 @@ def test_fixture_discovery_and_alias_mapping_switch_the_active_file(
 
 def test_live_discovery_parses_listing_tools(workspace: Path) -> None:
     write_env(workspace, {"PIPEBOARD_API_TOKEN": "pb_" + "d" * 20})
-    from langchain_core.tools import StructuredTool
+    from typing import Any
 
     from paid_media_agent.tools.catalog import RawTool, build_authorized_catalog
+    from paid_media_agent.tools.pipeboard import McpResult, ToolAddress
 
     raw = [
         RawTool(
@@ -208,25 +198,9 @@ def test_live_discovery_parses_listing_tools(workspace: Path) -> None:
         ),
     ]
 
-    async def google(**kwargs: object) -> str:
-        return '{"customers": [{"customer_id": "111-222", "descriptive_name": "Acme Search", "currency_code": "USD", "time_zone": "America/Chicago"}]}'
-
-    async def meta(**kwargs: object) -> str:
-        return '{"data": [{"id": "act_999", "name": "Acme Social", "currency": "EUR"}]}'
-
-    tools = {
-        "google_ads__list_google_ads_customers": StructuredTool(
-            name="list_google_ads_customers",
-            description="d",
-            args_schema={"type": "object", "properties": {}},
-            coroutine=google,
-        ),
-        "meta_ads__get_ad_accounts": StructuredTool(
-            name="get_ad_accounts",
-            description="d",
-            args_schema={"type": "object", "properties": {}},
-            coroutine=meta,
-        ),
+    responses = {
+        "google_ads__list_google_ads_customers": '{"customers": [{"customer_id": "111-222", "descriptive_name": "Acme Search", "currency_code": "USD", "time_zone": "America/Chicago"}]}',
+        "meta_ads__get_ad_accounts": '{"data": [{"id": "act_999", "name": "Acme Social", "currency": "EUR"}]}',
     }
     # New Pipeboard platforms use advertiser ids, nested ad accounts, and GA4 properties.
     additional = [
@@ -261,21 +235,25 @@ def test_live_discovery_parses_listing_tools(workspace: Path) -> None:
                 annotations={"readOnlyHint": True},
             )
         )
-
-        async def listing(response: str = payload) -> str:
-            return response
-
-        tools[f"{platform}__{name}"] = StructuredTool(
-            name=name,
-            description="List",
-            args_schema={"type": "object", "properties": {}},
-            coroutine=listing,
-        )
+        responses[f"{platform}__{name}"] = payload
     catalog = build_authorized_catalog(raw, source="pipeboard")
+    called: list[tuple[str, str, dict[str, Any]]] = []
+
+    class Client:
+        async def call_tool(self, url: str, name: str, arguments: dict[str, Any]) -> McpResult:
+            called.append((url, name, arguments))
+            return McpResult(is_error=False, structured=None, text=responses[url])
 
     class Loader:
-        def langchain_tool(self, name: str) -> StructuredTool | None:
-            return tools.get(name)
+        client = Client()
+
+        def address(self, qualified: str) -> ToolAddress | None:
+            # The fake routes by URL, so the qualified name doubles as the endpoint.
+            return (
+                ToolAddress(qualified, qualified.split("__", 1)[1])
+                if qualified in responses
+                else None
+            )
 
     result = actions.accounts_discover(
         workspace, loader=lambda _s, _r: actions.LiveCatalog(catalog=catalog, loader=Loader())
@@ -290,6 +268,8 @@ def test_live_discovery_parses_listing_tools(workspace: Path) -> None:
     assert {"tt-1", "pin-1", "snap-1", "123"} <= rows.keys()
     assert rows["123"]["name"] == "Website"
     assert "parent-account" not in rows and "org-1" not in rows
+    assert sorted(c[0] for c in called) == sorted(responses), "each listing tool is called once"
+    assert all(args == {} for _, _, args in called)
 
 
 def test_pipeboard_connection_accepts_a_subset_of_platforms(workspace: Path) -> None:
@@ -377,7 +357,7 @@ def test_generate_secret_shows_api_token_once_only(workspace: Path) -> None:
     assert actions.generate_secret(workspace, "PAID_MEDIA_MODEL").status == "fail"
 
 
-def test_slack_and_database_tests_never_leak_and_use_injected_clients(workspace: Path) -> None:
+def test_slack_test_never_leaks_and_uses_an_injected_client(workspace: Path) -> None:
     assert actions.slack_test(workspace).status == "fail"
     write_env(
         workspace, {"SLACK_BOT_TOKEN": "xoxb-" + "e" * 20, "SLACK_APP_TOKEN": "xapp-" + "f" * 20}
@@ -398,75 +378,54 @@ def test_slack_and_database_tests_never_leak_and_use_injected_clients(workspace:
     result = actions.slack_test(workspace, client_factory=Client)
     assert result.ok and result.detail["team"] == "Acme"
     assert "xoxb-" not in actions.as_json(result)
-    assert actions.database_test(workspace).status == "warn"
-    write_env(workspace, {"DATABASE_URL": "postgresql://user:pw@localhost/db"})
-    result = actions.database_test(workspace, connect=lambda _url: ("PostgreSQL 16.1",))
-    assert result.ok and "pw@" not in actions.as_json(result)
 
 
-def test_mda_check_runs_import_smoke(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    result = actions.mda_check(workspace)
-    assert result.detail["cli_installed"] is True and result.detail["agent_entry"] is True
-    assert result.detail["import_smoke"] == "ok", result.detail
-    assert "langsmith_key_set" in result.summary
+def test_state_test_opens_the_duckdb_file_and_reports_a_busy_one(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from paid_media_agent.store.migrations import MIGRATIONS
+
+    monkeypatch.delenv("PAID_MEDIA_STATE_PATH", raising=False)
+    path = workspace / "workspace" / "state" / "pma.duckdb"
+    result = actions.state_test(workspace)
+    assert result.ok and result.detail == {"path": str(path), "migrations": len(MIGRATIONS)}
+    assert path.is_file(), "opening the store creates the file"
+    assert actions.state_test(workspace).ok, "the probe releases the file"
+    routes = {r.id: r for r in build_routes(actions.status(workspace).detail)}
+    assert {s.id: s.status for s in routes["self_hosted"].steps}["sh_state"] == "done"
+
+    def held_by_serve(_path: object) -> None:
+        raise StoreBusy("held")
+
+    # DuckDB locks per process, so a second process is simulated here.
+    monkeypatch.setattr(actions, "Store", held_by_serve)
+    busy = actions.state_test(workspace)
+    assert busy.status == "warn" and "paid-media-agent serve" in busy.summary
 
 
 def test_process_manager_uses_fixed_templates(
     workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    assert set(PROCESS_TEMPLATES) == {"serve"}
     monkeypatch.setitem(
-        PROCESS_TEMPLATES, "mda-dev", (sys.executable, "-c", "print('hello from mda dev')")
+        PROCESS_TEMPLATES, "serve", (sys.executable, "-c", "print('hello from serve')")
     )
     manager = ProcessManager(workspace)
     with pytest.raises(ProcessError):
         manager.start("not-a-template")
+    view = manager.start("serve")
+    assert view.command == "uv run paid-media-agent serve"
     with pytest.raises(ProcessError):
-        manager.start("mda-deploy")  # confirmation required
-    view = manager.start("mda-dev")
-    assert view.command == "uv run mda dev"
-    manager._procs["mda-dev"].wait(timeout=30)
-    view = manager.view("mda-dev")
-    assert not view.running and view.returncode == 0 and "hello from mda dev" in view.log_tail
-    log = workspace / "workspace" / "logs" / "mda-dev.log"
+        manager.start("serve")  # already running
+    manager._procs["serve"].wait(timeout=30)
+    view = manager.view("serve")
+    assert not view.running and view.returncode == 0 and "hello from serve" in view.log_tail
+    assert view.state == "completed"
+    log = workspace / "workspace" / "logs" / "serve.log"
     log.write_text(log.read_text() + "\x1b[32mgreen\x1b[0m plain\n")
-    assert manager.tail("mda-dev").endswith("green plain"), "ANSI codes are stripped for the page"
-    assert os.path.exists(workspace / "workspace" / "logs" / "mda-dev.log")
+    assert manager.tail("serve").endswith("green plain"), "ANSI codes are stripped for the page"
+    assert os.path.exists(workspace / "workspace" / "logs" / "serve.log")
     manager.stop_all()
-
-
-def test_deployment_continues_only_at_its_authorization_prompt(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """MDA's Enter prompt has a real continuation, with no arbitrary process input."""
-    import time
-
-    monkeypatch.setitem(
-        PROCESS_TEMPLATES,
-        "mda-deploy",
-        (
-            sys.executable,
-            "-c",
-            "print('Press Enter once authorization is complete', flush=True); input(); print('continued', flush=True)",
-        ),
-    )
-    manager = ProcessManager(workspace)
-    try:
-        with pytest.raises(ProcessError):
-            manager.continue_authorization("mda-deploy")
-        manager.start("mda-deploy", confirmed=True)
-        for _ in range(100):
-            if manager.view("mda-deploy").state == "waiting_for_authorization":
-                break
-            time.sleep(0.01)
-        assert manager.view("mda-deploy").state == "waiting_for_authorization"
-        manager.continue_authorization("mda-deploy")
-        manager._procs["mda-deploy"].wait(timeout=5)
-        assert manager.view("mda-deploy").state == "completed"
-        assert "continued" in manager.tail("mda-deploy")
-    finally:
-        manager.stop_all()
 
 
 def test_custom_provider_keys_and_key_env(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -489,16 +448,13 @@ def test_custom_provider_keys_and_key_env(workspace: Path, monkeypatch: pytest.M
     result = actions.status(workspace)
     assert result.detail["model_key_env"] == "MOONSHOT_API_KEY"
     assert result.detail["model_key_set"] is True
-    assert result.detail["model"]["selection"] == "portable_selector", (
-        "proxy base URL disables native search"
+    assert result.detail["model"]["selection"] == "discover_tools", (
+        "every provider and base URL uses the same selection"
     )
     presets = {p["id"]: p for p in result.detail["model_presets"]}
-    assert presets["langsmith"]["recommended"] is True, (
-        "the gateway is the single recommended preset"
-    )
-    assert presets["anthropic"]["recommended"] is False and presets["custom"]["key"] == ""
+    assert [p for p, preset in presets.items() if preset.get("recommended")] == ["anthropic"]
+    assert presets["custom"]["key"] == "" and "langsmith" not in presets
     assert {"groq", "xai", "mistral", "deepseek", "openrouter", "moonshot", "zhipu"} <= set(presets)
-    assert presets["langsmith"]["model"] == "langsmith:anthropic/claude-sonnet-4-6"
     assert all("models" not in preset for preset in presets.values()), (
         "Availability comes from provider APIs, not the capability registry."
     )
@@ -523,7 +479,7 @@ def test_ask_runs_the_configured_profile_with_an_injected_model(workspace: Path)
     )
     assert result.ok, result.summary
     assert "Comparison window" in result.detail["answer"]
-    assert result.detail["selection"] == "none"
+    assert result.detail["selection"] == "discover_tools"
     assert actions.ask_question(workspace, "   ").status == "fail"
 
 
@@ -540,17 +496,16 @@ def test_blank_env_values_clear_console_exports_but_not_shell_values(
     apply_env_file(workspace)
     assert "PAID_MEDIA_MODEL_BASE_URL" not in os.environ, "console-exported value is cleared"
     assert os.environ["ANTHROPIC_API_KEY"] == "from-shell", "shell values survive blank .env lines"
-    assert actions.status(workspace).detail["model"]["selection"] == "provider_native"
+    assert actions.status(workspace).detail["model"]["selection"] == "discover_tools"
 
 
 def test_ask_reports_model_failures_as_failures(workspace: Path) -> None:
-    from langchain_core.messages import AIMessage
-
+    from paid_media_agent.harness.messages import AssistantMessage
     from paid_media_agent.testing.scripted_model import ScriptedChatModel
 
     write_env(workspace, {"PAID_MEDIA_MODEL": "scripted:demo"})
     broken = ScriptedChatModel(
-        steps=[lambda _m: AIMessage(content="Model call failed after 3 attempts with X")]
+        steps=[lambda _m: AssistantMessage(content="Model call failed after 3 attempts with X")]
     )
     result = actions.ask_question(workspace, "hello", model=broken)
     assert result.status == "fail" and "Model call failed" in result.summary

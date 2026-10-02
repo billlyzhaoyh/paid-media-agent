@@ -6,10 +6,10 @@
   </p>
   <h1>Paid Media Agent</h1>
   <p>by <a href="https://structureml.com/">StructureML</a></p>
-  <p>Cross-channel campaign analysis and reporting.<br>Built on <a href="https://github.com/langchain-ai/deepagents">Deep Agents</a>. Deploy with <a href="https://docs.langchain.com/langsmith/python/managed-deep-agents-overview">Managed Deep Agents</a>.</p>
+  <p>Cross-channel campaign analysis and reporting.<br>Runs locally or in Docker, with the model you choose.</p>
   <p>
     <a href="#quick-start">Quick start</a> ·
-    <a href="#deployment">Deployment</a> ·
+    <a href="#running-it">Running it</a> ·
     <a href="OPERATIONS.md">Documentation</a> ·
     <a href="CONTRIBUTING.md">Contributing</a>
   </p>
@@ -28,9 +28,8 @@ next. Ask questions in Slack or the terminal, generate performance reports, and 
 changes for review.
 
 It comes with ad platform integrations, analysis and reporting skills, and a paid-media wiki.
-Connect your accounts, add your company context, and deploy with
-[Managed Deep Agents](https://docs.langchain.com/langsmith/python/managed-deep-agents-overview)
-or on your own infrastructure. You choose the model.
+Connect your accounts, add your company context, and run it on your machine or your own server.
+You choose the model.
 
 [StructureML](https://structureml.com/) researches foundational machine learning for structured
 data. We are extending this agent with models for media-buying decisions and with first-party
@@ -45,12 +44,36 @@ produces.
   gaps that could change the conclusion.
 - **Produce reports.** Generate weekly or monthly summaries with charts, campaign tables, and
   recommendations. Download HTML, or PDF when the host has the rendering libraries installed.
+- **Explain, forecast, and recommend.** Split a change in CPA, ROAS, or conversions into its
+  drivers, forecast what a budget change would do with an 80% range, and recommend how to split
+  an account's budget across its campaigns.
 - **Prepare changes for review.** Propose campaign updates with a reason and a plan for checking
   the result.
 
 The model decides what to investigate. Code calculates the metrics and checks report figures
 against the source data. Large responses stay in files; the model receives summaries with the
 source, date window, and data-quality flags.
+
+## How it keeps answers honest
+
+- **Code does the arithmetic.** Tools return totals, changes marked better or worse, rankings,
+  the dates a window resolved to, and account-to-account comparisons. Anything else comes from a
+  `calculate` tool, never from arithmetic in the reply.
+- **Every answer is checked.** Each figure in a final answer must trace to a tool result, the
+  account goals, or the user's own words. An answer that fails is sent back once; anything still
+  unsourced is marked unverified.
+- **Every change waits for a person.** A proposal shows a summary written from its record, waits
+  for an authorized approval, runs once, and is read back to confirm it applied.
+- **It knows what it did not see.** Failed reads, days without data, conversions still arriving,
+  and differences in attribution are stated, not shown as zero.
+
+**Measured.** A [30-question eval](docs/architecture/evals.md) on synthetic accounts grades each
+answer with deterministic checks and a judge model. Claude Sonnet 5.5 passed 25 of 30, at about
+$0.06 per answer with prompt caching; targeted reruns after later fixes are in the eval log.
+
+**Status.** Tested end to end on synthetic accounts: the offline demo, the eval, and the Docker
+image. The live Pipeboard read path, live ad-account writes, and the Slack app have not yet been
+run against real accounts or a real workspace.
 
 **Live ad account changes are off by default.** Enabling them requires a configured write policy,
 [release checks](docs/operations/live-write-runbook.md), and approval from an authorized reviewer.
@@ -68,13 +91,13 @@ uv run paid-media-agent setup
 ```
 
 The setup command opens a local console for choosing a model, connecting ad accounts, and
-deploying. No frontend build is needed. The CLI exposes the same connection actions with JSON
+running the agent. No frontend build is needed. The CLI exposes the same connection actions with JSON
 output if you prefer the terminal.
 
 You can also ask your coding agent to guide setup:
 
 > Read AGENTS.md and .agents/skills/paid-media-onboarding/SKILL.md. Help me connect a model,
-> connect my ad accounts, add my business context, and choose a deployment path.
+> connect my ad accounts, add my business context, and run it locally.
 
 **Try it without model keys or ad accounts:**
 
@@ -94,6 +117,24 @@ uv run paid-media-agent report --cadence weekly
 
 Questions use your configured model. The `report` command runs without one, using supported
 campaign-performance adapters.
+
+Every read is also kept as history: daily snapshots, campaign budgets and status, and a log of
+changes. It shows how late conversions arrive, what each budget was, and who changed it. Anomaly
+checks judge recent days against the range the history predicts, locally or, if you opt in, with
+[TabPFN](OPERATIONS.md#anomaly-checks). Build it
+with `sync`, look at it with `history`, or try it on simulated campaigns first:
+
+```bash
+uv run paid-media-agent simulate --days 180
+uv run paid-media-agent history --scenario baseline --view daily
+uv run paid-media-agent sync
+```
+
+A budget bandit recommends how to split each account's daily budget across its campaigns to
+maximise conversions: `uv run paid-media-agent allocate`, or ask the agent. It changes nothing on
+its own; `allocate --propose` turns its moves into proposals for an approver. On simulated
+accounts its choices can be scored against the truth: `uv run paid-media-agent bandit evaluate`.
+See [Budget bandit](docs/architecture/budget-bandit.md).
 
 ## Accounts and business context
 
@@ -120,56 +161,46 @@ Ask your coding agent to follow the
 Settings live in `.env`, account mappings in `config/accounts.toml`, and company context in
 `workspace/skills/company-context/`. All three are Git-ignored.
 
-## Deployment
+## Running it
 
-Choose who operates the infrastructure:
+Everything runs on your machine or your own server. State lives in one DuckDB file at
+`workspace/state/pma.duckdb`: conversations, proposals, approvals, receipts, and the history of
+every read.
 
-| | Managed Deep Agents · recommended | Self-hosted |
+| | Local | Docker |
 | --- | --- | --- |
-| Hosting | LangSmith manages the runtime and sandbox | You run the API and Postgres |
-| Slack | Authorize the managed Slack app | Connect your own Slack app |
-| Scheduled reports | Managed weekly and monthly schedules | Run the report command with your scheduler |
-| Guide | [Managed deployment](OPERATIONS.md#deploying-with-managed-deep-agents) | [Self-hosting](docs/self-hosting.md) |
+| Start | `uv run paid-media-agent serve` | `docker compose up -d --build` |
+| Slack | Socket Mode in the same process | Socket Mode in the same container |
+| Scheduled jobs | `serve` syncs history daily and renders weekly and monthly reports | The same, in the container |
+| Guide | [Operations](OPERATIONS.md) | [Self-hosting](docs/self-hosting.md) |
 
-For **Managed Deep Agents**, choose **Deploy agent** in setup, or validate and deploy from the terminal:
-
-```bash
-uv run paid-media-agent mda check
-uv run mda deploy .
-```
-
-You'll need a LangSmith organization with MDA access, an API key with deployment permissions,
-and a model key. Deployment syncs the instructions and skills, provisions the sandbox, and
-configures Slack. Authorize your workspace when prompted. The sandbox snapshot is reused until
-its recipe changes. After deployment, open the printed LangSmith URL to inspect your agent.
-
-To **self-host**, install Docker, configure your model and accounts, then generate API credentials
-and start the services:
+Generate API credentials first, then start the server:
 
 ```bash
 uv run paid-media-agent config generate PAID_MEDIA_API_TOKENS PAID_MEDIA_APPROVAL_SIGNING_KEY
-docker compose up -d --build
+uv run paid-media-agent serve
 ```
 
-Compose starts the API and Postgres. Follow the [self-hosting guide](docs/self-hosting.md#connect-slack)
-to connect Slack through Socket Mode or signed HTTP. The Docker image includes PDF libraries.
+`serve` runs the API and, when Slack tokens are configured, the Slack adapter in Socket Mode. DuckDB
+lets a single process hold the state file, so both run together and Docker runs one container.
+Follow the [self-hosting guide](docs/self-hosting.md#connect-slack) to connect Slack. The Docker
+image includes the PDF libraries and IBM Plex fonts.
 
-Managed schedules can post text to Slack once you configure a delivery channel. Report files are
-available locally and through the self-hosted API. Automatic PDF attachments to Slack are not included.
-
-[Managed hosting is paid](https://www.langchain.com/pricing); model and connector charges depend
-on your providers. For local development, `uv run mda dev .` opens the managed runtime in LangSmith
-Studio so you can inspect model calls, tool results, and approval requests.
+Report files are available locally and through the API. Automatic PDF attachments to Slack are not
+included. Model and connector charges depend on your providers.
 
 ## Build on it
 
-Both deployment paths use the same [agent assembly](src/paid_media_agent/assembly.py), built on
-[Deep Agents](https://github.com/langchain-ai/deepagents). It defines the model, tools, middleware,
-and approval policy. Extend it without maintaining a separate agent for each interface.
+The CLI, API, and Slack adapter use the same [agent assembly](src/paid_media_agent/assembly.py)
+and a small agent loop in [`harness/`](src/paid_media_agent/harness/). The assembly defines the
+model, tools, and approval gate; the loop runs them and keeps conversations, including changes
+paused for approval, in the DuckDB state file. Extend the assembly without maintaining a separate
+agent for each interface.
 
-Tools are selected from the connected catalog as needed, limiting how many tool definitions the
-model reads on each call. Skills guide the investigation and reporting process; edit them as
-Markdown in `workspace/skills/`.
+Any OpenAI-compatible model works: Anthropic, OpenAI, Gemini, OpenRouter, Groq, and others. Every
+authorized platform read tool is bound while they fit a token budget, so the prompt stays the same
+on every call and caches; a larger catalog is bound as `discover_tools` finds what a thread needs. Skills guide the investigation and reporting process; edit them as Markdown in
+`workspace/skills/`.
 
 To apply your company's report style, ask your coding agent to update
 [DESIGN.md](workspace/skills/report-design/DESIGN.md) and the renderer tokens together. The
@@ -186,7 +217,6 @@ or CRM schema. See [optional data sources](docs/customization.md#optional-wareho
 | Agent instructions and paid-media knowledge | [instructions.md](instructions.md) · [workspace/skills/](workspace/skills/) |
 | Report colors, typography, and layout | [Report design](docs/customization.md#report-design) |
 | Tools and runtime | [src/paid_media_agent/](src/paid_media_agent/) · [Architecture](docs/architecture/README.md) |
-| Managed channels and schedules | [channels/](channels/) · [schedules/](schedules/) · [sandbox/](sandbox/) |
 | Configuration and troubleshooting | [Operations](OPERATIONS.md) |
 | Development and tests | [Contributing](CONTRIBUTING.md) · [Agent instructions](AGENTS.md) · [Coding-agent skills](.agents/skills/) |
 

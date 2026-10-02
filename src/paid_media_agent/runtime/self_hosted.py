@@ -1,32 +1,23 @@
-"""Self-hosted runtime: the configured profile, Postgres when configured, and a compiled graph.
+"""Self-hosted runtime: the configured profile and the agent loop over a DuckDB state file.
 
-Managed Deep Agents is the one-command deployment. This is the path for teams that want their own
-API, database, and Slack app: the same components `agent.py` hands to MDA, compiled with
-`create_deep_agent`, with proposals, approval claims, receipts, dedupe keys, thread ownership, and
-checkpoints in Postgres when `DATABASE_URL` is set and in memory otherwise.
-
-Build it inside the event loop that will serve requests (`serve` and `slack` do), because the
-Postgres checkpointer is asynchronous and bound to that loop.
+Proposals, approval claims, receipts, dedupe keys, thread ownership, conversations, and tool
+calls paused for approval all live in the DuckDB file at `PAID_MEDIA_STATE_PATH`. One process
+owns that file, so the API and the Slack adapter run in the same `serve` process.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
-from langchain_core.language_models import BaseChatModel
-from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.graph.state import CompiledStateGraph
-
-from paid_media_agent.assembly import AgentComponents, build_agent_components
+from paid_media_agent.assembly import AgentComponents, build_agent, build_agent_components
 from paid_media_agent.config import Settings
+from paid_media_agent.harness.loop import Agent
+from paid_media_agent.harness.models import ChatModel
 from paid_media_agent.persistence.interfaces import DedupeStore, ThreadOwnershipStore
-from paid_media_agent.persistence.memory import InMemoryDedupeStore, InMemoryThreadOwnershipStore
-from paid_media_agent.runtime.local import compile_graph
-from paid_media_agent.runtime.mda import configured_profile
+from paid_media_agent.runtime.configured import configured_profile
 from paid_media_agent.runtime.profiles import RuntimeProfile
+from paid_media_agent.store import Store
 from paid_media_agent.tools.catalog import AuthorizedToolCatalog
 
 
@@ -36,70 +27,46 @@ class SelfHostedRuntime:
     profile: RuntimeProfile
     catalog: AuthorizedToolCatalog
     components: AgentComponents
-    graph: CompiledStateGraph[Any, Any, Any, Any]
-    dedupe: DedupeStore
-    threads: ThreadOwnershipStore
-    persistence: str
+    agent: Agent
+    store: Store
+
+    @property
+    def dedupe(self) -> DedupeStore:
+        return self.profile.dedupe
+
+    @property
+    def threads(self) -> ThreadOwnershipStore:
+        return self.profile.threads
+
+    @property
+    def persistence(self) -> str:
+        return "memory" if self.store.in_memory else "duckdb"
 
 
-async def _postgres_checkpointer(conn_string: str) -> BaseCheckpointSaver[Any]:
-    """The async saver over a pool. The graph is always driven with `ainvoke`, and the API and
-    the Slack adapter run in one event loop, so every checkpoint read and write shares it."""
-    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-    from psycopg.rows import dict_row
-    from psycopg_pool import AsyncConnectionPool
-
-    pool: AsyncConnectionPool[Any] = AsyncConnectionPool(
-        conn_string,
-        min_size=1,
-        max_size=4,
-        open=False,
-        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
-    )
-    await pool.open()
-    saver = AsyncPostgresSaver(pool)
-    await saver.setup()
-    return saver
+def state_path(settings: Settings, project_root: Path) -> Path:
+    path = settings.paid_media_state_path
+    return path if path.is_absolute() else project_root / path
 
 
-async def build_self_hosted_runtime(
+def build_self_hosted_runtime(
     settings: Settings,
     *,
     project_root: Path,
-    model: BaseChatModel | None = None,
-    checkpointer: BaseCheckpointSaver[Any] | None = None,
+    model: ChatModel | None = None,
+    store: Store | None = None,
 ) -> SelfHostedRuntime:
-    profile, loaded = configured_profile(settings, project_root=project_root, name="self_hosted")
-    if settings.database_url is not None:
-        from paid_media_agent.persistence.postgres import PostgresRepositories
-
-        repos = PostgresRepositories(settings.database_url.get_secret_value())
-        repos.setup()
-        profile = replace(
-            profile, proposals=repos.proposals, approvals=repos.approvals, receipts=repos.receipts
-        )
-        dedupe: DedupeStore = repos.dedupe
-        threads: ThreadOwnershipStore = repos.threads
-        persistence = "postgres"
-        if checkpointer is None:
-            checkpointer = await _postgres_checkpointer(settings.database_url.get_secret_value())
-    else:
-        dedupe = InMemoryDedupeStore()
-        threads = InMemoryThreadOwnershipStore()
-        persistence = "memory"
+    store = store or Store(state_path(settings, project_root))
+    profile, loaded = configured_profile(
+        settings, project_root=project_root, name="self_hosted", store=store
+    )
     components = build_agent_components(
         settings=settings, runtime=profile, catalog=loaded.catalog, model=model
-    )
-    graph = compile_graph(
-        components, project_root=project_root, checkpointer=checkpointer or InMemorySaver()
     )
     return SelfHostedRuntime(
         settings=settings,
         profile=profile,
         catalog=loaded.catalog,
         components=components,
-        graph=graph,
-        dedupe=dedupe,
-        threads=threads,
-        persistence=persistence,
+        agent=build_agent(components, store),
+        store=store,
     )

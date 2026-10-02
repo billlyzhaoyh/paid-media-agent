@@ -1,0 +1,12 @@
+{
+  "_provenance": "Rows for the contract's signals GAQL (impression share, primary status reasons, bid-strategy system status, recommended budget), nested camelCase as the REST API returns them. The Pipeboard server's actual shape is unverified.",
+  "results": [
+    {"campaign": {"id": "111", "advertisingChannelType": "SEARCH", "primaryStatusReasons": ["BUDGET_CONSTRAINED"], "biddingStrategySystemStatus": "LIMITED_BY_BUDGET"},
+     "campaignBudget": {"recommendedBudgetAmountMicros": "45000000"},
+     "segments": {"date": "2026-09-01"},
+     "metrics": {"searchImpressionShare": 0.61, "searchBudgetLostImpressionShare": 0.27, "searchRankLostImpressionShare": 0.12}},
+    {"campaign": {"id": "222", "advertisingChannelType": "PERFORMANCE_MAX", "primaryStatusReasons": ["BIDDING_STRATEGY_CONSTRAINED"], "biddingStrategySystemStatus": "ENABLED"},
+     "segments": {"date": "2026-09-01"},
+     "metrics": {}}
+  ]
+}

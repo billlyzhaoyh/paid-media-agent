@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import dataclass
 from typing import Any
 
-from paid_media_agent.domain.presentation import ProposalView
+from paid_media_agent.domain.presentation import ProposalView, proposal_summary
 from paid_media_agent.persistence.interfaces import DedupeStore
 from paid_media_agent.surfaces.runner import (
     AgentRunner,
@@ -114,18 +113,7 @@ class SlackApplicationService:
 
     @staticmethod
     def _review(proposal: ProposalView) -> SlackMessage:
-        details = {
-            "tool": proposal.tool_name,
-            "account": proposal.account_ref,
-            "target": proposal.target_ref,
-            "before": {item.field: item.value for item in proposal.before},
-            "after": {item.field: item.value for item in proposal.after},
-        }
-        text = (
-            "Review this action before it runs.\n\n"
-            + json.dumps(details, indent=2, ensure_ascii=False)
-            + f"\n\n{proposal.reason}"
-        )
+        text = "Review this action before it runs.\n\n" + proposal_summary(proposal)
         return approval_message(text, proposal.routing_id)
 
     async def handle_action(
@@ -185,9 +173,10 @@ def build_slack_service(runtime: Any) -> SlackApplicationService:
     from paid_media_agent.surfaces.runner import AgentRunner
 
     runner = AgentRunner(
-        graph=runtime.graph,
+        agent=runtime.agent,
         service=runtime.components.proposal_service,
         receipts=runtime.profile.receipts,
         threads=runtime.threads,
+        executor=runtime.components.write_executor,
     )
     return SlackApplicationService(runner=runner, dedupe=runtime.dedupe)

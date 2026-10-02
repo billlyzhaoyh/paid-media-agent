@@ -84,6 +84,7 @@ async def load_catalog(settings: Settings, *, project_root: Path | None = None) 
             read_provider=CompositeReadProvider(FixtureReadProvider(), direct_providers),
             write_provider=None,
         )
+    from paid_media_agent.tools.contracts import reviewed_reads
     from paid_media_agent.tools.pipeboard import (
         PipeboardCatalogLoader,
         PipeboardReadProvider,
@@ -95,7 +96,9 @@ async def load_catalog(settings: Settings, *, project_root: Path | None = None) 
         policy_file = load_write_policy_file(settings, project_root)
         if policy_file is not None:
             admitted = policy_file.admitted_names()
-    local_policy = DEFAULT_LOCAL_POLICY.model_copy(update={"admitted_mutations": admitted})
+    local_policy = DEFAULT_LOCAL_POLICY.model_copy(
+        update={"admitted_mutations": admitted, "reviewed_reads": reviewed_reads()}
+    )
     loader = PipeboardCatalogLoader(
         settings=settings, policy=local_policy, extra_raw_tools=direct_tools
     )

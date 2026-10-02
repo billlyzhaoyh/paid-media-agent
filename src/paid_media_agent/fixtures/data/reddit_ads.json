@@ -2,12 +2,14 @@
  "account_id": "fixture-reddit-0001",
  "campaigns": [
   {
+   "bid_strategy": "LOWEST_COST",
    "daily_budget": 75.0,
    "id": "r-301",
    "name": "Community Targeting - Dev Tools",
    "status": "ACTIVE"
   },
   {
+   "bid_strategy": "COST_CAP",
    "daily_budget": 45.0,
    "id": "r-302",
    "name": "Interest - Marketing",
@@ -435,5 +437,6 @@
  ],
  "data_complete_through": "2026-08-26",
  "platform": "reddit_ads",
+ "signals": {},
  "timezone": "America/New_York"
 }

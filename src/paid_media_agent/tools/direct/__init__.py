@@ -44,6 +44,10 @@ class CompositeReadProvider:
         self._default = default
         self._by_platform = dict(by_platform)
 
+    def with_default(self, default: ReadProvider) -> CompositeReadProvider:
+        """The same direct providers over another default (the profile's own fixture state)."""
+        return CompositeReadProvider(default, self._by_platform)
+
     async def call_read(
         self, entry: CatalogEntry, arguments: dict[str, JsonValue]
     ) -> ProviderResult:

@@ -80,3 +80,22 @@ editable_fields = ["target_cpa"]
 readback_fields = { target_cpa = "target_cpa" }
 risk = "high"
 notes = "Not in the fixture catalog. Placeholder showing how an unreleased row is recorded."
+
+# A reviewed live row, kept unreleased. Pipeboard's Meta server (pipeboard-co/meta-ads-mcp) takes
+# budgets in the currency's minor unit (cents for USD); `provider_units` converts proposals, which
+# stay in account currency, to that unit and converts the readback back. Before admitting it:
+#   - read the live `update_campaign` schema (the doctor prints denied mutation names);
+#   - pick a readback tool that is an authorized read with an account argument and returns the
+#     campaign (Meta's `get_campaign_details` has no account argument, so it cannot be scoped);
+#   - run `paid-media-agent doctor --live` and the canary in docs/operations/live-write-runbook.md.
+[operations."meta_ads__update_campaign"]
+admitted = false
+readback_tool = "meta_ads__get_campaigns"
+target_arg = "campaign_id"
+editable_fields = ["daily_budget"]
+readback_fields = { daily_budget = "daily_budget" }
+units = { daily_budget = "account currency per day" }
+provider_units = { daily_budget = "meta_minor" }
+readback_entity_key = "campaign"
+risk = "medium"
+notes = "Live Meta budget row from published source; unverified live. Readback tool needs review."

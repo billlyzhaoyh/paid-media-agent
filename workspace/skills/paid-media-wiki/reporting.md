@@ -7,7 +7,8 @@ A paid-media report is a decision artifact, not a dashboard dump.
 1. Scope: accounts, platforms, window, comparison, currency, and source coverage.
 2. Executive summary: what changed, why it matters, and the most important next action.
 3. Reconciled scorecard: spend, delivery, conversion, and business outcomes with definitions.
-4. Platform sections: material drivers, not every row.
+4. Platform sections: material drivers, not every row. `explain_change` names them, with the
+   points each adds to the change; lead with the ones that are more than noise.
 5. Recommendations: evidence, expected effect, confidence, measurement, and reversal.
 6. Data quality: missing sources, incomplete windows, attribution differences, and suppressed totals.
 7. Provenance: source artifacts, generated time, analysis version, and report schema version.

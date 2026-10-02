@@ -251,7 +251,12 @@ def pdf_renderer_available() -> tuple[bool, str]:
         with redirect_stdout(sys.stderr):
             import_module("weasyprint")
     except Exception as exc:
-        return False, f"{type(exc).__name__}: WeasyPrint native libraries unavailable"
+        hint = (
+            "; brew install pango and set DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib"
+            if sys.platform == "darwin"
+            else ""
+        )
+        return False, f"{type(exc).__name__}: WeasyPrint native libraries unavailable{hint}"
     return True, "ok"
 
 

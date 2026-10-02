@@ -1,0 +1,23 @@
+{
+  "_provenance": "Second page of get_campaigns; the last page has no paging.next. From published source; unverified live.",
+  "data": [
+    {
+      "id": "120210000000003",
+      "name": "Awareness - Video",
+      "objective": "OUTCOME_AWARENESS",
+      "status": "ACTIVE",
+      "lifetime_budget": "300000",
+      "buying_type": "AUCTION",
+      "special_ad_categories": []
+    },
+    {
+      "id": "120210000000004",
+      "name": "ABO test",
+      "objective": "OUTCOME_SALES",
+      "status": "PAUSED",
+      "buying_type": "AUCTION",
+      "special_ad_categories": []
+    }
+  ],
+  "paging": {"cursors": {"before": "QVFIUn", "after": "QVFIUo"}}
+}

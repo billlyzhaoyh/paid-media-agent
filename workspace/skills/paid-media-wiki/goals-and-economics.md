@@ -35,3 +35,14 @@ The public agent ships no universal good CTR, CPA, ROAS, frequency, or budget th
 valid only when its goal, unit, window, segment, attribution definition, and source are explicit.
 Repository fixtures may include example targets; label them as examples.
 
+## Configured goals
+
+Each account can carry a target CPA or target ROAS and a monthly budget, set by the operator
+(`paid-media-agent goals set` or the setup console) and versioned by the day they take effect.
+They are the thresholds this deployment uses: `list_accounts` shows them, `against_goals` in
+`compare_periods` and `summarize_window` and `check_pacing` judge against them, and
+`recommend_budgets` cuts its total when the expected CPA would exceed the target. A target CPA is
+an average; the cost of the next conversion is higher, so do not read a marginal cost above
+target as a miss. The agent never sets a goal itself: it proposes `host__set_account_goals`, and
+the change applies after approval.
+

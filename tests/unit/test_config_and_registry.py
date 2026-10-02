@@ -5,12 +5,6 @@ from pathlib import Path
 import pytest
 
 from paid_media_agent.config import AccountRegistry, ModelConfig, Settings
-from paid_media_agent.middleware.tool_selection import (
-    SelectionStrategy,
-    build_selection_middleware,
-    capabilities_for,
-    plan_selection,
-)
 
 
 def test_model_config_requires_provider_prefix() -> None:
@@ -20,33 +14,8 @@ def test_model_config_requires_provider_prefix() -> None:
     assert config.provider == "anthropic"
     assert config.spec == "anthropic:claude-sonnet-4-6"
     assert str(config.base_url).startswith("https://proxy.example")
-    assert ModelConfig.parse("anthropic/claude-sonnet-4-6").spec == (
-        "langsmith:anthropic/claude-sonnet-4-6"
-    )
-
-
-def test_registry_is_exact_not_substring() -> None:
-    assert capabilities_for(ModelConfig.parse("anthropic:claude-sonnet-4-6")).native_tool_search
-    unknown = capabilities_for(ModelConfig.parse("anthropic:claude-sonnet-4-6-experimental"))
-    assert not unknown.native_tool_search and not unknown.verified
-    assert not capabilities_for(ModelConfig.parse("openai:gpt-4o")).native_tool_search
-
-
-def test_plan_selection_paths() -> None:
-    native = plan_selection(ModelConfig.parse("openai:gpt-5.5"), max_tools=6)
-    assert native.strategy is SelectionStrategy.PROVIDER_NATIVE
-    proxied = plan_selection(
-        ModelConfig.parse("openai:gpt-5.5", base_url="https://proxy.example/v1"), max_tools=6
-    )
-    assert proxied.strategy is SelectionStrategy.PORTABLE_SELECTOR
-    google = plan_selection(ModelConfig.parse("google_genai:gemini-3-flash"), max_tools=6)
-    assert google.strategy is SelectionStrategy.PORTABLE_SELECTOR
-    scripted = plan_selection(ModelConfig.parse("scripted:demo"), max_tools=6)
-    assert scripted.strategy is SelectionStrategy.NONE
-    assert (
-        build_selection_middleware(scripted, searchable_tool_names=["a"], always_include=["b"])
-        == ()
-    )
+    with pytest.raises(ValueError, match="provider:model"):
+        ModelConfig.parse("anthropic/claude-sonnet-4-6")
 
 
 def test_settings_secret_helpers_never_expose_values(tmp_path: Path) -> None:

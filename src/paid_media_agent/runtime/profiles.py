@@ -9,14 +9,12 @@ from typing import Literal
 from paid_media_agent.config import AccountRegistry, Settings
 from paid_media_agent.persistence.interfaces import (
     ApprovalRepository,
+    DedupeStore,
     ProposalRepository,
     ReceiptRepository,
+    ThreadOwnershipStore,
 )
-from paid_media_agent.persistence.memory import (
-    InMemoryApprovalRepository,
-    InMemoryProposalRepository,
-    InMemoryReceiptRepository,
-)
+from paid_media_agent.store import Store
 from paid_media_agent.tools.artifacts import ArtifactStore
 from paid_media_agent.tools.catalog import CatalogProvider
 from paid_media_agent.tools.fixtures import FakeWriteProvider, FixtureReadProvider, FixtureState
@@ -29,7 +27,7 @@ from paid_media_agent.tools.write_policy import (
 )
 from paid_media_agent.tools.writes import ApprovalPolicy, ApprovalSigner, WriteGate
 
-ProfileName = Literal["local", "mda", "self_hosted"]
+ProfileName = Literal["local", "self_hosted"]
 
 
 @dataclass(frozen=True)
@@ -47,12 +45,30 @@ class RuntimeProfile:
     write_policy: WritePolicy
     approval_policy: ApprovalPolicy
     signer: ApprovalSigner
-    proposals: ProposalRepository
-    approvals: ApprovalRepository
-    receipts: ReceiptRepository
+    store: Store
     skills_root: Path | None = None
     extra_secrets: tuple[str, ...] = field(default_factory=tuple)
     write_policy_issues: tuple[PolicyIssue, ...] = field(default_factory=tuple)
+
+    @property
+    def proposals(self) -> ProposalRepository:
+        return self.store.repositories.proposals
+
+    @property
+    def approvals(self) -> ApprovalRepository:
+        return self.store.repositories.approvals
+
+    @property
+    def receipts(self) -> ReceiptRepository:
+        return self.store.repositories.receipts
+
+    @property
+    def dedupe(self) -> DedupeStore:
+        return self.store.repositories.dedupe
+
+    @property
+    def threads(self) -> ThreadOwnershipStore:
+        return self.store.repositories.threads
 
     def write_gate(self, settings: Settings) -> WriteGate:
         kill_switch = settings.paid_media_kill_switch_path
@@ -130,11 +146,10 @@ def fixture_profile(
     fixture_state: FixtureState | None = None,
     write_provider: FakeWriteProvider | None = None,
     approval_policy: ApprovalPolicy | None = None,
-    proposals: ProposalRepository | None = None,
-    approvals: ApprovalRepository | None = None,
-    receipts: ReceiptRepository | None = None,
+    store: Store | None = None,
 ) -> RuntimeProfile:
-    """Fixture-backed profile. The write provider is always the in-memory fake."""
+    """Fixture-backed profile. The write provider is always the in-memory fake, and state lives
+    in an in-memory database unless a store is supplied."""
     state = fixture_state or FixtureState(settings.paid_media_fixture_anchor)
     root = workspace_root or (project_root / settings.paid_media_workspace_root)
     return RuntimeProfile(
@@ -150,8 +165,6 @@ def fixture_profile(
         approval_policy=approval_policy
         or approval_policy_from_settings(settings, default_approvers=frozenset({"local-user"})),
         signer=signer_from_settings(settings),
-        proposals=proposals or InMemoryProposalRepository(),
-        approvals=approvals or InMemoryApprovalRepository(),
-        receipts=receipts or InMemoryReceiptRepository(),
+        store=store or Store(),
         skills_root=project_root,
     )

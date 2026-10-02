@@ -41,11 +41,21 @@ def build_bolt_app(settings: Settings, service: SlackApplicationService) -> Any:
     return app
 
 
-async def run_socket_mode(settings: Settings, runtime: Any) -> None:
+def socket_mode_ready(settings: Settings) -> bool:
+    return (
+        settings.slack_transport == "socket_mode"
+        and settings.slack_app_token is not None
+        and settings.slack_bot_token is not None
+    )
+
+
+async def connect_socket_mode(settings: Settings, runtime: Any) -> Any:
+    """Open the Socket Mode connection on the running loop and return the handler to close."""
     from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 
     if settings.slack_app_token is None:
         raise ValueError("SLACK_APP_TOKEN is not configured")
     app = build_bolt_app(settings, build_slack_service(runtime))
     handler: Any = AsyncSocketModeHandler(app, settings.slack_app_token.get_secret_value())
-    await handler.start_async()
+    await handler.connect_async()
+    return handler

@@ -19,6 +19,10 @@ class ProposalRepository(Protocol):
 
     def list_for_thread(self, thread_id: str) -> list[ProposalRecord]: ...
 
+    def list_awaiting(self, limit: int = 50) -> list[ProposalRecord]:
+        """Proposals still awaiting a decision, oldest first."""
+        ...
+
 
 class ApprovalRepository(Protocol):
     def save(self, claim: ApprovalClaim) -> None: ...
@@ -48,3 +52,11 @@ class ThreadOwnershipStore(Protocol):
     def claim(self, thread_id: str, caller_ref: str) -> bool:
         """Bind a thread to its first caller. Return False if owned by someone else."""
         ...
+
+
+class ChangeLog(Protocol):
+    """History of proposal decisions and execution outcomes. It never gates a write."""
+
+    def proposal_event(self, record: ProposalRecord, status: str) -> None: ...
+
+    def receipt_event(self, record: ProposalRecord, receipt: WriteReceipt) -> None: ...

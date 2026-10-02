@@ -102,8 +102,8 @@ async def test_report_reconciles_and_shows_missing_platforms(
             current_end=date(2026, 8, 28),
             previous_start=date(2026, 8, 1),
             previous_end=date(2026, 8, 14),
-            unavailable_sources=["meta_ads"],
         ),
+        unavailable=["meta_ads"],
     )
     assert summary["cross_platform_total"] is None and "meta_ads" in summary["unavailable_sources"]
     reddit = next(p for p in summary["platforms"] if p["platform"] == "reddit_ads")
@@ -308,3 +308,17 @@ def test_api_bearer_lookup_is_exact() -> None:
     assert resolve_caller(tokens, "Bearer tok-on") is None
     assert resolve_caller(tokens, "tok-one") is None
     assert resolve_caller({}, "Bearer tok-one") is None
+
+
+def test_provider_account_ids_are_redacted_from_every_tool_result() -> None:
+    from paid_media_agent.assembly import _provider_id_forms
+    from paid_media_agent.redaction import redact
+
+    forms = _provider_id_forms(frozenset({"act_1234567", "1234567890"}))
+    text = (
+        "resourceName: customers/1234567890/campaigns/9, id 123-456-7890; "
+        "Graph error for act_1234567 (account 1234567)"
+    )
+    cleaned = redact(text, forms)
+    assert "1234567" not in cleaned and "123-456-7890" not in cleaned
+    assert "campaigns/9" in cleaned, "other ids are left alone"

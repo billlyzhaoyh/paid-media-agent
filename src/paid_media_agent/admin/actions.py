@@ -8,7 +8,6 @@ import json
 import re
 import secrets
 import shutil
-import subprocess
 import sys
 import time
 from collections.abc import Callable, Mapping
@@ -16,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
 
 from paid_media_agent.admin.accounts_file import (
     WRITABLE_ACCOUNTS_FILE,
@@ -36,23 +35,23 @@ from paid_media_agent.admin.envfile import (
 )
 from paid_media_agent.admin.model_catalog import ModelCatalogError, list_models
 from paid_media_agent.admin.model_presets import (
-    _module_available,
     model_key_env,
     model_preset_payloads,
+    provider_supported,
 )
+from paid_media_agent.assembly import TOOL_SELECTION
 from paid_media_agent.config import AccountBinding, ModelConfig, Settings
-from paid_media_agent.deployment import SLACK_ICON_FILENAME, DeploymentSettings, schedule_sources
-from paid_media_agent.doctor import Check, run_doctor, run_snapshot_checks
+from paid_media_agent.doctor import Check, run_doctor
 from paid_media_agent.domain.common import (
     FIXTURE_PLATFORMS,
     PIPEBOARD_PLATFORMS,
     JsonValue,
     Platform,
 )
-from paid_media_agent.middleware.redaction import sanitize_exception
-from paid_media_agent.middleware.tool_selection import capabilities_for, plan_selection
+from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.runtime.profiles import load_write_policy_file
-from paid_media_agent.surfaces.runner import _content_text
+from paid_media_agent.runtime.self_hosted import state_path
+from paid_media_agent.store import Store, StoreBusy
 from paid_media_agent.tools.catalog import AuthorizedToolCatalog, CatalogEntry, ToolClass
 from paid_media_agent.tools.fixtures import build_fixture_catalog, load_fixture_dataset
 
@@ -148,16 +147,13 @@ def status(root: Path) -> ActionResult:
     if not kill_switch.is_absolute():
         kill_switch = root / kill_switch
     model, model_error = model_or_invalid(settings)
-    caps = capabilities_for(model)
-    plan = plan_selection(model, max_tools=settings.paid_media_max_selected_tools)
     key_env = settings.paid_media_model_api_key_env if model_error else model_key_env(settings)
+    state = state_path(settings, root)
     failing = [c.name for c in checks if c.status == "fail"]
     detail: dict[str, JsonValue] = {
         "checks": _checks_json(checks),
         "env": env,
         "runtime": settings.paid_media_runtime,
-        "customization": DeploymentSettings(_env_file=str(root / ".env")).model_dump(mode="json"),
-        "slack_icon_set": (root / "channels" / SLACK_ICON_FILENAME).is_file(),
         "data_mode": settings.paid_media_data_mode,
         "model_presets": model_preset_payloads(),
         "model_key_env": key_env,
@@ -167,11 +163,8 @@ def status(root: Path) -> ActionResult:
             "spec": settings.paid_media_model if model_error else model.spec,
             "error": model_error,
             "provider": model.provider,
-            "verified": caps.verified,
-            "native_tool_search": caps.native_tool_search,
-            "selection": plan.strategy.value,
-            "selection_reason": plan.reason,
-            "package_installed": bool(model.provider) and _module_available(model.provider),
+            "selection": TOOL_SELECTION,
+            "provider_supported": bool(model.provider) and provider_supported(settings),
         },
         "pipeboard": {
             "token_set": settings.pipeboard_api_token is not None,
@@ -208,20 +201,13 @@ def status(root: Path) -> ActionResult:
             "package_installed": importlib.util.find_spec("slack_bolt") is not None,
         },
         "self_hosted": {
-            "database_url_set": settings.database_url is not None,
+            "state_path": str(state.relative_to(root))
+            if state.is_relative_to(root)
+            else str(state),
+            "state_exists": state.is_file(),
             "api_tokens_set": settings.paid_media_api_tokens is not None,
-            "psycopg_installed": importlib.util.find_spec("psycopg") is not None,
             "api_host": settings.paid_media_api_host,
             "api_port": settings.paid_media_api_port,
-        },
-        "mda": {
-            "cli_installed": importlib.util.find_spec("managed_deepagents") is not None,
-            "langsmith_key_set": env.get("LANGSMITH_API_KEY", False),
-            "agent_entry": (root / "agent.py").exists(),
-            "slack_channel": (root / "channels" / "slack.py").exists(),
-            "instructions": (root / "instructions.md").exists(),
-            "sandbox_declared": (root / "sandbox" / "__init__.py").exists(),
-            "sandbox_recipe": (root / "sandbox" / "setup.sh").is_file(),
         },
         "tooling": {"uv": shutil.which("uv") is not None, "python": sys.version.split()[0]},
         "pdf": next((c.status == "ok" for c in checks if c.name == "report_pdf"), False),
@@ -254,28 +240,8 @@ def config_view(root: Path) -> ActionResult:
 
 def config_set(root: Path, updates: Mapping[str, str]) -> ActionResult:
     try:
-        deployment_updates = {
-            name: updates[f"PAID_MEDIA_{name.upper()}"].strip()
-            for name in DeploymentSettings.model_fields
-            if f"PAID_MEDIA_{name.upper()}" in updates
-        }
-        schedules: dict[Path, str] = {}
-        if deployment_updates:
-            apply_env_file(root)
-            existing = DeploymentSettings(_env_file=str(root / ".env")).model_dump()
-            configured = DeploymentSettings.model_validate(existing | deployment_updates)
-            if any("report" in key for key in deployment_updates):
-                schedules = schedule_sources(root, configured)
         written = write_env(root, updates)
-        for path, source in schedules.items():
-            path.write_text(source, encoding="utf-8")
-    except ValidationError as exc:
-        errors = "; ".join(
-            f"{error['loc'][0]}: {error['msg']}"
-            for error in exc.errors(include_input=False, include_url=False)
-        )
-        return _result("config_set", "fail", errors)
-    except (EnvFileError, ValueError, OSError, SyntaxError) as exc:
+    except (EnvFileError, OSError) as exc:
         return _result("config_set", "fail", str(exc))
     return _result(
         "config_set",
@@ -334,19 +300,12 @@ def model_test(root: Path, *, invoke: Callable[[str], str] | None = None) -> Act
         return _result(
             "model_test", "skipped", "scripted model needs no provider", {"spec": model.spec}
         )
-    if not _module_available(model.provider):
-        provider_extra = {"google_genai": "google", "mistralai": "mistral"}.get(
-            model.provider, model.provider
-        )
-        extra = (
-            ""
-            if model.provider in {"anthropic", "openai", "langsmith"}
-            else f" --extra {provider_extra}"
-        )
+    if not provider_supported(settings):
         return _result(
             "model_test",
             "fail",
-            f"provider package for {model.provider} is not installed; run uv sync{extra}",
+            f"unknown provider {model.provider}; set PAID_MEDIA_MODEL_BASE_URL for an "
+            "OpenAI-compatible endpoint",
         )
     env = read_env(root)
     key_name = model_key_env(settings)
@@ -358,16 +317,27 @@ def model_test(root: Path, *, invoke: Callable[[str], str] | None = None) -> Act
             {"spec": model.spec, "missing": key_name},
         )
     started = time.monotonic()
+    usage: dict[str, Any] | None = None
     try:
         if invoke is None:
-            from paid_media_agent.assembly import resolve_model
+            from paid_media_agent.harness.messages import UserMessage
+            from paid_media_agent.harness.models import resolve_model
 
             chat = resolve_model(
                 model,
                 api_key_env=settings.paid_media_model_api_key_env,
                 timeout_seconds=settings.paid_media_model_timeout_seconds,
+                zero_data_retention=settings.paid_media_model_zero_data_retention,
             )
-            reply = _content_text(chat.invoke("Reply with the single word OK.").content)
+            ping = UserMessage("Reply with the single word OK.")
+            answer = asyncio.run(chat.complete(system="", messages=[ping], tools=[]))
+            reply = answer.content
+            if answer.usage is not None:
+                usage = {
+                    "input_tokens": answer.usage.input_tokens,
+                    "output_tokens": answer.usage.output_tokens,
+                    "cost_usd": answer.usage.cost_usd,
+                }
         else:
             reply = invoke(model.spec)
     except Exception as exc:
@@ -378,7 +348,6 @@ def model_test(root: Path, *, invoke: Callable[[str], str] | None = None) -> Act
             {"spec": model.spec},
         )
     latency_ms = int((time.monotonic() - started) * 1000)
-    plan = plan_selection(model, max_tools=settings.paid_media_max_selected_tools)
     return _result(
         "model_test",
         "ok",
@@ -386,8 +355,9 @@ def model_test(root: Path, *, invoke: Callable[[str], str] | None = None) -> Act
         {
             "spec": model.spec,
             "latency_ms": latency_ms,
-            "selection": plan.strategy.value,
+            "selection": TOOL_SELECTION,
             "reply_preview": reply[:40],
+            "usage": usage,
         },
         command="paid-media-agent test model --json",
     )
@@ -592,14 +562,13 @@ def accounts_discover(
                 result = await direct_providers[entry.platform].call_read(entry, {})
                 payload: Any = result.payload
             else:
-                tool = (
-                    live.loader.langchain_tool(entry.qualified_name)
-                    if hasattr(live.loader, "langchain_tool")
-                    else None
+                loader = live.loader
+                address = (
+                    loader.address(entry.qualified_name) if hasattr(loader, "address") else None
                 )
-                if tool is None:
+                if address is None:
                     return entry.qualified_name, None, None
-                payload = await invoke_mcp_tool(tool, {}, timeout=60)
+                payload = await invoke_mcp_tool(loader.client, address, {}, timeout=60)
         except Exception as exc:
             return entry.qualified_name, None, sanitize_exception(exc)
         return entry.qualified_name, payload, None
@@ -692,6 +661,86 @@ def accounts_add(
         f"alias {alias} mapped ({len(registry.bindings)} total)",
         {"aliases": list(registry.aliases()), "path": str(WRITABLE_ACCOUNTS_FILE)},
         command=f"paid-media-agent accounts add {alias} --platform {platform} --id <provider-id> --currency {currency} --timezone {timezone}",
+    )
+
+
+def _goals_store(root: Path) -> tuple[Settings, Store] | ActionResult:
+    settings = load_settings(root)
+    try:
+        return settings, Store(state_path(settings, root))
+    except StoreBusy:
+        return _result(
+            "goals",
+            "warn",
+            "`serve` holds the state file; set goals with `paid-media-agent goals set`, which "
+            "goes through its API",
+        )
+
+
+def goals_list(root: Path) -> ActionResult:
+    from paid_media_agent.analytics.goals import GoalStore, account_today
+
+    opened = _goals_store(root)
+    if isinstance(opened, ActionResult):
+        return opened
+    settings, store = opened
+    try:
+        accounts = read_accounts(active_accounts_path(settings, root))
+        goals = GoalStore(store)
+        rows: list[JsonValue] = []
+        for alias in accounts.aliases():
+            current = goals.current(alias, account_today(accounts, alias))
+            rows.append({"account_alias": alias, "current": current.as_json() if current else None})
+    finally:
+        store.close()
+    return _result(
+        "goals_list",
+        "ok",
+        f"{sum(1 for r in rows if isinstance(r, dict) and r['current'])} of {len(rows)} "
+        "account(s) have goals",
+        {"goals": rows},
+        command="paid-media-agent goals show --json",
+    )
+
+
+def goals_set(
+    root: Path,
+    *,
+    alias: str,
+    target_cpa: float | None,
+    target_roas: float | None,
+    monthly_budget: float | None,
+    clear: list[str],
+) -> ActionResult:
+    from paid_media_agent.analytics.goals import GoalError, update_goals
+
+    opened = _goals_store(root)
+    if isinstance(opened, ActionResult):
+        return opened
+    settings, store = opened
+    try:
+        goal = update_goals(
+            store,
+            read_accounts(active_accounts_path(settings, root)),
+            alias,
+            values={
+                "target_cpa": target_cpa,
+                "target_roas": target_roas,
+                "monthly_budget": monthly_budget,
+            },
+            clear=clear,
+            source="console",
+        )
+    except GoalError as exc:
+        return _result("goals_set", "fail", str(exc))
+    finally:
+        store.close()
+    return _result(
+        "goals_set",
+        "ok",
+        f"goals saved for {alias} from {goal.effective_from.isoformat()}",
+        {"goal": goal.as_json()},
+        command=f"paid-media-agent goals set --alias {alias} ...",
     )
 
 
@@ -851,131 +900,34 @@ def slack_test(root: Path, *, client_factory: Callable[[str], Any] | None = None
     )
 
 
-def database_test(root: Path, *, connect: Callable[[str], Any] | None = None) -> ActionResult:
-    settings = load_settings(root)
-    if settings.database_url is None:
+def state_test(root: Path) -> ActionResult:
+    """Open the DuckDB state file and apply pending migrations; opening creates a missing file.
+
+    Only one process can hold the file, so a running `serve` makes this report `warn`, not `fail`.
+    """
+    path = state_path(load_settings(root), root)
+    command = "paid-media-agent test state --json"
+    detail: dict[str, JsonValue] = {"path": str(path)}
+    try:
+        store = Store(path)
+    except StoreBusy:
         return _result(
-            "database_test",
+            "state_test",
             "warn",
-            "DATABASE_URL is not set; the self-hosted runtime uses in-memory state",
+            f"{path} is in use by another process, usually a running paid-media-agent serve",
+            detail,
+            command=command,
         )
-    if importlib.util.find_spec("psycopg") is None:
-        return _result(
-            "database_test", "fail", "psycopg not installed; run uv sync --extra self-host"
-        )
-    try:
-        if connect is None:
-            import psycopg
-
-            with psycopg.connect(
-                settings.database_url.get_secret_value(), connect_timeout=10
-            ) as conn:
-                version = conn.execute("SELECT version()").fetchone()
-        else:
-            version = connect(settings.database_url.get_secret_value())
     except Exception as exc:
-        return _result("database_test", "fail", f"connection failed: {sanitize_exception(exc)}")
-    return _result(
-        "database_test",
-        "ok",
-        "Postgres reachable",
-        {"version": str(version[0])[:60] if version else ""},
-        command="paid-media-agent test db --json",
-    )
-
-
-def mda_check(root: Path) -> ActionResult:
-    settings = load_settings(root)
-    env = read_env(root)
-    model, model_error = model_or_invalid(settings)
-    schedule_check = "ok"
-    report_keys = [
-        f"PAID_MEDIA_{name.upper()}" for name in DeploymentSettings.model_fields if "report" in name
-    ]
-    if any(env.get(key) or _os_env(key) for key in report_keys):
-        try:
-            configured = DeploymentSettings(_env_file=str(root / ".env"))
-            sources = schedule_sources(root, configured)
-            if any(path.read_text(encoding="utf-8") != source for path, source in sources.items()):
-                schedule_check = "Report timing is out of sync. Save it with config set to update schedules/*.py."
-        except (ValueError, OSError, SyntaxError) as exc:
-            schedule_check = f"Report schedule configuration: {sanitize_exception(exc)}"
-    items: dict[str, JsonValue] = {
-        "cli_installed": importlib.util.find_spec("managed_deepagents") is not None,
-        "langsmith_key_set": bool(env.get("LANGSMITH_API_KEY") or _os_env("LANGSMITH_API_KEY")),
-        "agent_entry": (root / "agent.py").exists(),
-        "instructions": (root / "instructions.md").exists(),
-        "skills": (root / "skills").is_dir(),
-        "slack_channel": (root / "channels" / "slack.py").exists(),
-        "identity": (root / "identity.py").exists(),
-        "sandbox_declared": (root / "sandbox" / "__init__.py").exists(),
-        "sandbox_recipe": (root / "sandbox" / "setup.sh").is_file(),
-        "sandbox_snapshot": settings.paid_media_sandbox_snapshot or "",
-        "model": model_error or model.spec,
-        "model_package": not model_error and _module_available(model.provider),
-        "provider_key_set": not model_error and _provider_key_set(settings, env),
-        "import_smoke": _agent_import_smoke(root),
-        "report_schedules": schedule_check,
-        "deploy_command": "uv run mda deploy .",
-        "dev_command": "uv run mda dev",
-    }
-    blocking = [
-        k
-        for k in (
-            "cli_installed",
-            "langsmith_key_set",
-            "agent_entry",
-            "sandbox_declared",
-            "sandbox_recipe",
-            "model_package",
-            "provider_key_set",
+        return _result(
+            "state_test", "fail", f"cannot open state: {sanitize_exception(exc)}", detail, command
         )
-        if not items[k]
-    ]
-    if items["slack_channel"] and not items["identity"]:
-        # MDA refuses to build an ingress channel without a root identity declaration.
-        blocking.append("identity")
-    if items["import_smoke"] != "ok":
-        blocking.append("import_smoke")
-    if schedule_check != "ok":
-        blocking.append("report_schedules")
-    summary = (
-        "project checks passed; deployment access is checked when deploying"
-        if not blocking
-        else f"blocked by {', '.join(blocking)}"
-    )
-    return _result(
-        "mda_check",
-        "ok" if not blocking else "warn",
-        summary,
-        items,
-        command="paid-media-agent mda check --json",
-    )
-
-
-def _provider_key_set(settings: Settings, env: Mapping[str, str]) -> bool:
-    key_name = model_key_env(settings)
-    if key_name is None:
-        return True
-    return bool(env.get(key_name) or _os_env(key_name))
-
-
-def _agent_import_smoke(root: Path) -> str:
-    """Import agent.py in a subprocess so a broken entry cannot take the console down."""
     try:
-        completed = subprocess.run(
-            [sys.executable, "-c", "import agent; print(agent.agent.config['name'])"],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return f"failed: {sanitize_exception(exc)}"
-    if completed.returncode != 0:
-        return "failed: " + sanitize_exception(RuntimeError(completed.stderr.strip()[-300:]))
-    return "ok"
+        (applied,) = store.fetch("SELECT count(*) FROM schema_migrations")[0]
+    finally:
+        store.close()
+    detail["migrations"] = int(applied)
+    return _result("state_test", "ok", f"state ready at {path}", detail, command=command)
 
 
 def demo_run(root: Path, *, with_proposal: bool = False) -> ActionResult:
@@ -1015,35 +967,17 @@ def ask_question(root: Path, question: str, *, model: Any | None = None) -> Acti
     if not text or len(text) > MAX_QUESTION_CHARS:
         return _result("ask", "fail", "question must be 1 to 2000 characters")
     try:
-        from langchain_core.runnables import RunnableConfig
-
-        from paid_media_agent.assembly import resolve_model
         from paid_media_agent.runtime.local import build_configured_runtime
 
-        chat = (
-            model
-            if model is not None
-            else resolve_model(
-                settings.model_settings(),
-                api_key_env=settings.paid_media_model_api_key_env,
-                timeout_seconds=settings.paid_media_model_timeout_seconds,
-            )
+        runtime = build_configured_runtime(settings, project_root=root, model=model)
+        conversation = asyncio.run(
+            runtime.agent.send(f"console-{secrets.token_hex(4)}", "local-user", text)
         )
-        runtime = build_configured_runtime(settings, project_root=root, model=chat)
-        config = RunnableConfig(
-            configurable={
-                "thread_id": f"console-{secrets.token_hex(4)}",
-                "caller_ref": "local-user",
-            }
-        )
-        state = asyncio.run(
-            runtime.graph.ainvoke({"messages": [{"role": "user", "content": text}]}, config=config)
-        )
-        answer_text = _content_text(state["messages"][-1].content)
+        answer_text = conversation.messages[-1].content.strip()
     except Exception as exc:
         return _result("ask", "fail", f"run failed: {sanitize_exception(exc)}")
     if answer_text.startswith("Model call failed"):
-        # The retry middleware turns provider failures into a message; surface them as a failure.
+        # The loop turns provider failures into a message; surface them as a failure.
         return _result("ask", "fail", sanitize_exception(RuntimeError(answer_text)))
     return _result(
         "ask",
@@ -1051,7 +985,7 @@ def ask_question(root: Path, question: str, *, model: Any | None = None) -> Acti
         "answered",
         {
             "answer": answer_text[:6000],
-            "selection": runtime.components.metadata.selection.strategy.value,
+            "selection": runtime.components.metadata.selection,
             "catalog_revision": runtime.catalog.revision,
         },
         command='paid-media-agent ask "..."',
@@ -1091,159 +1025,5 @@ def kill_switch_set(root: Path, *, engaged: bool, confirmed: bool = False) -> Ac
     )
 
 
-def snapshot_check(root: Path) -> ActionResult:
-    checks = run_snapshot_checks(root)
-    failing = [c.name for c in checks if c.status == "fail"]
-    return _result(
-        "snapshot_check",
-        "fail" if failing else "ok",
-        "snapshot contract passes" if not failing else f"failing: {', '.join(failing)}",
-        {"checks": _checks_json(checks)},
-        command="paid-media-agent doctor --snapshot",
-    )
-
-
 def as_json(result: ActionResult) -> str:
     return json.dumps(result.model_dump(mode="json"), indent=2, default=str)
-
-
-# ---------------------------------------------------------------- sandbox
-
-SANDBOX_DECLARATION = '''"""The sandbox Managed Deep Agents gives every thread. Generated by `paid-media-agent sandbox use`.
-
-MDA reads this file statically, so the snapshot must be a literal. `.env` carries the same value
-as `PAID_MEDIA_SANDBOX_SNAPSHOT` for the standalone `sandbox test` probe.
-"""
-
-from managed_deepagents import define_sandbox
-
-sandbox = define_sandbox({argument}, idle_ttl_seconds={idle_ttl})
-'''
-SNAPSHOT_FS_GIB = 32
-"""Snapshot filesystem size; the platform base image alone needs 16 GiB."""
-SNAPSHOT_BUILD_TIMEOUT = 1800
-"""The SDK builds inside a builder sandbox and applies this to the build command itself."""
-SNAPSHOT_HTTP_TIMEOUT = 120.0
-"""Capturing a snapshot is one slow HTTP call; the SDK client default of 10 s cuts it off."""
-
-
-def sandbox_use(root: Path, name: str) -> ActionResult:
-    """Declare one snapshot: `sandbox/__init__.py` for MDA, `.env` for `sandbox test`.
-
-    `name` is a snapshot id (preferred, immutable) or a snapshot name.
-    """
-    from paid_media_agent.runtime.sandbox import snapshot_reference
-
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", name):
-        return _result("sandbox_use", "fail", "snapshot must be alphanumeric with . _ -")
-    ((key, value),) = snapshot_reference(name).items()
-    write_env(root, {"PAID_MEDIA_SANDBOX_SNAPSHOT": name})
-    (root / "sandbox" / "__init__.py").write_text(
-        SANDBOX_DECLARATION.format(
-            argument=f"{key}={value!r}",
-            idle_ttl=load_settings(root).paid_media_sandbox_idle_ttl_seconds,
-        ),
-        encoding="utf-8",
-    )
-    return _result(
-        "sandbox_use",
-        "ok",
-        f"snapshot {name} set in .env and declared in sandbox/__init__.py",
-        {"snapshot": name},
-        command=f"paid-media-agent sandbox use {name}",
-    )
-
-
-def sandbox_publish(
-    root: Path,
-    *,
-    name: str,
-    fs_gib: int = SNAPSHOT_FS_GIB,
-    log: Callable[[str], None] | None = None,
-) -> ActionResult:
-    """Build sandbox/Dockerfile into a LangSmith snapshot, then `sandbox_use` it.
-
-    LangSmith builds the image; no local Docker is involved. The build context holds only the
-    Dockerfile and dependency recipe, never `.env`, skills, or wiki pages.
-    """
-    import tempfile
-
-    from langsmith.sandbox import SandboxClient
-
-    dockerfile = root / "sandbox" / "Dockerfile"
-    recipe = root / "sandbox" / "setup.sh"
-    for path in (dockerfile, recipe):
-        if not path.is_file():
-            return _result("sandbox_publish", "fail", f"sandbox/{path.name} is missing")
-    client = SandboxClient(timeout=SNAPSHOT_HTTP_TIMEOUT)
-    try:
-        with tempfile.TemporaryDirectory() as context:
-            shutil.copy(dockerfile, Path(context) / "Dockerfile")
-            shutil.copy(recipe, Path(context) / "setup.sh")
-            snapshot = client.create_snapshot_from_dockerfile(
-                name,
-                Path(context) / "Dockerfile",
-                fs_capacity_bytes=fs_gib * 1024**3,
-                context=context,
-                on_build_log=log,
-                timeout=SNAPSHOT_BUILD_TIMEOUT,
-            )
-        snapshot = client.wait_for_snapshot(snapshot.id, timeout=SNAPSHOT_BUILD_TIMEOUT)
-    except Exception as exc:
-        return _result(
-            "sandbox_publish", "fail", f"snapshot build failed: {sanitize_exception(exc)}"
-        )
-    status = str(getattr(snapshot.status, "value", snapshot.status))
-    if status != "ready":
-        return _result(
-            "sandbox_publish", "fail", f"snapshot {name} is {status}: {snapshot.status_message}"
-        )
-    used = sandbox_use(root, str(snapshot.id))
-    return _result(
-        "sandbox_publish",
-        used.status,
-        f"snapshot {name} ready; {used.summary}",
-        {"snapshot": name, "snapshot_id": str(snapshot.id)},
-        command=f"paid-media-agent sandbox publish --name {name}",
-    )
-
-
-def sandbox_test(root: Path) -> ActionResult:
-    """Open one sandbox from the declared snapshot, run the probe, and delete it."""
-    from paid_media_agent.runtime.sandbox import (
-        SandboxError,
-        open_sandbox,
-        probe_sandbox,
-    )
-
-    settings = load_settings(root)
-    command = "paid-media-agent sandbox test --json"
-    if not settings.paid_media_sandbox_snapshot:
-        return _result(
-            "sandbox_test",
-            "warn",
-            "MDA builds and checks the recipe during deployment. To probe a standalone snapshot, run `paid-media-agent sandbox publish --name paid-media-agent-sandbox` first.",
-            command=command,
-        )
-    if not (_os_env("LANGSMITH_API_KEY") or read_env(root).get("LANGSMITH_API_KEY")):
-        return _result("sandbox_test", "warn", "LANGSMITH_API_KEY is not set", command=command)
-    try:
-        sandbox = open_sandbox(settings)
-    except SandboxError as exc:
-        return _result("sandbox_test", "fail", sanitize_exception(exc), command=command)
-    try:
-        checks = probe_sandbox(sandbox, root)
-    finally:
-        sandbox.close()
-    failing = [c.name for c in checks if c.status == "fail"]
-    detail: dict[str, JsonValue] = {
-        "snapshot": settings.paid_media_sandbox_snapshot or "platform default",
-        "checks": [{"name": c.name, "status": c.status, "detail": c.detail} for c in checks],
-    }
-    return _result(
-        "sandbox_test",
-        "fail" if failing else "ok",
-        "sandbox can host the agent" if not failing else f"failing: {', '.join(failing)}",
-        detail,
-        command=command,
-    )

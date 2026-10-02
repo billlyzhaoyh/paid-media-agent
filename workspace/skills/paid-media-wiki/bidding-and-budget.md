@@ -12,6 +12,11 @@ it per campaign when the `list_campaigns` artifact is supplied.
   look at bids, audience size, approval status, or creative fatigue.
 - A paused campaign with residual spend on the pause day is not an anomaly.
 
+Monthly pacing is a different question: `check_pacing` compares month-to-date spend with the
+account's monthly budget, projects the month end from the trailing week's run rate (adjusted for
+weekday patterns when four weeks exist), and gives the daily spend that lands on budget. Quote its
+reading. It counts days not yet synced as still to come, never as zero spend.
+
 ## Changing budgets
 
 - Prefer steps of roughly 20 to 30 percent. Large jumps reset learning on auction platforms and make
@@ -21,6 +26,71 @@ it per campaign when the `list_campaigns` artifact is supplied.
   pacing at or above budget with stable or improving efficiency. Cut where spend rises and
   efficiency falls across two windows, not one day.
 - Every budget change is a proposal with a before value, an after value, a reason, and a reversal.
+
+## What limits a campaign's spend
+
+More budget only buys more where the budget is what binds. Four things can cap spend:
+- the budget;
+- demand or inventory (search volume, audience size);
+- the bid target (target CPA or ROAS, a cost or bid cap);
+- delivery (a learning phase, the platform's pacing window).
+
+`recommend_budgets` says which one binds for each campaign, with its evidence (`constraint`).
+Use it before advising any budget change:
+- **Budget:** raising the budget can add volume; the curve says at what marginal cost.
+- **Demand:** extra budget goes unspent. Growth comes from more keywords, audiences, or
+  placements.
+- **Target:** the target is the lever. Loosening a target CPA (or lowering a ROAS target) buys
+  volume at a worse cost; say so, and don't suggest a bigger budget.
+- **Learning:** leave the budget alone until the phase ends.
+
+Spending the full budget under Maximize conversions (Google), Highest volume (Meta), or Maximum
+delivery (TikTok, LinkedIn) is by design, not proof that the budget binds. Platforms average
+spend over a window, so one day above budget is noise:
+- Google, Microsoft, Amazon, and Apple: a month; Google allows up to 2x on a day and 30.4x a
+  month.
+- Meta, TikTok, and LinkedIn: a week.
+
+## Splitting a budget across campaigns
+
+`recommend_budgets` answers "how should I split the budget" for one account. It fits each
+campaign's spend response from stored history, holds the account total, and returns the current
+and recommended budget for every campaign with a code-written reading, the expected conversions
+now and as recommended, and the limit that stopped a move. Read the readings back; do not
+recompute them.
+
+- It never moves a campaign more than 25% at once, never above 1.5 times the most it has spent,
+  and holds a campaign whose budget changed in the last 7 days while that change is measured.
+- With a target CPA, it cuts the total when the expected account CPA would exceed the target, and
+  says whether the step limits let it reach the target. With a monthly budget and no total asked
+  for, the total follows the monthly pacing (`total_source: monthly_budget`).
+- Expected conversions are the model's estimate from a few weeks of history. Say so, and say that
+  the gain is small when it is small.
+- If its data checks failed, it used the last good curves; say that the data looked incomplete.
+- It changes nothing. Apply a recommendation only when the user asks, one campaign at a time,
+  through the writes skill, with the run id in the reason. Recommendations the operator asked the
+  host to propose already wait for approval; do not duplicate them.
+- `query_history` with `view: outcomes` shows whether past recommendations were followed and how
+  many conversions the week after each one brought against what was expected.
+
+## What if the budgets changed
+
+`what_if_budgets` forecasts one account's daily spend, conversions, and CPA at today's budgets
+and at a scenario: named campaigns raised or cut, or a new account total split in proportion or
+the way the curves say is best. It uses the same curves and spend limits as `recommend_budgets`.
+
+- The number to lead with is the **incremental CPA**: what each extra conversion costs (or each
+  lost one saves). It is usually far above the account's average CPA, because extra spend buys the
+  dearest conversions.
+- The 80% ranges cover how uncertain the curves are and how far they have recently been from
+  actual conversions, not day-to-day noise. When the range on the change includes zero, say the
+  forecast cannot tell the scenario apart from today.
+- `capped`: budget above what demand or a bid target lets the campaign spend buys nothing.
+- `outside_history`: spend beyond 1.5 times the most the campaign has spent is a guess.
+- `step_advice`: a large move takes several changes of at most the step limit, days apart.
+- `best_split` shows what the same total would buy split by the curves, without the step limit;
+  `recommend_budgets` gives the next safe step toward it.
+- It changes nothing. Apply a scenario only when the user asks, as proposals.
 
 ## Bidding strategies, in general terms
 
