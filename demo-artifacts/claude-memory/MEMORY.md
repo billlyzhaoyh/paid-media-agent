@@ -1,4 +1,4 @@
 - [Roadmap after S7](roadmap-after-s7.md) — order S8→S9→S9b (done)→S14 explain/what-if (done)→S11; S10 Slack held, S12 when a Pipeboard token arrives; no live access yet, the user is design partner
-- [Open items](open-items-live-writes.md) — keys to rotate, live writes off, PRs #10 and #12 merged, PR #13 (demo page as a story) open, hackathon submission status
+- [Open items](open-items-live-writes.md) — keys to rotate, live writes off, PRs #10 and #12 merged; PR #13 (animated demo) and PR #14 (demo artifacts) open; laptop handoff; hackathon submission status
 - [Spend constraints research](spend-constraints-research.md) — budget/demand/target/delivery caps per platform; proposed constraint-aware bandit slice before S10
 - [Headless Chrome on its own profile](headless-chrome-own-profile.md) — one isolated instance over DevTools; default-profile launches glitched the user's browser
