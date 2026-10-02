@@ -11,6 +11,7 @@ here needs a model key, a TabPFN token, an install, or a network connection.
 | `demo_report.pdf` | The same report as a PDF | Hand out or attach. |
 | `walkthrough.html` | A walkthrough of the repository and how the demo is built | Open it in a browser. It shows `demo-replay.mp4` and the two screenshots from this folder. |
 | `demo-page.png`, `demo-report.png` | Full-page screenshots of the demo page and the report | For slides. |
+| `evals.duckdb` | The stored eval runs: 37 runs and 550 graded answers | Copy it to `workspace/state/evals.duckdb` to regrade or compare runs. See below. |
 | `claude-memory/` | Claude Code's project notes from the laptop this was built on | See below. |
 
 The pages were rendered in the project's Docker image from the recording shipped in the package,
@@ -40,8 +41,19 @@ docker run --rm -v "$PWD/workspace/out:/app/workspace/out" paid-media-agent \
 - **`.env`** with the model and TabPFN keys. The demo does not need it. Asking the agent real
   questions, running the evals, and re-recording do. Create a new one from `.env.example` with
   fresh keys.
-- **`workspace/state/evals.duckdb`**, the stored eval runs. Their results are written up in
-  `docs/architecture/evals.md`.
+
+## The stored eval runs
+
+`evals.duckdb` is the eval history from the laptop this was built on. The results are written
+up in `docs/architecture/evals.md`. To use it on a new laptop:
+
+```bash
+mkdir -p workspace/state
+cp demo-artifacts/evals.duckdb workspace/state/evals.duckdb
+```
+
+`eval regrade` then works on the stored answers without calling a model. It holds sample-data
+questions, the agent's answers and their grades; it contains no key values.
 
 ## Claude Code's notes
 
