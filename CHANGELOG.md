@@ -5,14 +5,18 @@
 ### Added
 
 - A visual demo, and report panels that show what the models expect.
-  - **`demo --visual`** (now `make demo`) opens a report page for a simulated account:
-    - each campaign-day against TabPFN's expected range, with the days flagged and the anomalies
-      that were really planted;
-    - each campaign's fitted spend curve against its true one, with current and recommended
-      budgets;
+  - **`demo --visual`** (now `make demo`) opens a report page for Northwind, a simulated store,
+    that reads as a story:
+    - what was unusual: TabPFN's alerts against a day-over-day rule's, split into real problems
+      and false alarms, with each flag labelled on its chart;
+    - what the budget moves bought: eight weeks of the agent's weekly reallocations against
+      budgets left alone and the best possible split, scored by the simulation's truth;
+    - how TabPFN is applied in each: the rows that went in, what came out, what it decided;
+    - next steps, written by the agent from those figures and checked against them;
     - a change, approved and read back.
-  - **No token needed.** TabPFN's answers for the demo's fixed account are recorded and
-    replayed; with `TABPFN_TOKEN` set it is asked live. The page says which.
+  - **No token or model key needed.** The demo replays a recording of the weekly decisions,
+    TabPFN's answers, and the agent's text, and never calls out; `demo --visual --record` makes
+    the recording. The page says where each figure came from.
   - **`report --insights`** adds the expected-range and budget panels for a real account from
     stored history, with the configured predictor.
   - Chart geometry lives in `reports/charts.py`; a new `model` colour token marks what a model

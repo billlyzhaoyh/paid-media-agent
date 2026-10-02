@@ -12,9 +12,17 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
 
-from paid_media_agent.domain.reports import BandSeries, BudgetCurve
+from paid_media_agent.domain.reports import (
+    BandSeries,
+    BudgetCurve,
+    BudgetRow,
+    BudgetTrial,
+    MethodScore,
+    RangeExample,
+)
 
 WIDTH, HEIGHT = 560.0, 230.0
+WIDE_WIDTH, WIDE_HEIGHT = 900.0, 250.0
 LEFT, RIGHT, TOP, BOTTOM = 52.0, 14.0, 12.0, 30.0
 
 
@@ -48,6 +56,16 @@ class Frame:
 
 
 @dataclass(frozen=True)
+class Callout:
+    """A short label beside a mark, placed to stay inside the frame."""
+
+    x: float
+    y: float
+    anchor: str
+    text: str
+
+
+@dataclass(frozen=True)
 class BandChart:
     frame: Frame
     area: str
@@ -58,6 +76,70 @@ class BandChart:
     flags: tuple[Mark, ...]
     planted: tuple[Mark, ...]
     summary: str
+    callouts: tuple[Callout, ...] = ()
+
+
+@dataclass(frozen=True)
+class TrialLine:
+    key: str
+    label: str
+    points: str
+    end: Mark
+    value: str
+    """The run's conversions a day, as its end label states it."""
+
+
+@dataclass(frozen=True)
+class TrialChart:
+    frame: Frame
+    lines: tuple[TrialLine, ...]
+    labels: tuple[Callout, ...]
+    summary: str
+
+
+@dataclass(frozen=True)
+class RangeBar:
+    """One judged day on a single scale: the range the model returned and the value observed."""
+
+    width: float
+    height: float
+    lo: float
+    expected: float
+    hi: float
+    observed: float
+    """Horizontal positions."""
+    band_top: float
+    band_height: float
+    lo_label: str
+    expected_label: str
+    hi_label: str
+    observed_label: str
+    observed_anchor: str
+    outside: bool
+    summary: str
+
+
+@dataclass(frozen=True)
+class AlertBar:
+    """One method's alerts on a shared scale: real problems first, then false alarms."""
+
+    label: str
+    caught: int
+    false_alarms: int
+    caught_width: float
+    false_width: float
+    """Widths in percent of the longest bar."""
+
+
+@dataclass(frozen=True)
+class BudgetBar:
+    row: BudgetRow
+    start: float
+    now: float
+    recommended: float | None
+    """Positions in percent of the largest budget shown."""
+    change: str
+    """The move from start to now, as '+18%' or 'no change'."""
 
 
 @dataclass(frozen=True)
@@ -140,8 +222,9 @@ def band_chart(series: BandSeries) -> BandChart:
     y = _Scale(low, high, frame.bottom, frame.top)
     x = _Scale(0, max(len(days) - 1, 1), frame.left, frame.right)
     xs = [x(i) if len(days) > 1 else (frame.left + frame.right) / 2 for i in range(len(days))]
-    upper = [(xs[i], y(d.hi)) for i, d in enumerate(days)]
-    lower = [(xs[i], y(d.lo)) for i, d in enumerate(days)]
+    # A range that reaches below zero is drawn to the axis: the metric cannot go there.
+    upper = [(xs[i], max(y(d.hi), frame.top)) for i, d in enumerate(days)]
+    lower = [(xs[i], min(y(d.lo), frame.bottom)) for i, d in enumerate(days)]
     area = "M" + " L".join(f"{px},{py}" for px, py in upper + lower[::-1]) + " Z" if days else ""
     unit = series.unit
 
@@ -177,6 +260,7 @@ def band_chart(series: BandSeries) -> BandChart:
             f"{series.entity_name}, {series.metric}: {len(days)} days, {flagged} outside the "
             "expected range"
         ),
+        callouts=_callouts(frame, marks, [d.note for d in days]),
     )
 
 
@@ -233,4 +317,171 @@ def curve_chart(curve: BudgetCurve, currency: str | None = None) -> CurveChart:
             "Recommended",
             curve.recommended_budget,
         ),
+    )
+
+
+def _callouts(
+    frame: Frame, marks: Sequence[Mark], notes: Sequence[str | None]
+) -> tuple[Callout, ...]:
+    """A label for each noted day, set to the side that keeps it inside the plot."""
+    found = []
+    middle = (frame.left + frame.right) / 2
+    for mark, note in zip(marks, notes, strict=True):
+        if not note:
+            continue
+        left = mark.x > middle
+        found.append(
+            Callout(
+                x=mark.x - 12 if left else mark.x + 12,
+                y=min(max(mark.y + 3.5, frame.top + 9), frame.bottom - 4),
+                anchor="end" if left else "start",
+                text=note,
+            )
+        )
+    return tuple(found)
+
+
+def trial_chart(trial: BudgetTrial) -> TrialChart:
+    """Weekly conversions for each way of setting budgets, on one scale."""
+    weeks = trial.weeks
+    values = [v for run in trial.runs for v in run.weekly]
+    low, high = _extent(values, floor_zero=False, pad=0.15)
+    # A full-width chart: drawn wide so its text is the size of every other chart's, with room
+    # on the right for the end labels.
+    frame = Frame(
+        width=WIDE_WIDTH,
+        height=WIDE_HEIGHT,
+        right=WIDE_WIDTH - 150,
+        bottom=WIDE_HEIGHT - BOTTOM,
+    )
+    x = _Scale(0, max(len(weeks) - 1, 1), frame.left, frame.right)
+    y = _Scale(low, high, frame.bottom, frame.top)
+    lines = []
+    for run in trial.runs:
+        points = [(x(i), y(v)) for i, v in enumerate(run.weekly)]
+        if not points:
+            continue
+        last_x, last_y = points[-1]
+        value = f"{run.per_day:.1f} a day"
+        lines.append(
+            TrialLine(
+                key=run.key,
+                label=run.label,
+                points=_line(points),
+                end=Mark(last_x, last_y, f"{run.label}: {value}"),
+                value=value,
+            )
+        )
+    # End labels are spread so two runs that finish together do not overprint.
+    order = sorted(lines, key=lambda line: line.end.y)
+    placed: list[float] = []
+    for line in order:
+        at = line.end.y + 3.5
+        if placed and at - placed[-1] < 14:
+            at = placed[-1] + 14
+        placed.append(at)
+    labels = tuple(
+        Callout(x=frame.right + 10, y=at, anchor="start", text=line.label)
+        for line, at in zip(order, placed, strict=True)
+    )
+    every = max(1, math.ceil(len(weeks) / 8))
+    return TrialChart(
+        frame=Frame(
+            width=frame.width,
+            height=frame.height,
+            right=frame.right,
+            bottom=frame.bottom,
+            x_ticks=tuple(Tick(x(i), _day(w)) for i, w in enumerate(weeks) if i % every == 0),
+            y_ticks=tuple(Tick(y(v), _label(v)) for v in nice_ticks(low, high) if low <= v <= high),
+        ),
+        lines=tuple(lines),
+        labels=labels,
+        summary="Conversions per week: "
+        + "; ".join(f"{line.label} {line.value}" for line in lines),
+    )
+
+
+RANGE_WIDTH, RANGE_HEIGHT, RANGE_PAD = 360.0, 86.0, 48.0
+
+
+def range_bar(example: RangeExample) -> RangeBar:
+    """The model's range for one day and the observed value, on one scale."""
+    low = min(example.lo, example.observed)
+    high = max(example.hi, example.observed)
+    span = (high - low) or 1.0
+
+    def x(value: float) -> float:
+        return round(RANGE_PAD + (RANGE_WIDTH - 2 * RANGE_PAD) * (value - low) / span, 2)
+
+    def text(value: float) -> str:
+        return f"{value:,.0f}" if example.metric == "spend" else f"{value:,.1f}"
+
+    at = x(example.observed)
+    anchor = "end" if at > RANGE_WIDTH - 90 else "start" if at < 90 else "middle"
+    verb = "spent" if example.metric == "spend" else "recorded"
+    outside = not example.lo <= example.observed <= example.hi
+    return RangeBar(
+        width=RANGE_WIDTH,
+        height=RANGE_HEIGHT,
+        lo=x(example.lo),
+        expected=x(example.expected),
+        hi=x(example.hi),
+        observed=at,
+        band_top=40.0,
+        band_height=14.0,
+        lo_label=text(example.lo),
+        expected_label=f"expected {text(example.expected)}",
+        hi_label=text(example.hi),
+        observed_label=f"{verb} {text(example.observed)}",
+        observed_anchor=anchor,
+        outside=outside,
+        summary=(
+            f"{example.entity_name} on {_day(example.day)}: {verb} {text(example.observed)}, "
+            f"against an expected {text(example.expected)} and a range of {text(example.lo)} to "
+            f"{text(example.hi)}; {'outside' if outside else 'inside'} the range."
+        ),
+    )
+
+
+def alert_bars(scores: Sequence[MethodScore]) -> tuple[AlertBar, ...]:
+    """Each method's alerts split into real problems and false alarms, on one scale."""
+    known = [s for s in scores if s.caught is not None and s.false_alarms is not None]
+    longest = max((int(s.caught or 0) + int(s.false_alarms or 0) for s in known), default=0)
+    if longest == 0:
+        return ()
+    return tuple(
+        AlertBar(
+            label=s.label,
+            caught=int(s.caught or 0),
+            false_alarms=int(s.false_alarms or 0),
+            caught_width=round(100 * int(s.caught or 0) / longest, 2),
+            false_width=round(100 * int(s.false_alarms or 0) / longest, 2),
+        )
+        for s in known
+    )
+
+
+def budget_bars(rows: Sequence[BudgetRow]) -> tuple[BudgetBar, ...]:
+    """Each campaign's budget at the start, now, and as recommended, on one scale."""
+    largest = max((v for r in rows for v in (r.start, r.now, r.recommended or 0.0)), default=0.0)
+    if largest <= 0:
+        return ()
+
+    def at(value: float) -> float:
+        return round(100 * value / largest, 2)
+
+    def change(row: BudgetRow) -> str:
+        if not row.start or abs(row.now / row.start - 1) < 0.005:
+            return "no change"
+        return f"{row.now / row.start - 1:+.0%}"
+
+    return tuple(
+        BudgetBar(
+            row=r,
+            start=at(r.start),
+            now=at(r.now),
+            recommended=None if r.recommended is None else at(r.recommended),
+            change=change(r),
+        )
+        for r in rows
     )

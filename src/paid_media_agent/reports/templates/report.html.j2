@@ -92,6 +92,59 @@
   .plot { display: block; width: 100%; height: auto; overflow: visible; }
   .chart figcaption .key { margin-right: 14px; color: var(--ink); font-size: 11px; }
   section > .table-wrap { margin-top: 22px; }
+  .finding { max-width: 76ch; margin: 0 0 12px; font-size: 18px; font-weight: 500; line-height: 1.45; text-wrap: pretty; }
+  .how { margin: 22px 0 26px; padding: var(--card-padding); background: var(--paper); border: 1px solid var(--card-line); border-radius: var(--radius-card); }
+  .how h3 { margin: 0 0 18px; }
+  .how-steps { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 20px 40px; }
+  .how-step { min-width: 0; }
+  .how-n { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font: 500 11px/1.5 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; }
+  .how-step .how-n + .how-lead + .how-n, .how-values + .how-n, .how-step .table-wrap + .note + .how-n { margin-top: 18px; }
+  .how-n span { display: inline-block; flex: none; width: 18px; height: 18px; border-radius: 50%; background: var(--ink); color: var(--paper); font-size: 10px; line-height: 18px; letter-spacing: 0; text-align: center; }
+  .how-n.result { margin: 0 0 4px; }
+  .how-lead { margin: 0 0 12px; font-size: 13px; line-height: 1.5; }
+  .how-table { font-size: 12px; }
+  .how-table th, .how-table td { padding: 6px 10px; }
+  .how-table th { background: transparent; letter-spacing: .04em; }
+  .how-table th.num { white-space: normal; }
+  .how-table td:nth-child(2), .how-table td.move { white-space: nowrap; }
+  .how-table .answer { border-left: 1px solid var(--previous); }
+  .how-table tr.asked td { background: var(--previous-fill); font-weight: 500; }
+  .ask { display: inline-block; min-width: 16px; padding: 0 5px; border: 1px solid var(--ink); border-radius: 4px; text-align: center; }
+  .range-bar { display: block; width: 100%; max-width: 420px; height: auto; margin: 4px 0 6px; }
+  .how-values { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 0 0 4px; }
+  .how-values dt { color: var(--muted); font: 400 10px/1.5 var(--font-mono); letter-spacing: .06em; text-transform: uppercase; }
+  .how-values dd { margin: 0; font-size: 14px; font-variant-numeric: tabular-nums; }
+  .how-why { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .how-why ul { margin: 0; padding-left: 18px; }
+  .how-why li { max-width: 92ch; margin: 0 0 8px; font-size: 13px; line-height: 1.55; color: var(--muted); break-inside: avoid; }
+  .how-why li strong { color: var(--ink); font-weight: 500; }
+  .alerts { margin: 18px 0 24px; }
+  .alert-row { break-inside: avoid; display: grid; grid-template-columns: 220px minmax(0, 1fr) 220px; align-items: center; gap: 14px; padding: 7px 0; }
+  .alert-label { font-size: 13px; font-weight: 500; }
+  .alert-track { display: flex; gap: 2px; height: 16px; }
+  .alert-real, .swatch-real { background: var(--ink); border-radius: 0 3px 3px 0; }
+  .alert-false, .swatch-false { background: var(--previous-fill); border: 1px solid var(--previous); border-radius: 0 3px 3px 0; }
+  .swatch-real, .swatch-false { display: inline-block; flex: none; width: 12px; min-width: 12px; height: 12px; }
+  .alert-count { color: var(--muted); font: 400 11px/1.5 var(--font-mono); text-align: right; }
+  .alerts .keys { margin: 10px 0 0; }
+  .metric-strip.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .chart.wide { margin-top: 26px; break-inside: avoid; }
+  .chart.wide .keys { margin: 14px 0 0; }
+  .move-row { display: grid; grid-template-columns: 170px minmax(0, 1fr) 190px; align-items: center; gap: 14px; padding: 12px 0; border-top: 1px solid var(--line); break-inside: avoid; }
+  .move-cell { grid-column: 2; grid-row: 1; position: relative; height: 18px; }
+  .move-cell span { position: absolute; top: 50%; }
+  .move-line { left: 0; right: 0; height: 1px; background: var(--line); }
+  .move-span { height: 2px; margin-top: -1px; background: var(--current); }
+  .mark-start, .mark-now, .mark-next { display: inline-block; box-sizing: border-box; width: 11px; height: 11px; border-radius: 50%; }
+  .move-cell .mark-start, .move-cell .mark-now { transform: translate(-50%, -50%); }
+  .mark-start { background: var(--paper); border: 1.5px solid var(--previous); }
+  .mark-now { background: var(--current); border: 1.5px solid var(--paper); }
+  .mark-next { width: 9px; height: 9px; background: var(--paper); border: 1.5px solid var(--ink); border-radius: 0; }
+  .move-cell .mark-next { transform: translate(-50%, -50%) rotate(45deg); }
+  .keys .mark-start, .keys .mark-now { flex: none; min-width: 11px; }
+  .keys .mark-next { flex: none; min-width: 9px; transform: rotate(45deg); }
+  .move-values { grid-column: 3; grid-row: 1; margin: 0; text-align: right; }
+  .written-by { color: var(--muted); font: 400 11px/1.5 var(--font-mono); }
   .change-card { padding: var(--card-padding); background: var(--paper); border: 1px solid var(--card-line); border-radius: var(--radius-card); }
   .change-title { font-weight: 500; }
   .receipt { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 13px; }
@@ -116,6 +169,14 @@
     .chart-label { font-size: 12px; }
     .chart-value { font-size: 11px; }
     .recommendation, .recommendation dl { grid-template-columns: 1fr; gap: 16px; }
+    .metric-strip.three { grid-template-columns: 1fr; }
+    .how { padding: 20px; }
+    .how-steps { grid-template-columns: minmax(0, 1fr); }
+    .alert-row, .move-row { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+    .move-cell, .move-values { grid-column: 1; }
+    .move-cell { grid-row: 2; }
+    .move-values { grid-row: 3; text-align: left; }
+    .alert-count { text-align: left; }
     table { min-width: 450px; }
   }
   @media screen {
@@ -152,6 +213,11 @@
     .chart-section { margin-top: 18pt; }
     .legend { font-size: 8pt; }
     .chart-grid { display: block; }
+    .how { margin: 10pt 0; padding: 10pt; }
+    .how-steps { display: block; }
+    .how-step + .how-step { margin-top: 12pt; }
+    .how-table { font-size: 8pt; }
+    .how-lead, .how-why li { font-size: 9pt; }
     .chart { margin-bottom: 8pt; padding: 8pt; break-inside: avoid; }
     .chart-row, .chart-axis { grid-template-columns: 90pt minmax(0, 1fr) 100pt; gap: 12pt; }
     .chart-row { padding: 4pt 0; }
@@ -227,7 +293,7 @@
 </header>
 {% if payload.scorecard %}{{ metric_strip(payload.scorecard) }}{% endif %}
 
-{% if charts %}
+{% if charts and "charts" not in payload.omit %}
 <section class="chart-section" aria-labelledby="comparison-title">
   <div class="section-heading"><h2 id="comparison-title">Account performance</h2><p class="legend"><span>Current</span><span class="previous">Previous</span></p></div>
   {% if payload.total_suppressed_reason %}<p class="note"><strong>No combined total:</strong> {{ payload.total_suppressed_reason }}.</p>{% endif %}
@@ -267,11 +333,11 @@
 
 {% if insights %}{% include "insights.html.j2" %}{% endif %}
 
-{% if payload.scorecard %}
+{% if payload.scorecard and "scorecard" not in payload.omit %}
 <section aria-labelledby="scorecard-title"><div class="section-heading"><h2 id="scorecard-title">All accounts</h2></div>{{ metrics(payload.scorecard, definitions=true) }}</section>
 {% endif %}
 
-{% for section in payload.platform_sections %}
+{% for section in (payload.platform_sections if "platforms" not in payload.omit else ()) %}
 <section class="platform-section" aria-labelledby="platform-{{ loop.index }}">
   <div class="platform-header">
   <div class="section-heading"><h2 id="platform-{{ loop.index }}">{{ section.platform.value | replace("_", " ") | title }}</h2><p class="section-meta">{{ section.account_ref }} · {{ section.currency }}</p></div>
@@ -290,7 +356,7 @@
 
 {% if payload.recommendations %}
 <section aria-labelledby="recommendations-title">
-  <div class="section-heading"><h2 id="recommendations-title">Next steps</h2></div>
+  <div class="section-heading"><h2 id="recommendations-title">Next steps</h2>{% if insights and insights.narrative_source %}<p class="section-meta">{{ insights.narrative_source }}</p>{% endif %}</div>
   {% for rec in payload.recommendations %}
   <article class="recommendation">
     <div><h3>{{ rec.target }}</h3><span class="confidence">{{ rec.confidence | capitalize }} confidence</span></div>
@@ -302,6 +368,19 @@
     </dl></details></div>
   </article>
   {% endfor %}
+</section>
+{% endif %}
+
+{% if insights and insights.change %}
+{% set panel = insights.change %}
+<section aria-labelledby="change-title">
+  <div class="section-heading"><h2 id="change-title">A change, approved and verified</h2><p class="section-meta">{{ panel.context or panel.account_ref }}</p></div>
+  <p class="note">Nothing reaches an ad account without a person's approval: the reviewer sees a summary written from the stored proposal, approves it, and the change is applied once and read back.</p>
+  <div class="change-card">
+    <p class="change-title">{{ panel.summary[0] }}</p>
+    <ul>{% for line in panel.summary[1:] %}<li>{{ line | replace("- ", "", 1) }}</li>{% endfor %}</ul>
+    <p class="receipt"><strong>After approval:</strong> {{ panel.receipt }}</p>
+  </div>
 </section>
 {% endif %}
 

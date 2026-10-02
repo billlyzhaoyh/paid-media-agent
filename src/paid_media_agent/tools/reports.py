@@ -40,9 +40,11 @@ def run_render_report(
     pdf_engine: PdfEngine | None = None,
     insights: ReportInsights | None = None,
     report_id: str | None = None,
+    omit: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """`insights` adds the expected-range, budget, and change panels; `report_id` names the
-    files (a stable name for a demo), otherwise each render gets its own."""
+    files (a stable name for a demo), otherwise each render gets its own; `omit` leaves out
+    standard sections ("charts", "scorecard", "platforms")."""
     record = artifacts.read(args.analysis_artifact_id)
     if record.metadata.kind != "analysis":
         raise ArtifactError("artifact is not an analysis artifact")
@@ -54,8 +56,8 @@ def run_render_report(
         executive_summary=args.executive_summary,
         recommendations=tuple(args.recommendations),
     )
-    if insights is not None or report_id is not None:
-        changes: dict[str, Any] = {"insights": insights}
+    if insights is not None or report_id is not None or omit:
+        changes: dict[str, Any] = {"insights": insights, "omit": omit}
         if report_id is not None:
             changes["report_id"] = report_id
         payload = payload.model_copy(update=changes)

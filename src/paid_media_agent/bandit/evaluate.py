@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from typing import Any, Literal
@@ -61,6 +61,10 @@ class LoopResult:
     violations: list[str] = field(default_factory=list)
     unspendable: float = 0.0
     """Budget the campaigns could not spend because demand or a bid target limited them."""
+    daily: list[tuple[date, float]] = field(default_factory=list)
+    """Expected conversions on each scored day, for a chart of the run."""
+    budgets: list[tuple[date, dict[str, float]]] = field(default_factory=list)
+    """The budgets in force from each decision day (and from the first scored day)."""
 
 
 def _cpa_rule(
@@ -104,8 +108,12 @@ async def run_closed_loop(
     config: BanditConfig | None = None,
     predictor: Predictor | None = None,
     store: Store | None = None,
+    replay: Sequence[Mapping[str, float]] | None = None,
 ) -> LoopResult:
-    """Run one policy over a simulated account and score it against the truth."""
+    """Run one policy over a simulated account and score it against the truth.
+
+    `replay` applies budgets decided in an earlier run, one mapping per decision, in place of
+    asking the policy: the same decisions rebuild the same account without the predictor."""
     config = config or BanditConfig()
     params = replace(params, days=warmup_days + days)
     store = store if store is not None else Store()
@@ -122,14 +130,21 @@ async def run_closed_loop(
                 budgets[campaign.entity_ref] = schedule[campaign.entity_ref][index]
         if index >= warmup_days and (index - warmup_days) % max(config.hold_days, 1) == 0:
             as_of = sim.day(index)
-            changes = await _decide(
-                store, predictor, policy, as_of, config, truth, params, result, index
-            )
+            if replay is not None:
+                changes = dict(replay[result.decisions]) if result.decisions < len(replay) else {}
+            else:
+                changes = await _decide(
+                    store, predictor, policy, as_of, config, truth, params, result, index
+                )
             budgets.update(changes)
             controlled |= {c.entity_ref for c in sim.active(index)}
             result.decisions += 1
+            result.budgets.append((as_of, dict(budgets)))
+        elif index == warmup_days - 1:
+            result.budgets.append((sim.day(index), dict(budgets)))
         outcomes = driver.run_day(index, budgets)
         if index >= warmup_days:
+            result.daily.append((sim.day(index), sum(o.expected_conversions for o in outcomes)))
             result.expected_conversions += sum(o.expected_conversions for o in outcomes)
             result.spend += sum(o.spend for o in outcomes)
             result.unspendable += sum(

@@ -37,7 +37,7 @@ Add `--help` for options and `--json` where supported for machine-readable outpu
 | `uv run paid-media-agent policy validate` | Validate the write policy against the current catalog |
 | `uv run paid-media-agent doctor` | Check configuration, dependencies, and runtime prerequisites |
 | `uv run paid-media-agent doctor --live` | Read each account through its live tools and check the data path end to end |
-| `uv run paid-media-agent demo --visual` | Open a report page for a simulated account: expected ranges, budget curves, an approved change |
+| `uv run paid-media-agent demo --visual` | Open a report page for a simulated store: what was unusual, what the agent's budget moves bought, its next steps, an approved change. Replays a recording; calls nothing |
 | `uv run paid-media-agent demo --with-proposal` | The same flow as text: offline analysis and simulated approved change |
 | `uv run paid-media-agent ask "Compare campaign performance last week"` | Run a question with your configured model |
 | `uv run paid-media-agent report --cadence weekly` | Render a report without a model (`--insights` adds expected ranges and budget curves) |

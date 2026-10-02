@@ -115,19 +115,26 @@ You can also ask your coding agent to guide setup:
 uv run paid-media-agent demo --visual
 ```
 
-The demo opens a [report page](docs/screenshots/demo-report.png) for a simulated account, where
-the true spend curves and the planted anomalies are known:
+The demo opens a [report page](docs/screenshots/demo-report.png) for Northwind, a simulated store.
+A simulation is used because it knows what real data cannot: which anomalies were planted and
+what each campaign's true spend curve is. The page reads top to bottom:
 
-- **Expected ranges.** Each campaign-day against the range [TabPFN](https://priorlabs.ai/)
-  expected, with the days it flagged and the anomalies that were really planted, beside what the
-  local model and a ±50% day-over-day rule flagged on the same days.
-- **Budget curves.** Each campaign's fitted spend response against its true curve, the points the
-  global model suggested, and the current and recommended budgets.
-- **A change.** A proposal as its reviewer saw it, approved, applied once, and read back.
+- **What was unusual.** [TabPFN](https://priorlabs.ai/) learns each campaign's normal range and
+  flags the days outside it. On this store it raised 4 alerts and 3 were real problems; a ±50%
+  day-over-day rule raised 24 for the same days, 22 of them false alarms.
+- **What the budget moves bought.** For eight weeks the agent moved budget each week to where
+  TabPFN's predictions said the next unit of spend would buy the most. That produced 39.6
+  conversions a day against 37.3 with the budgets left alone (+6.1% at the same total budget);
+  the best possible split would have produced 40.0.
+- **How TabPFN is applied.** Both sections follow one real case through the model: the table
+  rows that went in, the range or prediction that came out, and what was decided from it.
+- **Next steps.** The agent's own summary and recommendations, written from those figures and
+  checked against them.
+- **A change, approved and verified.** A proposal as its reviewer saw it, and its readback.
 
-It needs no token: TabPFN's answers for this fixed account are recorded and replayed, and the
-page says so. With `TABPFN_TOKEN` set, the same command asks TabPFN live. It doesn't call a
-language model or touch live campaigns. `demo --with-proposal` prints the same flow as text.
+The demo calls no model and no TabPFN: it replays a recording of the weekly decisions, TabPFN's
+answers, and the agent's text, and the page says so. It doesn't touch live campaigns.
+`demo --with-proposal` prints the analysis and approval flow as text.
 
 Once configured, ask a question or generate a report:
 

@@ -96,6 +96,29 @@ class BandPoint:
     method: str
 
 
+@dataclass(frozen=True)
+class InputRow:
+    """One table row as the model saw it: a campaign-day, its feature values, and its value."""
+
+    entity_ref: str
+    entity_name: str
+    day: date
+    features: tuple[float, ...]
+    target: float
+
+
+@dataclass(frozen=True)
+class ModelInput:
+    """What one request to the model held, kept so a report can show it."""
+
+    columns: tuple[str, ...]
+    quantiles: tuple[float, ...]
+    history: tuple[InputRow, ...]
+    """Rows before the checked days, with the value known."""
+    judged: tuple[InputRow, ...]
+    """Rows inside the checked days: the model is asked for each one's range."""
+
+
 @dataclass
 class AnomalyReport:
     check_id: uuid.UUID
@@ -111,6 +134,8 @@ class AnomalyReport:
     notes: list[str] = field(default_factory=list)
     bands: list[BandPoint] = field(default_factory=list)
     """Every day a model judged, in or out of its range; not stored and not in `as_json`."""
+    inputs: dict[str, ModelInput] = field(default_factory=dict)
+    """Per metric, the table a model was given; not stored and not in `as_json`."""
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -250,6 +275,19 @@ def _build(
             series.targets.append(target)
             series.completeness.append(share)
     return train, test, skipped
+
+
+def _input_rows(series: _Series) -> tuple[InputRow, ...]:
+    return tuple(
+        InputRow(
+            entity_ref=row.entity_ref,
+            entity_name=row.entity_name,
+            day=row.day,
+            features=tuple(features),
+            target=target,
+        )
+        for row, features, target in zip(series.rows, series.features, series.targets, strict=True)
+    )
 
 
 def _band_flags(
@@ -441,6 +479,12 @@ async def check_anomalies(
                     )
                     report.flags += flags
                     report.bands += points
+                    report.inputs[metric] = ModelInput(
+                        columns=_COLUMNS[metric],
+                        quantiles=quantiles,
+                        history=_input_rows(train),
+                        judged=_input_rows(test),
+                    )
             if method == RULE:
                 report.flags += _rule_flags(test, metric, panel, maturity, curves)
             report.methods[metric] = method

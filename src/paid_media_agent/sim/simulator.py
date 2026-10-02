@@ -91,6 +91,8 @@ class ScenarioParams:
     """Also report Google-style impression-share losses and status reasons, derived from truth."""
     events: tuple[SimEvent, ...] = ()
     """Planted funnel changes; none keeps every scenario exactly as before."""
+    campaign_names: tuple[str, ...] = ()
+    """Names for the campaigns, in order; any beyond these keep "Simulated campaign N"."""
 
     def as_json(self) -> dict[str, Any]:
         data = asdict(self)
@@ -98,6 +100,8 @@ class ScenarioParams:
         data["platform"] = self.platform.value
         if not self.events:
             data.pop("events")
+        if not self.campaign_names:
+            data.pop("campaign_names")
         return data
 
 
@@ -190,7 +194,9 @@ class Simulator:
             campaigns.append(
                 CampaignTruth(
                     entity_ref=f"sim-{i + 1:03d}",
-                    name=f"Simulated campaign {i + 1}",
+                    name=p.campaign_names[i]
+                    if i < len(p.campaign_names)
+                    else f"Simulated campaign {i + 1}",
                     kappa1=kappa1,
                     kappa2=kappa2,
                     base_budget=round(budget, 2),

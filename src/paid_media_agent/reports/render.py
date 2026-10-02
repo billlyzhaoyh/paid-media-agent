@@ -24,7 +24,14 @@ from paid_media_agent.domain.reports import (
     ReportScope,
     ScorecardRow,
 )
-from paid_media_agent.reports.charts import band_chart, curve_chart
+from paid_media_agent.reports.charts import (
+    alert_bars,
+    band_chart,
+    budget_bars,
+    curve_chart,
+    range_bar,
+    trial_chart,
+)
 
 _DEFINITIONS: dict[str, str] = {
     "spend": "Platform-reported cost in account currency",
@@ -419,6 +426,7 @@ class ReportRenderer:
             undefined=StrictUndefined,
         )
         env.filters["date_window"] = _format_window
+        env.filters["day"] = lambda value: f"{value:%b} {value.day}"
         insights = payload.insights
         ranges = insights.anomaly if insights else None
         budgets = insights.budgets if insights else None
@@ -427,6 +435,10 @@ class ReportRenderer:
             charts=comparison_charts(payload.platform_sections),
             insights=insights,
             band_charts=[(s, band_chart(s)) for s in ranges.series] if ranges else [],
+            alert_bars=alert_bars(ranges.scores) if ranges else (),
+            range_bar=range_bar(ranges.how.example) if ranges and ranges.how else None,
+            trial_chart=trial_chart(budgets.trial) if budgets and budgets.trial else None,
+            budget_bars=budget_bars(budgets.trial.rows) if budgets and budgets.trial else (),
             curve_charts=[(c, curve_chart(c, budgets.currency)) for c in budgets.curves]
             if budgets
             else [],

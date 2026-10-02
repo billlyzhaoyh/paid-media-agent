@@ -1,4 +1,5 @@
-{# Panels beyond the two-window comparison. Geometry comes from reports/charts.py; this file only draws. #}
+{# Panels beyond the two-window comparison. Each opens with its finding; geometry comes from
+   reports/charts.py and this file only draws. #}
 {# A company's own token set may predate the model colour; fall back to the default. #}
 {% set model = tokens.get("model", "#1f6fb0") %}
 {% set source_text = {
@@ -14,7 +15,8 @@
 } %}
 {# WeasyPrint does not apply page CSS inside SVG, so text carries its own attributes. #}
 {% set tick_font = 'font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="' ~ tokens.muted ~ '"' %}
-{% macro axes(frame, x_title="", y_title="") -%}
+{% set label_font = 'font-family="IBM Plex Sans, system-ui, sans-serif" font-size="11" fill="' ~ tokens.ink ~ '"' %}
+{% macro axes(frame, x_title="") -%}
   {% for tick in frame.y_ticks %}
   <line x1="{{ frame.left }}" y1="{{ tick.at }}" x2="{{ frame.right }}" y2="{{ tick.at }}" stroke="{{ tokens.line }}" stroke-width="1" />
   <text x="{{ frame.left - 8 }}" y="{{ tick.at + 3.5 }}" text-anchor="end" {{ tick_font | safe }}>{{ tick.label }}</text>
@@ -26,13 +28,99 @@
   {% if x_title %}<text x="{{ frame.right }}" y="{{ frame.height - 2 }}" text-anchor="end" {{ tick_font | safe }}>{{ x_title }}</text>{% endif %}
 {%- endmacro %}
 
+{% macro how_title(model) -%}
+  How {{ model if model == "TabPFN" else "the " ~ (model | lower) }} is applied
+{%- endmacro %}
+{% macro how_table(how, label) -%}
+  <div class="table-wrap" tabindex="0" role="region" aria-label="{{ label }}">
+  <table class="how-table">
+    <thead><tr>{% for header in how.headers %}<th scope="col"{% if loop.index > 2 %} class="num"{% endif %}>{{ header }}</th>{% endfor %}<th scope="col" class="num answer">{{ how.answer_header }}</th></tr></thead>
+    <tbody>
+    {% for row in how.rows %}
+    <tr{% if row.asked %} class="asked"{% endif %}>
+      {% for cell in row.cells %}<td{% if loop.index > 2 %} class="num"{% endif %}>{{ cell }}</td>{% endfor %}
+      <td class="num answer">{% if row.asked %}<span class="ask">?</span>{% if row.predicted %} → {{ row.predicted }} predicted{% endif %}{% else %}{{ row.answer }}{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+{%- endmacro %}
+{% set arrows = {"up": "↑ raised", "down": "↓ cut", "flat": "kept"} %}
+{% set arrows_next = {"up": "↑ raise", "down": "↓ cut", "flat": "keep"} %}
+
 {% if insights and insights.anomaly %}
 {% set panel = insights.anomaly %}
 <section aria-labelledby="ranges-title">
-  <div class="section-heading"><h2 id="ranges-title">Expected range and anomalies</h2><p class="section-meta">{{ panel.label }} · {{ source_text[panel.source] }}</p></div>
-  <p class="note">Each day is judged against the range the model expected from the weeks before it.
-  {% for metric, window in panel.windows.items() %}{{ metric | capitalize }} checked {{ window | date_window }}{{ "; " if not loop.last else "." }}{% endfor %}
-  Conversions are checked on earlier days because recent ones are still arriving.{% if panel.source in source_note %} {{ source_note[panel.source] }}{% endif %}</p>
+  <div class="section-heading"><h2 id="ranges-title">What was unusual</h2><p class="section-meta">{{ panel.label }} · {{ source_text[panel.source] }}</p></div>
+  {% if panel.headline %}<p class="finding">{{ panel.headline }}</p>{% endif %}
+  {% if panel.how %}
+  {% set how = panel.how %}{% set ex = how.example %}
+  {% set money = ex.metric == "spend" %}
+  <figure class="how" aria-labelledby="how-ranges">
+    <h3 id="how-ranges">{{ how_title(how.model) }}</h3>
+    <div class="how-steps">
+      <div class="how-step">
+        <p class="how-n"><span>1</span>What goes in</p>
+        <p class="how-lead">A table with one row per campaign per day: {{ "{:,}".format(how.history_rows) }} rows of history with the {{ how.answer_header | lower }} known, and {{ how.judged_rows }} rows to judge. Three of them:</p>
+        {{ how_table(how, "Rows given to the model") }}
+        <p class="note">Each row also carries {{ how.other_columns | join("; ") }}. One request per metric: {{ how.requests }} for this page.</p>
+      </div>
+      <div class="how-step">
+        <p class="how-n"><span>2</span>What comes out</p>
+        <p class="how-lead">For each row to judge, a range: where {{ (ex.high_level - ex.low_level) | round | int }} in 100 normal days would land. For {{ ex.entity_name }} on {{ ex.day | day }}:</p>
+        <svg class="range-bar" viewBox="0 0 {{ range_bar.width }} {{ range_bar.height }}" role="img" aria-label="{{ range_bar.summary }}">
+          <line x1="12" y1="{{ range_bar.band_top + range_bar.band_height / 2 }}" x2="{{ range_bar.width - 12 }}" y2="{{ range_bar.band_top + range_bar.band_height / 2 }}" stroke="{{ tokens.line }}" stroke-width="1" />
+          <rect x="{{ range_bar.lo }}" y="{{ range_bar.band_top }}" width="{{ range_bar.hi - range_bar.lo }}" height="{{ range_bar.band_height }}" rx="3" fill="{{ model }}" fill-opacity=".2" stroke="{{ model }}" stroke-width="1" />
+          <line x1="{{ range_bar.expected }}" y1="{{ range_bar.band_top - 3 }}" x2="{{ range_bar.expected }}" y2="{{ range_bar.band_top + range_bar.band_height + 3 }}" stroke="{{ model }}" stroke-width="2" />
+          <text x="{{ range_bar.expected }}" y="{{ range_bar.band_top - 8 }}" text-anchor="middle" {{ label_font | safe }}>{{ range_bar.expected_label }}</text>
+          <text x="{{ range_bar.lo }}" y="{{ range_bar.band_top + range_bar.band_height + 17 }}" text-anchor="end" {{ tick_font | safe }}>{{ range_bar.lo_label }}</text>
+          <text x="{{ range_bar.hi }}" y="{{ range_bar.band_top + range_bar.band_height + 17 }}" text-anchor="start" {{ tick_font | safe }}>{{ range_bar.hi_label }}</text>
+          <circle cx="{{ range_bar.observed }}" cy="{{ range_bar.band_top + range_bar.band_height / 2 }}" r="4" fill="{{ tokens.current }}" stroke="{{ tokens.paper }}" stroke-width="1.5" />
+          {% if range_bar.outside %}<circle cx="{{ range_bar.observed }}" cy="{{ range_bar.band_top + range_bar.band_height / 2 }}" r="8" fill="none" stroke="{{ tokens.ink }}" stroke-width="2" />{% endif %}
+          <text x="{{ range_bar.observed }}" y="12" text-anchor="{{ range_bar.observed_anchor }}" {{ label_font | safe }} font-weight="500">{{ range_bar.observed_label }}</text>
+        </svg>
+        <dl class="how-values">
+          <div><dt>Low ({{ ex.low_level | round(1) }}%)</dt><dd>{{ "{:,.2f}".format(ex.lo) }}</dd></div>
+          <div><dt>Expected</dt><dd>{{ "{:,.2f}".format(ex.expected) }}</dd></div>
+          <div><dt>High ({{ ex.high_level | round(1) }}%)</dt><dd>{{ "{:,.2f}".format(ex.hi) }}</dd></div>
+        </dl>
+        <p class="how-n"><span>3</span>The verdict</p>
+        <p class="how-lead">{{ ex.entity_name }} {{ "spent" if money else "recorded" }} {{ "{:,.2f}".format(ex.observed) }}{% if ex.unit %} {{ ex.unit }}{% endif %}, {% if ex.observed > ex.hi %}above the top of the range{% else %}below the bottom of the range{% endif %}: an alert.{% if ex.note %} In the simulation this day was: <strong>{{ ex.note }}</strong>.{% endif %}</p>
+      </div>
+    </div>
+    <div class="how-why">
+      <p class="how-n">Why a range per row beats a fixed rule</p>
+      <ul>
+        {% if how.step %}{% set st = how.step %}
+        <li><strong>The range moves with the budget.</strong> On {{ st.day | day }} {{ st.entity_name }}'s budget went from {{ "{:,.0f}".format(st.budget_before) }} to {{ "{:,.0f}".format(st.budget_after) }}, and the expected spend went from {{ "{:,.0f}".format(st.expected_before) }} to {{ "{:,.0f}".format(st.expected_after) }} with it. No alert: the budget is in the row, so a deliberate change is not mistaken for a problem.</li>
+        {% endif %}
+        {% if how.contrast %}{% set c = how.contrast %}
+        <li><strong>The range is as wide as the campaign is noisy.</strong> {{ c.entity_name }} went from {{ "{:,.0f}".format(c.before) if c.metric == "spend" else "{:g}".format(c.before) }} to {{ "{:,.0f}".format(c.observed) if c.metric == "spend" else "{:g}".format(c.observed) }}{% if c.metric != "spend" %} conversions{% endif %} on {{ c.day | day }} ({{ "{:+.0%}".format(c.change) }}), so the ±50% rule alerts. The model's range for that day was {{ "{:,.0f}".format(c.lo) if c.metric == "spend" else "{:.1f}".format(c.lo) }} to {{ "{:,.0f}".format(c.hi) if c.metric == "spend" else "{:.1f}".format(c.hi) }}: no alert{% if c.planted_known %}, and nothing was planted there{% endif %}.{% if c.others %} The rule raised {{ c.others }} more alert{{ "" if c.others == 1 else "s" }} like it.{% endif %}</li>
+        {% endif %}
+        {% if how.about %}<li><strong>Nothing to train or tune.</strong> {{ how.about }}</li>{% endif %}
+      </ul>
+    </div>
+  </figure>
+  {% if alert_bars %}<p class="how-n result">The result, on the same days</p>{% endif %}
+  {% else %}
+  <p class="note">The model learns each campaign's normal range from the weeks before, given the weekday, the budget, and the spend, and flags a day that falls outside it. Fewer false alarms means fewer days someone has to investigate for nothing.</p>
+  {% endif %}
+  {% if alert_bars %}
+  <div class="alerts">
+    {% for bar in alert_bars %}
+    <div class="alert-row">
+      <p class="alert-label">{{ bar.label }}</p>
+      <div class="alert-track" aria-hidden="true">
+        {% if bar.caught %}<span class="alert-real" style="width: {{ bar.caught_width }}%"></span>{% endif %}
+        {% if bar.false_alarms %}<span class="alert-false" style="width: {{ bar.false_width }}%"></span>{% endif %}
+      </div>
+      <p class="alert-count">{{ bar.caught }} real of {{ panel.planted }} · {{ bar.false_alarms }} false alarm{{ "" if bar.false_alarms == 1 else "s" }}</p>
+    </div>
+    {% endfor %}
+    <p class="keys"><span class="key"><span class="swatch-real"></span>Real problem caught</span><span class="key"><span class="swatch-false"></span>False alarm</span></p>
+  </div>
+  {% endif %}
   <p class="keys">
     <span class="key"><svg width="22" height="10" aria-hidden="true"><line x1="0" y1="5" x2="22" y2="5" stroke="{{ tokens.current }}" stroke-width="2" /><circle cx="11" cy="5" r="3" fill="{{ tokens.current }}" /></svg>Observed</span>
     <span class="key"><svg width="22" height="10" aria-hidden="true"><rect x="0" y="0" width="22" height="10" fill="{{ model }}" fill-opacity=".14" /><line x1="0" y1="5" x2="22" y2="5" stroke="{{ model }}" stroke-width="1.5" /></svg>Expected, with its range</span>
@@ -51,23 +139,14 @@
       {% for mark in chart.planted %}<path d="M{{ mark.x }} {{ mark.y - 9 }} L{{ mark.x + 5 }} {{ mark.y - 1 }} L{{ mark.x - 5 }} {{ mark.y - 1 }} Z" fill="{{ tokens.ink }}"><title>{{ mark.title }}</title></path>{% endfor %}
       {% for mark in chart.points %}<circle cx="{{ mark.x }}" cy="{{ mark.y }}" r="3.5" fill="{{ tokens.current }}" stroke="{{ tokens.paper }}" stroke-width="1.5"><title>{{ mark.title }}</title></circle>{% endfor %}
       {% for mark in chart.flags %}<circle cx="{{ mark.x }}" cy="{{ mark.y }}" r="8" fill="none" stroke="{{ tokens.ink }}" stroke-width="2"><title>{{ mark.title }}</title></circle>{% endfor %}
+      {% for callout in chart.callouts %}<text x="{{ callout.x }}" y="{{ callout.y }}" text-anchor="{{ callout.anchor }}" {{ label_font | safe }} stroke="{{ tokens.paper }}" stroke-width="3" stroke-linejoin="round" aria-hidden="true">{{ callout.text }}</text><text x="{{ callout.x }}" y="{{ callout.y }}" text-anchor="{{ callout.anchor }}" {{ label_font | safe }}>{{ callout.text }}</text>{% endfor %}
     </svg>
   </figure>
   {% endfor %}
   </div>
-  {% if panel.scores %}
-  <div class="table-wrap" tabindex="0" role="region" aria-label="Flags by method">
-  <table>
-    <thead><tr><th scope="col">Judged by</th><th scope="col" class="num">Days flagged</th>{% if panel.planted is not none %}<th scope="col" class="num">Planted caught</th><th scope="col" class="num">False alarms</th>{% endif %}</tr></thead>
-    <tbody>
-    {% for score in panel.scores %}
-    <tr><td>{{ score.label }}</td><td class="num">{{ score.flagged }}</td>{% if panel.planted is not none %}<td class="num">{{ score.caught }} of {{ panel.planted }}</td><td class="num">{{ score.false_alarms }}</td>{% endif %}</tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  </div>
-  {% endif %}
-  <p class="note"><strong>Backtest, three simulated accounts of about 450 campaign-days each:</strong> TabPFN's 95% range had precision 0.34 and 21 false alarms per account; the local model 0.24 and 33; the ±50% day-over-day rule 0.07 and 169.</p>
+  <p class="note">{% for metric, window in panel.windows.items() %}{{ metric | capitalize }} checked {{ window | date_window }}{{ "; " if not loop.last else "." }}{% endfor %}
+  Conversions are checked on earlier days because recent ones are still arriving.{% if panel.hidden_series %} {{ panel.hidden_series }} campaign chart{{ "" if panel.hidden_series == 1 else "s" }} with nothing flagged or planted {{ "is" if panel.hidden_series == 1 else "are" }} not shown.{% endif %}{% if panel.source in source_note %} {{ source_note[panel.source] }}{% endif %}</p>
+  <p class="note"><strong>Across three simulated accounts of about 450 campaign-days each:</strong> TabPFN's 95% range had precision 0.34 and 21 false alarms per account; the local model 0.24 and 33; the ±50% day-over-day rule 0.07 and 169.</p>
   {% for note in panel.notes %}<p class="note">{{ note }}</p>{% endfor %}
 </section>
 {% endif %}
@@ -75,11 +154,111 @@
 {% if insights and insights.budgets %}
 {% set panel = insights.budgets %}
 <section aria-labelledby="budgets-title">
-  <div class="section-heading"><h2 id="budgets-title">Budget response and recommendation</h2><p class="section-meta">{{ panel.label }} · {{ source_text[panel.source] }}</p></div>
-  <p class="note">Conversions a day against daily spend. Each campaign's curve is fitted to its own days and to points the global model suggests from every campaign's history. Budgets move toward where the next unit of spend buys the most. Nothing has been changed.{% if panel.source in source_note %} {{ source_note[panel.source] }}{% endif %}</p>
+  <div class="section-heading"><h2 id="budgets-title">{% if panel.trial %}What the budget moves bought{% else %}Budget response and recommendation{% endif %}</h2><p class="section-meta">{{ panel.label }} · {{ source_text[panel.source] }}</p></div>
+  {% if panel.headline %}<p class="finding">{{ panel.headline }}</p>{% endif %}
+  {% if panel.trial %}
+  {% set trial = panel.trial %}
+  <p class="note">Each week the model predicts how many conversions each campaign would get at budgets it has not tried, and the agent moves budget to where the next unit of spend buys the most, at most 25% per campaign per week. All three lines are scored by the simulation's true curves, not by any fitted model.</p>
+  <dl class="metric-strip three">
+    {% for run in trial.runs %}
+    <div class="metric-tile">
+      <dt>{{ run.label }}</dt>
+      <dd class="metric-value">{{ "{:.1f}".format(run.per_day) }}<span class="metric-unit"> conversions a day</span></dd>
+      <dd class="metric-change">{% if run.key == "agent" %}{{ "{:+.1%}".format(trial.gain) }} against budgets left alone{% elif run.key == "best" %}{{ "{:+.1%}".format(trial.best_gain) }}, knowing the true curves{% else %}the comparison{% endif %}</dd>
+    </div>
+    {% endfor %}
+  </dl>
+  <figure class="chart wide" aria-labelledby="trial-title">
+    <h3 id="trial-title">Conversions per week</h3>
+    <svg class="plot" viewBox="0 0 {{ trial_chart.frame.width }} {{ trial_chart.frame.height }}" role="img" aria-label="{{ trial_chart.summary }}">
+      {{ axes(trial_chart.frame, x_title="week starting") }}
+      {% for line in trial_chart.lines %}
+      {% if line.key == "best" %}<polyline points="{{ line.points }}" fill="none" stroke="{{ tokens.ink }}" stroke-width="1.5" stroke-dasharray="4 3" />
+      {% elif line.key == "agent" %}<polyline points="{{ line.points }}" fill="none" stroke="{{ tokens.current }}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" />
+      {% else %}<polyline points="{{ line.points }}" fill="none" stroke="{{ tokens.previous }}" stroke-width="2" stroke-linejoin="round" />{% endif %}
+      <circle cx="{{ line.end.x }}" cy="{{ line.end.y }}" r="4" fill="{{ tokens.ink if line.key == 'best' else (tokens.current if line.key == 'agent' else tokens.previous) }}" stroke="{{ tokens.paper }}" stroke-width="2"><title>{{ line.end.title }}</title></circle>
+      {% endfor %}
+      {% for callout in trial_chart.labels %}<text x="{{ callout.x }}" y="{{ callout.y }}" text-anchor="{{ callout.anchor }}" {{ label_font | safe }}>{{ callout.text }}</text>{% endfor %}
+    </svg>
+    <p class="keys">
+      <span class="key"><svg width="22" height="10" aria-hidden="true"><line x1="0" y1="5" x2="22" y2="5" stroke="{{ tokens.previous }}" stroke-width="2" /></svg>Budgets left alone</span>
+      <span class="key"><svg width="22" height="10" aria-hidden="true"><line x1="0" y1="5" x2="22" y2="5" stroke="{{ tokens.current }}" stroke-width="2.5" /></svg>The agent's weekly moves</span>
+      <span class="key"><svg width="22" height="10" aria-hidden="true"><line x1="0" y1="5" x2="22" y2="5" stroke="{{ tokens.ink }}" stroke-width="1.5" stroke-dasharray="4 3" /></svg>Best possible</span>
+    </p>
+  </figure>
+  <figure class="chart wide" aria-labelledby="moves-title">
+    <h3 id="moves-title">Daily budget by campaign{% if panel.currency %} · {{ panel.currency }}{% endif %}</h3>
+    {% for bar in budget_bars %}
+    <div class="move-row">
+      <p class="chart-label">{{ bar.row.entity_name }}<span class="chart-account">limited by {{ bar.row.limited_by }}</span></p>
+      <div class="move-cell" aria-hidden="true">
+        <span class="move-line"></span>
+        <span class="move-span" style="left: {{ [bar.start, bar.now] | min }}%; width: {{ (bar.now - bar.start) | abs }}%"></span>
+        <span class="mark-start" style="left: {{ bar.start }}%"></span>
+        {% if bar.recommended is not none %}<span class="mark-next" style="left: {{ bar.recommended }}%"></span>{% endif %}
+        <span class="mark-now" style="left: {{ bar.now }}%"></span>
+      </div>
+      <p class="move-values"><span class="chart-value">{{ "{:,.0f}".format(bar.row.start) }} → {{ "{:,.0f}".format(bar.row.now) }} · {{ bar.change }}</span>{% if bar.row.recommended is not none %}<span class="chart-value previous">next week {{ "{:,.0f}".format(bar.row.recommended) }}</span>{% endif %}</p>
+    </div>
+    {% endfor %}
+    <p class="keys">
+      <span class="key"><span class="mark-start static"></span>Before the agent</span>
+      <span class="key"><span class="mark-now static"></span>Now, after {{ trial.decisions }} weekly moves</span>
+      <span class="key"><span class="mark-next static"></span>Recommended next</span>
+    </p>
+  </figure>
+  {% endif %}
+  {% if panel.how %}
+  {% set how = panel.how %}
+  <figure class="how" aria-labelledby="how-budgets">
+    <h3 id="how-budgets">{{ how_title(how.model) }}</h3>
+    <div class="how-steps">
+      <div class="how-step">
+        <p class="how-n"><span>1</span>What goes in</p>
+        <p class="how-lead">A table with one row per campaign per day, from all {{ how.campaigns }} campaigns together: {{ "{:,}".format(how.history_rows) }} rows with the conversions known. Each row carries the campaign's cost per conversion, the weekday, and the spend.</p>
+        <p class="how-n"><span>2</span>What it is asked, and answers</p>
+        <p class="how-lead">What would each campaign get at {{ how.levels }} spend levels, averaged over weekdays? For {{ how.entity_name }}, two of its days and two of the questions:</p>
+        {{ how_table(how, "Rows given to the model, and two of its answers") }}
+        <p class="note">The answers join the campaign's own days when its spend curve is fitted, so the curve is not drawn from that campaign's few days alone.</p>
+      </div>
+      <div class="how-step">
+        <p class="how-n"><span>3</span>What the predictions decide</p>
+        <p class="how-lead">{{ how.headline }}</p>
+        {% set has_start = how.marginals | selectattr("start_predicted") | list %}
+        {% set has_truth = how.marginals | selectattr("now_true") | list %}
+        <div class="table-wrap" tabindex="0" role="region" aria-label="What a little more spend would buy in each campaign">
+        <table class="how-table">
+          <thead><tr><th scope="col">Next {{ "{:,.0f}".format(how.step) }} a day buys</th>{% if has_start %}<th scope="col" class="num">Before the agent{% if has_truth %} (true){% endif %}</th>{% endif %}<th scope="col" class="num">Now{% if has_truth %} (true){% endif %}</th>{% if has_start %}<th scope="col">So far</th>{% endif %}<th scope="col">Next</th></tr></thead>
+          <tbody>
+          {% for m in how.marginals %}
+          <tr>
+            <td>{{ m.entity_name }}</td>
+            {% if has_start %}<td class="num">{% if m.start_predicted is not none %}{{ "{:.2f}".format(m.start_predicted) }}{% if m.start_true is not none %} ({{ "{:.2f}".format(m.start_true) }}){% endif %}{% endif %}</td>{% endif %}
+            <td class="num">{{ "{:.2f}".format(m.now_predicted) }}{% if m.now_true is not none %} ({{ "{:.2f}".format(m.now_true) }}){% endif %}</td>
+            {% if has_start %}<td class="move">{{ arrows[m.moved] if m.moved else "" }}</td>{% endif %}
+            <td class="move">{{ arrows_next[m.next_move] }}</td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        </div>
+        <p class="note">Extra conversions a day, by the curves fitted today{% if has_truth %}, with the simulation's true figure in brackets{% endif %}.{% if how.balance %} {{ how.balance }}{% endif %}</p>
+      </div>
+    </div>
+    <div class="how-why">
+      <p class="how-n">Why predict at all</p>
+      <ul>
+        {% if how.tried and how.reached %}<li><strong>A campaign's own days do not reach far enough.</strong> {{ how.entity_name }} had never spent more than {{ "{:,.0f}".format(how.tried[1]) }} a day {{ how.tried_when }}; its budget is now {{ "{:,.0f}".format(how.reached) }}. Its own history could not say what that would buy. The model sees every campaign's days at once, so each borrows the response seen in the others.</li>{% endif %}
+        {% if how.about %}<li><strong>{{ "Nothing to train or tune." if how.model == "TabPFN" else "What the model is." }}</strong> {{ how.about }}</li>{% endif %}
+      </ul>
+    </div>
+  </figure>
+  {% endif %}
+  <details class="drivers"{% if not panel.trial %} open{% endif %}><summary>{% if panel.how %}Each campaign's spend response curve{% else %}How the prediction works: each campaign's spend response{% endif %}</summary><div class="details-body">
+  <p class="note">Conversions a day against daily spend. Each curve is fitted to the campaign's own days and to points the global model predicts from every campaign's history, at spends the campaign has not tried.{% if panel.source in source_note %} {{ source_note[panel.source] }}{% endif %}</p>
   <p class="keys">
     <span class="key"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="3" fill="{{ tokens.previous }}" fill-opacity=".55" /></svg>A day of history</span>
-    {% if panel.curves | selectattr("pseudo") | list %}<span class="key"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="3" fill="{{ model }}" /></svg>Suggested by the global model</span>{% endif %}
+    {% if panel.curves | selectattr("pseudo") | list %}<span class="key"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="3" fill="{{ model }}" /></svg>Predicted by the global model</span>{% endif %}
     <span class="key"><svg width="22" height="10" aria-hidden="true"><line x1="0" y1="5" x2="22" y2="5" stroke="{{ tokens.current }}" stroke-width="2" /></svg>Fitted curve</span>
     {% if panel.alternative_label %}<span class="key"><svg width="22" height="10" aria-hidden="true"><line x1="0" y1="5" x2="22" y2="5" stroke="{{ tokens.previous }}" stroke-width="1.5" /></svg>Fitted with the pooled regression</span>{% endif %}
     {% if panel.curves | selectattr("truth") | list %}<span class="key"><svg width="22" height="10" aria-hidden="true"><line x1="0" y1="5" x2="22" y2="5" stroke="{{ tokens.ink }}" stroke-width="1.5" stroke-dasharray="4 3" /></svg>True curve (simulation)</span>{% endif %}
@@ -117,20 +296,9 @@
     </tbody>
   </table>
   </div>
-  <p class="note">Budgets total {{ "{:,.2f}".format(panel.total_now) }} now and {{ "{:,.2f}".format(panel.total_recommended) }} as recommended{% if panel.currency %} ({{ panel.currency }} a day){% endif %}. Moves are limited to 25% per change. Global model: {{ panel.prior_source }}.</p>
-  {% if panel.alternative_label %}<p class="note">On simulated accounts the pooled regression has so far been the better global model for budgets (mean regret about 7 against TabPFN's 25 over three seeds), which is why it is the default; both curves are drawn so the difference is visible.</p>{% endif %}
+  <p class="note">Budgets total {{ "{:,.2f}".format(panel.total_now) }} now and {{ "{:,.2f}".format(panel.total_recommended) }} as recommended{% if panel.currency %} ({{ panel.currency }} a day){% endif %}. Global model: {{ panel.prior_source }}. Nothing has been changed.</p>
+  {% if panel.alternative_label %}<p class="note">In this project's tests across simulated accounts, the simpler pooled regression has so far been the better budget predictor than TabPFN, which is why it is the default; both do far better than leaving budgets alone. The grey curve is the pooled fit, for comparison.</p>{% endif %}
   {% for note in panel.notes %}<p class="note">{{ note }}</p>{% endfor %}
-</section>
-{% endif %}
-
-{% if insights and insights.change %}
-{% set panel = insights.change %}
-<section aria-labelledby="change-title">
-  <div class="section-heading"><h2 id="change-title">A change, approved and verified</h2><p class="section-meta">{{ panel.account_ref }}</p></div>
-  <div class="change-card">
-    <p class="change-title">{{ panel.summary[0] }}</p>
-    <ul>{% for line in panel.summary[1:] %}<li>{{ line | replace("- ", "", 1) }}</li>{% endfor %}</ul>
-    <p class="receipt"><strong>After approval:</strong> {{ panel.receipt }}</p>
-  </div>
+  </div></details>
 </section>
 {% endif %}
