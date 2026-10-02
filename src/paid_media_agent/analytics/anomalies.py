@@ -79,6 +79,23 @@ class AnomalyFlag:
     method: str
 
 
+@dataclass(frozen=True)
+class BandPoint:
+    """One judged campaign-day with the range it was judged against: what a chart draws."""
+
+    account_alias: str
+    entity_ref: str
+    entity_name: str
+    day: date
+    metric: Metric
+    observed: float
+    expected: float
+    lo: float
+    hi: float
+    flagged: bool
+    method: str
+
+
 @dataclass
 class AnomalyReport:
     check_id: uuid.UUID
@@ -92,6 +109,8 @@ class AnomalyReport:
     rows_checked: dict[str, int] = field(default_factory=dict)
     flags: list[AnomalyFlag] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    bands: list[BandPoint] = field(default_factory=list)
+    """Every day a model judged, in or out of its range; not stored and not in `as_json`."""
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -235,17 +254,35 @@ def _build(
 
 def _band_flags(
     test: _Series, metric: Metric, lo: np.ndarray, mid: np.ndarray, hi: np.ndarray, method: str
-) -> list[AnomalyFlag]:
-    flags = []
+) -> tuple[list[AnomalyFlag], list[BandPoint]]:
+    """The days outside their range, and every judged day with its range."""
+    flags: list[AnomalyFlag] = []
+    points: list[BandPoint] = []
     for i, row in enumerate(test.rows):
         share = test.completeness[i]
         low, centre, high = lo[i] * share, mid[i] * share, hi[i] * share
         observed = test.targets[i]
         if not all(math.isfinite(v) for v in (low, centre, high)):
             continue
-        if low <= observed <= high:
-            continue
-        if metric == "conversions" and abs(observed - centre) < MIN_COUNT_DEVIATION:
+        outside = not low <= observed <= high and not (
+            metric == "conversions" and abs(observed - centre) < MIN_COUNT_DEVIATION
+        )
+        points.append(
+            BandPoint(
+                account_alias=row.account_alias,
+                entity_ref=row.entity_ref,
+                entity_name=row.entity_name,
+                day=row.day,
+                metric=metric,
+                observed=observed,
+                expected=centre,
+                lo=low,
+                hi=high,
+                flagged=outside,
+                method=method,
+            )
+        )
+        if not outside:
             continue
         up = observed > high
         edge, width = (high, high - centre) if up else (low, centre - low)
@@ -266,7 +303,7 @@ def _band_flags(
                 method=method,
             )
         )
-    return flags
+    return flags, points
 
 
 def _rule_flags(
@@ -394,7 +431,7 @@ async def check_anomalies(
                     report.notes.append(f"{metric}: {exc}; the day-over-day rule ran instead")
                 else:
                     method = f"{prediction.provider}_band{round(band * 100)}"
-                    report.flags += _band_flags(
+                    flags, points = _band_flags(
                         test,
                         metric,
                         prediction.at(quantiles[0]),
@@ -402,6 +439,8 @@ async def check_anomalies(
                         prediction.at(quantiles[2]),
                         method,
                     )
+                    report.flags += flags
+                    report.bands += points
             if method == RULE:
                 report.flags += _rule_flags(test, metric, panel, maturity, curves)
             report.methods[metric] = method

@@ -6,6 +6,8 @@ is optional and only ever writes the executive summary; every number comes from 
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Literal
@@ -18,12 +20,15 @@ from paid_media_agent.config import AccountRegistry
 from paid_media_agent.domain.analysis import PeriodComparison
 from paid_media_agent.domain.common import JsonValue
 from paid_media_agent.domain.metrics import MetricWindow
+from paid_media_agent.domain.reports import ReportInsights
 from paid_media_agent.tools.artifacts import ArtifactStore
 from paid_media_agent.tools.catalog import AuthorizedToolCatalog, qualified_name
 from paid_media_agent.tools.compare_periods import ComparePeriodsArgs, run_compare_periods
 from paid_media_agent.tools.contracts import contract_for
 from paid_media_agent.tools.reads import ACCOUNT_ALIAS_ARG, ReadDenied, ReadDispatcher
 from paid_media_agent.tools.reports import RenderReportArgs, run_render_report
+
+logger = logging.getLogger(__name__)
 
 Cadence = Literal["weekly", "monthly"]
 
@@ -76,11 +81,14 @@ async def run_cadence_report(
     executive_summary: str | None = None,
     render: bool = True,
     goals: GoalLookup | None = None,
+    insights: Callable[[], Awaitable[ReportInsights | None]] | None = None,
 ) -> ReportRun:
     """Read every alias's campaign performance, compare the two windows, and render.
 
     A platform whose read fails stays visible as unavailable and suppresses the cross-platform
-    total; healthy platforms still produce sections.
+    total; healthy platforms still produce sections. `insights` builds the optional panels
+    (expected ranges, budget curves) after the reads have landed in history; if it fails the
+    report is rendered without them.
     """
     windows = report_windows(cadence, end=end)
     chosen = tuple(aliases) if aliases else accounts.aliases()
@@ -154,6 +162,12 @@ async def run_cadence_report(
     reconciled = bool(summary["reconciled"])
     if render:
         comparison = PeriodComparison.model_validate(artifacts.read(analysis_id).payload)
+        panels = None
+        if insights is not None:
+            try:
+                panels = await insights()
+            except Exception:
+                logger.warning("could not build the report's insight panels", exc_info=True)
         report_payload = run_render_report(
             artifacts,
             RenderReportArgs(
@@ -163,6 +177,7 @@ async def run_cadence_report(
                 executive_summary=executive_summary or _default_summary(comparison),
                 recommendations=[],
             ),
+            insights=panels,
         )
         reconciled = reconciled and bool(report_payload["report"]["reconciled"])
     return ReportRun(

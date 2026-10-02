@@ -1,0 +1,136 @@
+{# Panels beyond the two-window comparison. Geometry comes from reports/charts.py; this file only draws. #}
+{# A company's own token set may predate the model colour; fall back to the default. #}
+{% set model = tokens.get("model", "#1f6fb0") %}
+{% set source_text = {
+  "live": "asked live",
+  "cached": "from the stored cache",
+  "recorded": "recorded answers",
+  "local": "computed locally",
+  "rule": "no model ran"
+} %}
+{% set source_note = {
+  "cached": "These figures are the stored result of an identical earlier call.",
+  "recorded": "These are the model's answers recorded earlier for this same account and replayed; no call was made."
+} %}
+{# WeasyPrint does not apply page CSS inside SVG, so text carries its own attributes. #}
+{% set tick_font = 'font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="10" fill="' ~ tokens.muted ~ '"' %}
+{% macro axes(frame, x_title="", y_title="") -%}
+  {% for tick in frame.y_ticks %}
+  <line x1="{{ frame.left }}" y1="{{ tick.at }}" x2="{{ frame.right }}" y2="{{ tick.at }}" stroke="{{ tokens.line }}" stroke-width="1" />
+  <text x="{{ frame.left - 8 }}" y="{{ tick.at + 3.5 }}" text-anchor="end" {{ tick_font | safe }}>{{ tick.label }}</text>
+  {% endfor %}
+  <line x1="{{ frame.left }}" y1="{{ frame.bottom }}" x2="{{ frame.right }}" y2="{{ frame.bottom }}" stroke="{{ tokens.previous }}" stroke-width="1" />
+  {% for tick in frame.x_ticks %}
+  <text x="{{ tick.at }}" y="{{ frame.bottom + 16 }}" text-anchor="middle" {{ tick_font | safe }}>{{ tick.label }}</text>
+  {% endfor %}
+  {% if x_title %}<text x="{{ frame.right }}" y="{{ frame.height - 2 }}" text-anchor="end" {{ tick_font | safe }}>{{ x_title }}</text>{% endif %}
+{%- endmacro %}
+
+{% if insights and insights.anomaly %}
+{% set panel = insights.anomaly %}
+<section aria-labelledby="ranges-title">
+  <div class="section-heading"><h2 id="ranges-title">Expected range and anomalies</h2><p class="section-meta">{{ panel.label }} · {{ source_text[panel.source] }}</p></div>
+  <p class="note">Each day is judged against the range the model expected from the weeks before it.
+  {% for metric, window in panel.windows.items() %}{{ metric | capitalize }} checked {{ window | date_window }}{{ "; " if not loop.last else "." }}{% endfor %}
+  Conversions are checked on earlier days because recent ones are still arriving.{% if panel.source in source_note %} {{ source_note[panel.source] }}{% endif %}</p>
+  <p class="keys">
+    <span class="key"><svg width="22" height="10" aria-hidden="true"><line x1="0" y1="5" x2="22" y2="5" stroke="{{ tokens.current }}" stroke-width="2" /><circle cx="11" cy="5" r="3" fill="{{ tokens.current }}" /></svg>Observed</span>
+    <span class="key"><svg width="22" height="10" aria-hidden="true"><rect x="0" y="0" width="22" height="10" fill="{{ model }}" fill-opacity=".14" /><line x1="0" y1="5" x2="22" y2="5" stroke="{{ model }}" stroke-width="1.5" /></svg>Expected, with its range</span>
+    <span class="key"><svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="{{ tokens.ink }}" stroke-width="2" /></svg>Flagged</span>
+    {% if panel.planted is not none %}<span class="key"><svg width="14" height="12" aria-hidden="true"><path d="M7 1 L13 11 L1 11 Z" fill="{{ tokens.ink }}" /></svg>Planted in the simulation</span>{% endif %}
+  </p>
+  <div class="chart-grid">
+  {% for series, chart in band_charts %}
+  <figure class="chart" aria-labelledby="band-{{ loop.index }}">
+    <h3 id="band-{{ loop.index }}">{{ series.entity_name }} · {{ series.metric }}{% if series.unit and series.metric == "spend" %} · {{ series.unit }}{% endif %}</h3>
+    <svg class="plot" viewBox="0 0 {{ chart.frame.width }} {{ chart.frame.height }}" role="img" aria-label="{{ chart.summary }}">
+      {{ axes(chart.frame) }}
+      <path d="{{ chart.area }}" fill="{{ model }}" fill-opacity=".14" />
+      <polyline points="{{ chart.expected }}" fill="none" stroke="{{ model }}" stroke-width="1.5" stroke-linejoin="round" />
+      <polyline points="{{ chart.observed }}" fill="none" stroke="{{ tokens.current }}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+      {% for mark in chart.planted %}<path d="M{{ mark.x }} {{ mark.y - 9 }} L{{ mark.x + 5 }} {{ mark.y - 1 }} L{{ mark.x - 5 }} {{ mark.y - 1 }} Z" fill="{{ tokens.ink }}"><title>{{ mark.title }}</title></path>{% endfor %}
+      {% for mark in chart.points %}<circle cx="{{ mark.x }}" cy="{{ mark.y }}" r="3.5" fill="{{ tokens.current }}" stroke="{{ tokens.paper }}" stroke-width="1.5"><title>{{ mark.title }}</title></circle>{% endfor %}
+      {% for mark in chart.flags %}<circle cx="{{ mark.x }}" cy="{{ mark.y }}" r="8" fill="none" stroke="{{ tokens.ink }}" stroke-width="2"><title>{{ mark.title }}</title></circle>{% endfor %}
+    </svg>
+  </figure>
+  {% endfor %}
+  </div>
+  {% if panel.scores %}
+  <div class="table-wrap" tabindex="0" role="region" aria-label="Flags by method">
+  <table>
+    <thead><tr><th scope="col">Judged by</th><th scope="col" class="num">Days flagged</th>{% if panel.planted is not none %}<th scope="col" class="num">Planted caught</th><th scope="col" class="num">False alarms</th>{% endif %}</tr></thead>
+    <tbody>
+    {% for score in panel.scores %}
+    <tr><td>{{ score.label }}</td><td class="num">{{ score.flagged }}</td>{% if panel.planted is not none %}<td class="num">{{ score.caught }} of {{ panel.planted }}</td><td class="num">{{ score.false_alarms }}</td>{% endif %}</tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+  <p class="note"><strong>Backtest, three simulated accounts of about 450 campaign-days each:</strong> TabPFN's 95% range had precision 0.34 and 21 false alarms per account; the local model 0.24 and 33; the ±50% day-over-day rule 0.07 and 169.</p>
+  {% for note in panel.notes %}<p class="note">{{ note }}</p>{% endfor %}
+</section>
+{% endif %}
+
+{% if insights and insights.budgets %}
+{% set panel = insights.budgets %}
+<section aria-labelledby="budgets-title">
+  <div class="section-heading"><h2 id="budgets-title">Budget response and recommendation</h2><p class="section-meta">{{ panel.label }} · {{ source_text[panel.source] }}</p></div>
+  <p class="note">Conversions a day against daily spend. Each campaign's curve is fitted to its own days and to points the global model suggests from every campaign's history. Budgets move toward where the next unit of spend buys the most. Nothing has been changed.{% if panel.source in source_note %} {{ source_note[panel.source] }}{% endif %}</p>
+  <p class="keys">
+    <span class="key"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="3" fill="{{ tokens.previous }}" fill-opacity=".55" /></svg>A day of history</span>
+    {% if panel.curves | selectattr("pseudo") | list %}<span class="key"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="3" fill="{{ model }}" /></svg>Suggested by the global model</span>{% endif %}
+    <span class="key"><svg width="22" height="10" aria-hidden="true"><line x1="0" y1="5" x2="22" y2="5" stroke="{{ tokens.current }}" stroke-width="2" /></svg>Fitted curve</span>
+    {% if panel.alternative_label %}<span class="key"><svg width="22" height="10" aria-hidden="true"><line x1="0" y1="5" x2="22" y2="5" stroke="{{ tokens.previous }}" stroke-width="1.5" /></svg>Fitted with the pooled regression</span>{% endif %}
+    {% if panel.curves | selectattr("truth") | list %}<span class="key"><svg width="22" height="10" aria-hidden="true"><line x1="0" y1="5" x2="22" y2="5" stroke="{{ tokens.ink }}" stroke-width="1.5" stroke-dasharray="4 3" /></svg>True curve (simulation)</span>{% endif %}
+  </p>
+  <div class="chart-grid">
+  {% for curve, chart in curve_charts %}
+  <figure class="chart" aria-labelledby="curve-{{ loop.index }}">
+    <h3 id="curve-{{ loop.index }}">{{ curve.entity_name }}</h3>
+    <svg class="plot" viewBox="0 0 {{ chart.frame.width }} {{ chart.frame.height }}" role="img" aria-label="{{ curve.entity_name }}: conversions against daily spend, with the current and recommended budgets">
+      {{ axes(chart.frame, x_title="daily spend" ~ (" · " ~ panel.currency if panel.currency else "")) }}
+      {% for mark in chart.history %}<circle cx="{{ mark.x }}" cy="{{ mark.y }}" r="2.5" fill="{{ tokens.previous }}" fill-opacity=".45"><title>{{ mark.title }}</title></circle>{% endfor %}
+      {% for mark in chart.pseudo %}<circle cx="{{ mark.x }}" cy="{{ mark.y }}" r="2.5" fill="{{ model }}"><title>{{ mark.title }}</title></circle>{% endfor %}
+      {% if chart.truth %}<polyline points="{{ chart.truth }}" fill="none" stroke="{{ tokens.ink }}" stroke-width="1.5" stroke-dasharray="4 3" />{% endif %}
+      {% if chart.alternative %}<polyline points="{{ chart.alternative }}" fill="none" stroke="{{ tokens.previous }}" stroke-width="1.5" stroke-linejoin="round" />{% endif %}
+      <polyline points="{{ chart.fitted }}" fill="none" stroke="{{ tokens.current }}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+      {% if chart.current %}<circle cx="{{ chart.current.x }}" cy="{{ chart.current.y }}" r="5" fill="{{ tokens.paper }}" stroke="{{ tokens.ink }}" stroke-width="2"><title>{{ chart.current.title }}</title></circle>{% endif %}
+      {% if chart.recommended %}<circle cx="{{ chart.recommended.x }}" cy="{{ chart.recommended.y }}" r="5" fill="{{ tokens.ink }}" stroke="{{ tokens.paper }}" stroke-width="2"><title>{{ chart.recommended.title }}</title></circle>{% endif %}
+    </svg>
+    <figcaption class="chart-caption"><span class="key"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="4" fill="{{ tokens.paper }}" stroke="{{ tokens.ink }}" stroke-width="2" /></svg>Now {{ "{:,.0f}".format(curve.current_budget or 0) }}</span> <span class="key"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="5" fill="{{ tokens.ink }}" /></svg>Recommended {{ "{:,.0f}".format(curve.recommended_budget or 0) }}</span></figcaption>
+  </figure>
+  {% endfor %}
+  </div>
+  <div class="table-wrap" tabindex="0" role="region" aria-label="Budgets by campaign">
+  <table>
+    <thead><tr><th scope="col">Campaign</th><th scope="col">Spend limited by</th><th scope="col" class="num">Budget now</th><th scope="col" class="num">Recommended</th><th scope="col" class="num">Conversions a day</th><th scope="col" class="num">Elasticity{% if panel.curves | selectattr("true_elasticity") | list %} (true){% endif %}</th></tr></thead>
+    <tbody>
+    {% for curve in panel.curves %}
+    <tr>
+      <td>{{ curve.entity_name }}</td><td>{{ curve.limited_by }}</td>
+      <td class="num">{{ "{:,.2f}".format(curve.current_budget or 0) }}</td><td class="num">{{ "{:,.2f}".format(curve.recommended_budget or 0) }}</td>
+      <td class="num">{% if curve.expected_now is not none and curve.expected_recommended is not none %}{{ "{:.1f}".format(curve.expected_now) }} → {{ "{:.1f}".format(curve.expected_recommended) }}{% else %}unavailable{% endif %}</td>
+      <td class="num">{{ "{:.2f}".format(curve.elasticity) if curve.elasticity is not none else "unavailable" }}{% if curve.true_elasticity is not none %} ({{ "{:.2f}".format(curve.true_elasticity) }}){% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="note">Budgets total {{ "{:,.2f}".format(panel.total_now) }} now and {{ "{:,.2f}".format(panel.total_recommended) }} as recommended{% if panel.currency %} ({{ panel.currency }} a day){% endif %}. Moves are limited to 25% per change. Global model: {{ panel.prior_source }}.</p>
+  {% if panel.alternative_label %}<p class="note">On simulated accounts the pooled regression has so far been the better global model for budgets (mean regret about 7 against TabPFN's 25 over three seeds), which is why it is the default; both curves are drawn so the difference is visible.</p>{% endif %}
+  {% for note in panel.notes %}<p class="note">{{ note }}</p>{% endfor %}
+</section>
+{% endif %}
+
+{% if insights and insights.change %}
+{% set panel = insights.change %}
+<section aria-labelledby="change-title">
+  <div class="section-heading"><h2 id="change-title">A change, approved and verified</h2><p class="section-meta">{{ panel.account_ref }}</p></div>
+  <div class="change-card">
+    <p class="change-title">{{ panel.summary[0] }}</p>
+    <ul>{% for line in panel.summary[1:] %}<li>{{ line | replace("- ", "", 1) }}</li>{% endfor %}</ul>
+    <p class="receipt"><strong>After approval:</strong> {{ panel.receipt }}</p>
+  </div>
+</section>
+{% endif %}

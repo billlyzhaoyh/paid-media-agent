@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 
 from paid_media_agent.domain.analysis import PeriodComparison
-from paid_media_agent.domain.reports import NARRATIVE_MAX, Recommendation
+from paid_media_agent.domain.reports import NARRATIVE_MAX, Recommendation, ReportInsights
 from paid_media_agent.harness.tools import ToolContext, ToolSpec, parameters_for
 from paid_media_agent.redaction import sanitize_exception
 from paid_media_agent.reports.bridge import ArtifactBridge, BridgeError
@@ -34,8 +34,15 @@ class RenderReportArgs(BaseModel):
 
 
 def run_render_report(
-    artifacts: ArtifactStore, args: RenderReportArgs, *, pdf_engine: PdfEngine | None = None
+    artifacts: ArtifactStore,
+    args: RenderReportArgs,
+    *,
+    pdf_engine: PdfEngine | None = None,
+    insights: ReportInsights | None = None,
+    report_id: str | None = None,
 ) -> dict[str, Any]:
+    """`insights` adds the expected-range, budget, and change panels; `report_id` names the
+    files (a stable name for a demo), otherwise each render gets its own."""
     record = artifacts.read(args.analysis_artifact_id)
     if record.metadata.kind != "analysis":
         raise ArtifactError("artifact is not an analysis artifact")
@@ -47,6 +54,11 @@ def run_render_report(
         executive_summary=args.executive_summary,
         recommendations=tuple(args.recommendations),
     )
+    if insights is not None or report_id is not None:
+        changes: dict[str, Any] = {"insights": insights}
+        if report_id is not None:
+            changes["report_id"] = report_id
+        payload = payload.model_copy(update=changes)
     problems = reconcile_report(payload, comparison)
     if problems:
         raise ArtifactError("report reconciliation failed: " + "; ".join(problems))

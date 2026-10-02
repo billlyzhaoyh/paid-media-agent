@@ -40,3 +40,42 @@ runtime skills in `workspace/`; see [business context](../customization.md).
 
 Schedule the CLI `report` command with your existing scheduler. It uses the same reporting tools
 and approval boundary as the server. See [self-hosting](../self-hosting.md).
+
+## Reports and the visual demo
+
+The report is the one visual surface: an HTML page (and a PDF where WeasyPrint's libraries are
+installed) rendered by `reports/render.py` from a typed `ReportPayload`. The model writes only the
+bounded narrative; code owns the layout and every number.
+
+Beyond the two-window comparison, a report can carry optional panels (`ReportPayload.insights`,
+built by `reports/insights.py`):
+
+- **Expected range and anomalies.** Every campaign-day the anomaly check judged, with the range
+  it was judged against, the days flagged, and how the other methods (the local model, the ±50%
+  day-over-day rule) judged the same days. It reuses `check_anomalies`' own request, so a check
+  and its chart share one cached predictor call.
+- **Budget response and recommendation.** Each campaign's days, the global model's suggested
+  points, the fitted curve, and the current and recommended budgets from `recommend`.
+- **A change.** A proposal's summary from its record, and its receipt.
+
+Each panel names the model that drew it and where its figures came from: a live call, the stored
+result of an identical earlier call, a recording, the local model, or the rule. Chart geometry is
+computed in `reports/charts.py` and unit-tested; the template only draws. A company's own
+template folder and token set fall back to the defaults for anything they do not define.
+
+`report --insights` adds the first two panels for a real account from its stored history, with
+the configured predictor (the free local model by default). Scheduled reports do not add them.
+
+**The demo.** `demo --visual` (`testing/demo_visual.py`) renders this report for a simulated
+account and opens it. A simulation has what real data cannot give: planted anomalies and true
+response curves, so the page also shows what was caught and how close each fit is.
+- The account is fixed (seed, dates) and kept in `workspace/state/sim-demo.duckdb`.
+- With `TABPFN_TOKEN` set, TabPFN is asked live: three calls, about 30,000 tokens, then answered
+  from that state file's cache.
+- Without a token, TabPFN's answers recorded for this account
+  (`fixtures/data/demo_tabpfn_cache.json`) are replayed, matched by question and shape, and only
+  when the account built on this machine is the same one. Otherwise the local model draws the
+  panels. The page states which happened.
+- The seed was chosen with the local model, before TabPFN saw the account. On it TabPFN flagged 4
+  campaign-days: 3 of the 4 planted anomalies and 1 false alarm. The local model flagged 5 (3
+  caught, 2 false alarms); the rule flagged 15 (4 caught, 11 false alarms).

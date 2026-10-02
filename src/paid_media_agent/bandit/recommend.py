@@ -167,6 +167,9 @@ class BanditRun:
     capped_by_target_cpa: bool = False
     target_cpa_reached: bool | None = None
     """With a target CPA: whether the expected CPA is at or below it (None without a target)."""
+    pseudo: dict[str, tuple[np.ndarray, np.ndarray]] = field(default_factory=dict)
+    """Arm key to the global model's pseudo-samples (spend, log(conversions + 1)); for charts,
+    never stored."""
 
     @property
     def budgets(self) -> dict[str, float]:
@@ -367,6 +370,7 @@ async def recommend(
         seed=seed,
         decisions=[ArmDecision(arm=a, posterior=fitted.posteriors.get(a.key)) for a in fitted.arms],
         notes=list(fitted.notes),
+        pseudo=dict(fitted.pseudo),
     )
     decisions = [d for d in run.decisions if d.arm.eligible]
     for decision in run.decisions:

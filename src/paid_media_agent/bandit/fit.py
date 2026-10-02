@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 from paid_media_agent.bandit.arms import Arm, DataChecks, check_data, load_arms
 from paid_media_agent.bandit.policy import greedy
 from paid_media_agent.bandit.posterior import Posterior, PowerCurve, fit_posterior
@@ -33,6 +35,9 @@ class FittedAccount:
     """Arm key to its posterior; eligible arms only, and only those with a fit or a last good one."""
     prior_source: str = "none"
     notes: list[str] = field(default_factory=list)
+    pseudo: dict[str, tuple[np.ndarray, np.ndarray]] = field(default_factory=dict)
+    """Arm key to the global model's pseudo-samples (spend, log(conversions + 1)) that shaped its
+    curve; kept so a report can draw what the global model suggested."""
 
     @property
     def eligible(self) -> list[Arm]:
@@ -107,6 +112,8 @@ async def fit_account(
         fitted.prior_source = f"{pseudo.source}:{pseudo.model_version}"
         fitted.notes += pseudo.notes
         for i, arm in enumerate(eligible):
+            if i in pseudo.spend and len(pseudo.spend[i]):
+                fitted.pseudo[arm.key] = (pseudo.spend[i], pseudo.target[i])
             fitted.posteriors[arm.key] = fit_posterior(
                 arm.spend,
                 arm.conversions,
