@@ -4,6 +4,20 @@
 
 ### Added
 
+- A visual demo, and report panels that show what the models expect.
+  - **`demo --visual`** (now `make demo`) opens a report page for a simulated account:
+    - each campaign-day against TabPFN's expected range, with the days flagged and the anomalies
+      that were really planted;
+    - each campaign's fitted spend curve against its true one, with current and recommended
+      budgets;
+    - a change, approved and read back.
+  - **No token needed.** TabPFN's answers for the demo's fixed account are recorded and
+    replayed; with `TABPFN_TOKEN` set it is asked live. The page says which.
+  - **`report --insights`** adds the expected-range and budget panels for a real account from
+    stored history, with the configured predictor.
+  - Chart geometry lives in `reports/charts.py`; a new `model` colour token marks what a model
+    expected.
+
 - Answers whose figures come from code, checked before they are sent.
   - **Arithmetic.** A `calculate` tool evaluates labelled expressions over figures from earlier
     results (exact decimals; names, powers and thousands separators refused). Prose arithmetic is

@@ -31,6 +31,7 @@ matching values in `tokens.j2`. Map company colors to these roles instead of add
 | `current` | `#a5432b` |
 | `previous-fill` / `previous` | `#efeae4` / `#787069` |
 | `increase` / `decrease` | `#19704c` / `#992b57` |
+| `model` | `#1f6fb0` |
 | `font-family` | `IBM Plex Sans, -apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif` |
 | `font-mono` | `IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, monospace` |
 | `heading-weight` | `600` |
@@ -42,7 +43,8 @@ Use `canvas` for the page and metric strip, `paper` for chart and recommendation
 `current` for chart data and section numbers. Use one data accent, neutral surfaces, and dark
 current values. Do not assign colors to individual metrics or platforms.
 
-Use `increase` and `decrease` only for signed changes, preserving `+` and `-`. Zero and unavailable
+Use `model` for what a model expected (a range, a suggested point), never for observed data; with
+`current` it passes the colour-blind and contrast checks on `paper`. Use `increase` and `decrease` only for signed changes, preserving `+` and `-`. Zero and unavailable
 values stay neutral. Colors indicate numeric direction, not whether higher spend or cost is good.
 Keep body text at least 4.5:1 contrast and distinguish chart series by labels and outlines too.
 

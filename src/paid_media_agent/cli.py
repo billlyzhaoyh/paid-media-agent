@@ -91,6 +91,41 @@ def setup(port: int | None, no_open: bool, no_token: bool) -> None:
 # ---------------------------------------------------------------- demo and doctor
 
 
+def _visual_demo(settings: Settings, *, open_browser: bool, record: bool, as_json: bool) -> None:
+    from paid_media_agent.runtime.self_hosted import state_path
+    from paid_media_agent.testing.demo_visual import demo_store, export_recorded, run_visual_demo
+
+    state_dir = state_path(settings, project_root()).parent
+    try:
+        result = asyncio.run(
+            run_visual_demo(settings, state_dir=state_dir, open_browser=open_browser)
+        )
+        if record:
+            store = demo_store(state_dir)
+            try:
+                result["recorded_calls"] = export_recorded(store)
+            finally:
+                store.close()
+    except Exception as exc:
+        raise click.ClickException(f"demo failed: {sanitize_exception(exc)}") from None
+    if as_json:
+        click.echo(json.dumps(result, indent=2, default=str))
+        return
+    click.echo(f"Report: {result['html']}" + ("" if open_browser else " (not opened)"))
+    pdf = str(result["pdf"])
+    click.echo(
+        "PDF: rendered beside it"
+        if pdf == "rendered"
+        else "PDF: not rendered on this machine (the Docker image includes the PDF libraries)"
+    )
+    for name in ("ranges", "budgets"):
+        panel = result[name]
+        if panel:
+            click.echo(f"{name.capitalize()}: {panel['label']} ({panel['source']})")
+    click.echo(f"TabPFN tokens billed in this state file: {result['tabpfn_tokens_billed']:,}")
+    click.echo(result["receipt_message"])
+
+
 @main.command()
 @click.option(
     "--with-proposal",
@@ -98,12 +133,30 @@ def setup(port: int | None, no_open: bool, no_token: bool) -> None:
     help="Also run the governed fake-write flow after the analysis.",
 )
 @click.option(
+    "--visual",
+    is_flag=True,
+    help="Render the report for a simulated account, with expected ranges, budget curves, and "
+    "an approved change, and open it in the browser.",
+)
+@click.option("--no-open", is_flag=True, help="With --visual: write the report, do not open it.")
+@click.option(
+    "--record-tabpfn",
+    is_flag=True,
+    hidden=True,
+    help="With --visual: save this run's TabPFN answers as the recorded set shipped for replay.",
+)
+@click.option(
     "--json", "as_json", is_flag=True, help="Print the final message and tool audit as JSON."
 )
-def demo(with_proposal: bool, as_json: bool) -> None:
+def demo(
+    with_proposal: bool, visual: bool, no_open: bool, record_tabpfn: bool, as_json: bool
+) -> None:
     """Run the fixture-backed demo through the real agent loop with no network or secrets."""
     settings = Settings(paid_media_model="scripted:demo", paid_media_allow_self_approval=True)
     _configure_logging(settings)
+    if visual:
+        _visual_demo(settings, open_browser=not no_open, record=record_tabpfn, as_json=as_json)
+        return
     try:
         result = asyncio.run(run_demo(settings, with_proposal=with_proposal))
     except Exception as exc:
@@ -438,9 +491,20 @@ def ask(question: str, as_json: bool) -> None:
     help="Account alias to include. Repeatable; default is every alias.",
 )
 @click.option("--no-render", is_flag=True, help="Compare only; skip the HTML/PDF report.")
+@click.option(
+    "--insights",
+    is_flag=True,
+    help="Add the expected-range and budget-curve panels from stored history, for the first "
+    "account in scope, with the configured predictor (the local model by default).",
+)
 @click.option("--json", "as_json", is_flag=True)
 def report(
-    cadence: str, end_date: str | None, aliases: tuple[str, ...], no_render: bool, as_json: bool
+    cadence: str,
+    end_date: str | None,
+    aliases: tuple[str, ...],
+    no_render: bool,
+    insights: bool,
+    as_json: bool,
 ) -> None:
     """Run the deterministic cross-platform report: reads, comparison, and rendering, no model."""
     from paid_media_agent.reports.cadence import run_cadence_report
@@ -454,6 +518,23 @@ def report(
 
     async def _run() -> Any:
         runtime = await asyncio.to_thread(build_configured_runtime, settings, project_root=root)
+
+        async def panels() -> Any:
+            from paid_media_agent.predict.factory import build_predictor
+            from paid_media_agent.reports.insights import build_insights
+
+            registry = runtime.profile.accounts
+            alias = (aliases or registry.aliases())[0]
+            binding = registry.resolve(alias)
+            return await build_insights(
+                runtime.profile.store,
+                build_predictor(settings, runtime.profile.store),
+                account_alias=alias,
+                as_of=end + timedelta(days=1),
+                window_days=7 if cadence == "weekly" else 14,
+                currency=binding.currency if binding else None,
+            )
+
         return await run_cadence_report(
             cadence=cadence,  # type: ignore[arg-type]
             end=end,
@@ -463,6 +544,7 @@ def report(
             artifacts=runtime.profile.artifacts,
             aliases=aliases or None,
             render=not no_render,
+            insights=panels if insights else None,
         )
 
     try:

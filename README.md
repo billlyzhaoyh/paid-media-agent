@@ -20,7 +20,7 @@
 </a>
 
 <p align="center">
-  <sub><a href="docs/screenshots/setup-preview.png">Setup console, dark</a> · <a href="docs/screenshots/report-preview.png">Example report</a> from synthetic accounts.</sub>
+  <sub><a href="docs/screenshots/setup-preview.png">Setup console, dark</a> · <a href="docs/screenshots/report-preview.png">Example report</a> · <a href="docs/screenshots/demo-report.png">Demo report with TabPFN's expected ranges</a>, all from synthetic accounts.</sub>
 </p>
 
 Paid Media Agent helps you understand what changed across your ad accounts and decide what to do
@@ -68,8 +68,18 @@ source, date window, and data-quality flags.
   and differences in attribution are stated, not shown as zero.
 
 **Measured.** A [30-question eval](docs/architecture/evals.md) on synthetic accounts grades each
-answer with deterministic checks and a judge model. Claude Sonnet 5.5 passed 25 of 30, at about
-$0.06 per answer with prompt caching; targeted reruns after later fixes are in the eval log.
+answer with deterministic checks and a judge model. On the current code Claude Sonnet 5.5 passed
+28 of 30:
+
+| | Result |
+| --- | --- |
+| Questions passed | 28 of 30 (93%) |
+| Judge scores, out of 5 | correct 4.5, grounded 4.2, complete 4.2, clear 4.3 |
+| Cost per answer | $0.046, with 90% of input read from the prompt cache |
+| Model calls per answer | 3.6; median 15 seconds |
+
+The first baseline, on Claude Haiku 4.5 before the answer-quality work, was 12 of 30. The eval log
+records every run and what each one found.
 
 **Status.** Tested end to end on synthetic accounts: the offline demo, the eval, and the Docker
 image. The live Pipeboard read path, live ad-account writes, and the Slack app have not yet been
@@ -102,11 +112,22 @@ You can also ask your coding agent to guide setup:
 **Try it without model keys or ad accounts:**
 
 ```bash
-uv run paid-media-agent demo --with-proposal
+uv run paid-media-agent demo --visual
 ```
 
-The offline demo runs a scripted analysis and a simulated budget change against synthetic
-accounts. It doesn't call a model or touch live campaigns.
+The demo opens a [report page](docs/screenshots/demo-report.png) for a simulated account, where
+the true spend curves and the planted anomalies are known:
+
+- **Expected ranges.** Each campaign-day against the range [TabPFN](https://priorlabs.ai/)
+  expected, with the days it flagged and the anomalies that were really planted, beside what the
+  local model and a ±50% day-over-day rule flagged on the same days.
+- **Budget curves.** Each campaign's fitted spend response against its true curve, the points the
+  global model suggested, and the current and recommended budgets.
+- **A change.** A proposal as its reviewer saw it, approved, applied once, and read back.
+
+It needs no token: TabPFN's answers for this fixed account are recorded and replayed, and the
+page says so. With `TABPFN_TOKEN` set, the same command asks TabPFN live. It doesn't call a
+language model or touch live campaigns. `demo --with-proposal` prints the same flow as text.
 
 Once configured, ask a question or generate a report:
 

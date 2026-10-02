@@ -4,8 +4,8 @@
 setup:        ## install everything
 	uv sync --all-extras --dev
 
-demo:         ## fixture data through the real graph, including an approval
-	uv run paid-media-agent demo --with-proposal
+demo:         ## a report page for a simulated account: expected ranges, budget curves, an approval
+	uv run paid-media-agent demo --visual
 
 check:        ## the CI gate: lint, format, types, tests
 	uv run ruff check . && uv run ruff format --check . && uv run mypy src && uv run pytest -q

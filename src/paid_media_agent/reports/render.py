@@ -24,6 +24,7 @@ from paid_media_agent.domain.reports import (
     ReportScope,
     ScorecardRow,
 )
+from paid_media_agent.reports.charts import band_chart, curve_chart
 
 _DEFINITIONS: dict[str, str] = {
     "spend": "Platform-reported cost in account currency",
@@ -410,13 +411,25 @@ class ReportRenderer:
         from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
 
         env = Environment(
-            loader=FileSystemLoader(str(self._templates)),
+            # A company's template folder may hold only what it changed; the rest comes from here.
+            loader=FileSystemLoader(
+                [str(self._templates), str(Path(__file__).parent / "templates")]
+            ),
             autoescape=select_autoescape(default=True, default_for_string=True),
             undefined=StrictUndefined,
         )
         env.filters["date_window"] = _format_window
+        insights = payload.insights
+        ranges = insights.anomaly if insights else None
+        budgets = insights.budgets if insights else None
         return env.get_template("report.html.j2").render(
-            payload=payload, charts=comparison_charts(payload.platform_sections)
+            payload=payload,
+            charts=comparison_charts(payload.platform_sections),
+            insights=insights,
+            band_charts=[(s, band_chart(s)) for s in ranges.series] if ranges else [],
+            curve_charts=[(c, curve_chart(c, budgets.currency)) for c in budgets.curves]
+            if budgets
+            else [],
         )
 
     def render(self, payload: ReportPayload, *, want_pdf: bool = True) -> RenderedReport:

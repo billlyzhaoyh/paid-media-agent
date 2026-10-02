@@ -87,6 +87,14 @@
   .recommendation dd { font-size: 13px; }
   .recommendation .evidence { margin: 10px 0 16px; color: var(--muted); font-size: 13px; }
   .provenance { margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+  .keys { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 0 0 16px; color: var(--muted); font-size: 11px; }
+  .key { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .plot { display: block; width: 100%; height: auto; overflow: visible; }
+  .chart figcaption .key { margin-right: 14px; color: var(--ink); font-size: 11px; }
+  section > .table-wrap { margin-top: 22px; }
+  .change-card { padding: var(--card-padding); background: var(--paper); border: 1px solid var(--card-line); border-radius: var(--radius-card); }
+  .change-title { font-weight: 500; }
+  .receipt { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 13px; }
   .details-body { margin-top: 16px; }
   .details-body h3 { margin: 20px 0 8px; font-size: 12px; color: var(--ink); }
   @media screen and (max-width: 680px) {
@@ -256,6 +264,8 @@
 {% elif payload.total_suppressed_reason %}
 <p class="note">No combined total: {{ payload.total_suppressed_reason }}.</p>
 {% endif %}
+
+{% if insights %}{% include "insights.html.j2" %}{% endif %}
 
 {% if payload.scorecard %}
 <section aria-labelledby="scorecard-title"><div class="section-heading"><h2 id="scorecard-title">All accounts</h2></div>{{ metrics(payload.scorecard, definitions=true) }}</section>
