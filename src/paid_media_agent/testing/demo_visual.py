@@ -1,17 +1,21 @@
-"""The visual demo: one simulated store, what was unusual, what the budget moves bought.
+"""The visual demo: one simulated store, replayed day by day, and the report the agent wrote.
 
 A simulated account has what a demo needs and real data cannot give: known response curves and
 planted anomalies, so the page can show what a model caught against what was really there, and
 what a budget split produced against the best possible one. The store ("Northwind") runs six
-weeks under its operator's budgets and then eight in which the agent reallocates each week; the
-same store is then checked for unusual days and asked for its next budgets.
+weeks under its operator's budgets and then eight in which the agent works each week: it checks
+the week just gone for unusual days and reallocates the budgets.
 
-The page replays a recording shipped with the package and never calls TabPFN or a model by
-itself: the weekly budget decisions TabPFN's predictions led to, its answers for the final checks,
-and the text the agent wrote. The recorded decisions rebuild the same store on any machine, and
-the recording is used only if they did; otherwise the pooled and local models run and the text is
-written by code. The page says which. `--record` makes the recording: TabPFN and the agent run
-live, which bills tokens.
+Two pages are written. The demo page (`demo.html`, `testing/demo_story.py`) replays those eight
+weeks and explains the two jobs in diagrams. The report (`demo_report.html`) is the agent's own
+output for the last fortnight.
+
+Neither calls TabPFN or a model by itself: they replay a recording shipped with the package (the
+weekly budget decisions TabPFN's predictions led to, its answers for the weekly checks and the
+final ones, and the text the agent wrote). The recorded decisions rebuild the same store on any
+machine, and the recording is used only if they did; otherwise the pooled and local models run
+and the text is written by code. The pages say which. `--record` makes the whole recording and
+`--record-watch` adds only the answers it lacks; both bill TabPFN tokens.
 """
 
 from __future__ import annotations
@@ -19,7 +23,7 @@ from __future__ import annotations
 import json
 import math
 import webbrowser
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
 from importlib import resources
@@ -28,7 +32,8 @@ from typing import Any
 
 import numpy as np
 
-from paid_media_agent.bandit.evaluate import LoopResult, run_closed_loop
+from paid_media_agent.analytics.anomalies import RULE, AnomalyReport, check_anomalies
+from paid_media_agent.bandit.evaluate import CampaignDay, LoopResult, run_closed_loop
 from paid_media_agent.bandit.recommend import BanditConfig
 from paid_media_agent.config import Settings, project_root
 from paid_media_agent.domain.common import EntityType, Platform
@@ -51,13 +56,16 @@ from paid_media_agent.reports.insights import (
     build_insights,
     build_trial,
     change_panel,
+    method_label,
+    result_source,
 )
 from paid_media_agent.sim.scenario import scenario_binding, scenario_path
 from paid_media_agent.sim.simulator import ScenarioParams, Simulator
-from paid_media_agent.store.db import Store
+from paid_media_agent.store.db import Store, utc_now
 from paid_media_agent.testing import demo_narrative
 from paid_media_agent.testing.demo_narrative import Narrative, agent_narrative, template_narrative
 from paid_media_agent.testing.demo_script import run_demo
+from paid_media_agent.testing.demo_story import Watch, build_story, render_story
 from paid_media_agent.tools.artifacts import ArtifactStore
 from paid_media_agent.tools.compare_periods import ComparePeriodsArgs, run_compare_periods
 from paid_media_agent.tools.normalize import ROWS_SCHEMA_VERSION, rows_to_payload
@@ -82,7 +90,11 @@ run. The seed was chosen with the pooled model, before TabPFN saw the store, for
 between budgets left alone and the best possible split and several planted anomalies."""
 AS_OF = DEMO.start + timedelta(days=DEMO.days)
 WINDOW_DAYS = 14
+WATCH_DAYS = 7
 REPORT_ID = "demo_report"
+DEMO_PAGE = "demo.html"
+BUILT_VERSION = 2
+"""Raised when what is kept beside the state file changes, so an older file is rebuilt."""
 RECORDED = "demo_tabpfn_cache.json"
 TABPFN = "tabpfn"
 CONFIG = BanditConfig(policy="greedy")
@@ -120,11 +132,22 @@ def same_account(recorded: dict[str, float], here: dict[str, float]) -> bool:
     )
 
 
+def target_key(request: PredictionRequest) -> int | None:
+    """Tells apart requests of one purpose and shape: the training targets' sum in hundredths.
+
+    The weekly checks ask the same kind of question about different weeks. Their targets are
+    money (two decimals) or counts, so the sum in hundredths is a whole number on any machine.
+    Other purposes have no key and are matched by shape alone."""
+    if not request.purpose.startswith("anomaly:"):
+        return None
+    return round(100 * float(np.nansum(request.y_train)))
+
+
 class RecordedTabPFN:
     """Answers the demo's fixed questions from TabPFN's recorded answers, with no network.
 
-    A question is matched by its purpose and shape. Each answer's model version says it is
-    recorded, and the page says so too.
+    A question is matched by its purpose, its shape and, where the recording has one, its target
+    key. Each answer's model version says it is recorded, and the pages say so too.
     """
 
     name = TABPFN
@@ -136,22 +159,75 @@ class RecordedTabPFN:
         del request  # a replay bills nothing
         return 0
 
-    async def predict(self, request: PredictionRequest) -> Prediction:
+    def find(self, request: PredictionRequest) -> dict[str, Any] | None:
+        key = target_key(request)
         for call in self._calls:
             if (
                 call["purpose"] == request.purpose
                 and call["n_train"] == request.n_train
                 and call["n_test"] == request.n_test
                 and call["n_features"] == len(request.columns)
+                and call.get("targets") in (None, key)
             ):
-                rows = [call["mean"]] * len(request.quantiles) if "mean" in call else call["values"]
-                return Prediction(
-                    quantiles=tuple(request.quantiles),
-                    values=np.asarray(rows, dtype=np.float64),
-                    provider=TABPFN,
-                    model_version=f"{call['model_version']} {RECORDED_MARK}",
-                )
-        raise PredictorUnavailable(f"no recorded TabPFN answer for {request.purpose}")
+                return call
+        return None
+
+    async def predict(self, request: PredictionRequest) -> Prediction:
+        call = self.find(request)
+        if call is None:
+            raise PredictorUnavailable(f"no recorded TabPFN answer for {request.purpose}")
+        rows = [call["mean"]] * len(request.quantiles) if "mean" in call else call["values"]
+        return Prediction(
+            quantiles=tuple(request.quantiles),
+            values=np.asarray(rows, dtype=np.float64),
+            provider=TABPFN,
+            model_version=f"{call['model_version']} {RECORDED_MARK}",
+        )
+
+
+class Recorder:
+    """Answers from the recording where it can and from TabPFN live where it cannot, and keeps
+    every answer as the shipped file stores it. Only a recording run uses it."""
+
+    name = TABPFN
+
+    def __init__(self, recorded: RecordedTabPFN | None, live: Predictor) -> None:
+        self._recorded = recorded
+        self._live = live
+        self.calls: list[dict[str, Any]] = []
+        self.asked_live = 0
+
+    async def estimate_tokens(self, request: PredictionRequest) -> int:
+        if self._recorded is not None and self._recorded.find(request) is not None:
+            return 0
+        return await self._live.estimate_tokens(request)
+
+    async def predict(self, request: PredictionRequest) -> Prediction:
+        known = self._recorded.find(request) if self._recorded is not None else None
+        if known is not None and self._recorded is not None:
+            prediction = await self._recorded.predict(request)
+            entry = dict(known)
+        else:
+            prediction = await self._live.predict(request)
+            self.asked_live += 1
+            values = np.asarray(prediction.values, dtype=np.float64)
+            entry = {
+                "model_version": prediction.model_version,
+                "purpose": request.purpose,
+                "n_train": request.n_train,
+                "n_test": request.n_test,
+                "n_features": len(request.columns),
+            }
+            if request.purpose == MEAN_ONLY:
+                entry["mean"] = [round(float(v), 6) for v in values.mean(axis=0)]
+            else:
+                entry["values"] = [[round(float(v), 6) for v in line] for line in values]
+        key = target_key(request)
+        if key is not None:
+            entry["targets"] = key
+        if entry not in self.calls:
+            self.calls.append(entry)
+        return prediction
 
 
 def load_recording(path: Path | None = None) -> dict[str, Any] | None:
@@ -162,30 +238,16 @@ def load_recording(path: Path | None = None) -> dict[str, Any] | None:
     return body if body.get("scenario") == scenario() else None
 
 
-def export_recording(store: Store, built: Built, path: Path | None = None) -> int:
-    """Write the weekly decisions and this state file's final TabPFN answers to the shipped
-    file. Returns the answers written."""
-    rows = store.fetch_dicts(
-        "SELECT model_version, purpose, n_train, n_test, n_features, result "
-        "FROM predictor_calls WHERE provider = ? AND status = 'ok' AND result IS NOT NULL "
-        "AND model_version NOT LIKE ? "
-        "QUALIFY row_number() OVER (PARTITION BY purpose ORDER BY created_at DESC) = 1 "
-        "ORDER BY purpose",
-        [TABPFN, f"%{RECORDED_MARK}"],
-    )
-    calls = []
-    for row in rows:
-        result = json.loads(row.pop("result"))
-        values = np.asarray(result["values"], dtype=np.float64)
-        if row["purpose"] == MEAN_ONLY:
-            row["mean"] = [round(float(v), 6) for v in values.mean(axis=0)]
-        else:
-            row["values"] = [[round(float(v), 6) for v in line] for line in values]
-        calls.append(row)
+def export_recording(
+    store: Store, built: Built, calls: list[dict[str, Any]], path: Path | None = None
+) -> int:
+    """Write the weekly decisions and TabPFN's answers to the shipped file. Returns the answers
+    written."""
     body = {
         "note": "Recorded for the visual demo's fixed simulated store: the weekly budgets the "
-        "agent set with TabPFN's predictions, and TabPFN's answers for the final checks. The "
-        "decisions rebuild the same store anywhere; the answers are replayed only if they did.",
+        "agent set with TabPFN's predictions, and TabPFN's answers for the weekly checks and "
+        "the final ones. The decisions rebuild the same store anywhere; the answers are "
+        "replayed only if they did.",
         "scenario": DEMO.as_json(),
         "as_of": AS_OF.isoformat(),
         "agent_label": built.agent_label,
@@ -193,7 +255,7 @@ def export_recording(store: Store, built: Built, path: Path | None = None) -> in
             {"day": day.isoformat(), "budgets": budgets} for day, budgets in built.decisions
         ],
         "account_check": account_check(store),
-        "calls": calls,
+        "calls": sorted(calls, key=lambda c: (c["purpose"], c["n_test"], c["n_train"])),
     }
     text = json.dumps(body, separators=(",", ":"))
     (path or recorded_path()).write_text(text + "\n", encoding="utf-8")
@@ -210,14 +272,21 @@ class Built:
     """The budgets the agent set at each weekly decision."""
     source: str
     """`live`, `recorded`, or `local`: who made the weekly predictions."""
+    runs: dict[str, list[CampaignDay]] = field(default_factory=dict)
+    """Every campaign-day of the three runs (`static`, `agent`, `best`), for the replay."""
 
     def as_json(self) -> dict[str, Any]:
         return {
+            "version": BUILT_VERSION,
             "scenario": DEMO.as_json(),
             "trial": None if self.trial is None else self.trial.model_dump(mode="json"),
             "agent_label": self.agent_label,
             "decisions": [{"day": d.isoformat(), "budgets": b} for d, b in self.decisions],
             "source": self.source,
+            "runs": {
+                key: [{**asdict(row), "day": row.day.isoformat()} for row in rows]
+                for key, rows in self.runs.items()
+            },
         }
 
     @classmethod
@@ -227,6 +296,10 @@ class Built:
             agent_label=body["agent_label"],
             decisions=[(date.fromisoformat(d["day"]), d["budgets"]) for d in body["decisions"]],
             source=body["source"],
+            runs={
+                key: [CampaignDay(**{**row, "day": date.fromisoformat(row["day"])}) for row in rows]
+                for key, rows in body["runs"].items()
+            },
         )
 
 
@@ -314,6 +387,11 @@ async def build_store(settings: Settings, state_dir: Path, *, live: bool) -> tup
             for day, budgets in agent.budgets[1:]
         ],
         source=source,
+        runs={
+            "static": static.campaign_days,
+            "agent": agent.campaign_days,
+            "best": best.campaign_days,
+        },
     )
     built_path.write_text(json.dumps(built.as_json()), encoding="utf-8")
     return store, built
@@ -328,7 +406,7 @@ async def demo_store(
         _remove(state_dir)
     if state.exists() and built_path.exists():
         body = json.loads(built_path.read_text("utf-8"))
-        if body.get("scenario") == scenario():
+        if body.get("scenario") == scenario() and body.get("version") == BUILT_VERSION:
             return Store(state), Built.from_json(body)
     _remove(state_dir)
     return await build_store(settings, state_dir, live=live)
@@ -343,25 +421,63 @@ def demo_truth() -> Truth:
 
 
 def demo_predictors(
-    settings: Settings, store: Store, built: Built, *, live: bool = False
+    settings: Settings, store: Store, built: Built, *, recorder: Recorder | None = None
 ) -> list[Predictor]:
-    """Predictors for the final checks, in the order to try them.
+    """Predictors for the checks, in the order to try them.
 
-    Only `live` (a recording run) asks TabPFN over the network. Every other run answers from
-    this state file's cache or the shipped recording, so the demo never bills tokens by itself,
-    with or without a token set. The local model is always the fallback.
+    Only a recording run (`recorder`) may ask TabPFN over the network. Every other run answers
+    from this state file's cache or the shipped recording, so the demo never bills tokens by
+    itself, with or without a token set. The local model is always the fallback.
     """
     local = _guarded(settings, store, LocalPredictor())
+    if recorder is not None:
+        return [_guarded(settings, store, recorder), local]
     if built.source == "local":
         return [local]
-    if live:
-        remote = TabPFNPredictor(_token(settings), base_url=settings.tabpfn_base_url)
-        return [_guarded(settings, store, remote), local]
     recording = load_recording()
     if recording is not None and same_account(recording["account_check"], account_check(store)):
         return [_guarded(settings, store, RecordedTabPFN(recording["calls"])), local]
     # No recording for this store: a tokenless TabPFN answers only what the cache already holds.
     return [_guarded(settings, store, TabPFNPredictor("")), local]
+
+
+def check_days() -> list[date]:
+    """The days the agent checks the week just gone: each later decision day, and the day after
+    the last week."""
+    first = DEMO.start + timedelta(days=WARMUP_DAYS)
+    return [first + timedelta(days=WATCH_DAYS * k) for k in range(1, LOOP_DAYS // WATCH_DAYS + 1)]
+
+
+async def _checks(store: Store, predictor: Predictor | None) -> list[AnomalyReport]:
+    """One check per week, each reading the history as it stood on its check day."""
+    alias = scenario_binding(DEMO).alias
+    return [
+        await check_anomalies(
+            store, predictor, record=False, as_of=day, window_days=WATCH_DAYS, account_alias=alias
+        )
+        for day in check_days()
+    ]
+
+
+async def weekly_watch(store: Store, predictors: list[Predictor]) -> Watch:
+    """Run the weekly checks with the first predictor that can judge every one of them."""
+    since = utc_now()
+    reports: list[AnomalyReport] = []
+    for predictor in predictors:
+        reports = await _checks(store, predictor)
+        methods = {m for report in reports for m in report.methods.values()}
+        if methods and RULE not in methods:
+            break  # a model judged every check; a partly recorded watch is not shown
+    judged_by = sorted({m for report in reports for m in report.methods.values()} - {RULE})
+    provider, label = method_label(judged_by[0] if judged_by else RULE)
+    local = reports if provider == "local" else await _checks(store, LocalPredictor())
+    return Watch(
+        label=label,
+        source="rule" if provider == "rule" else result_source(store, provider, "anomaly:%", since),
+        model=reports,
+        local=local,
+        rule=await _checks(store, None),
+    )
 
 
 def _performance_rows(store: Store, alias: str, start: date, end: date) -> list[PerformanceRow]:
@@ -417,21 +533,34 @@ async def run_visual_demo(
     state_dir: Path | None = None,
     open_browser: bool = True,
     record: bool = False,
+    record_watch: bool = False,
     narrative_model: ChatModel | None = None,
 ) -> dict[str, Any]:
-    """Build the simulated store, draw the report page with its panels, and open it.
+    """Build the simulated store, write the demo page and the agent's report, and open the demo.
 
     `record` rebuilds the store with TabPFN live, has `narrative_model` write the text, and
-    rewrites both shipped recordings.
+    rewrites both shipped recordings. `record_watch` keeps the recorded decisions and answers
+    and asks TabPFN only for the answers the recording lacks.
     """
     root = root or project_root()
     workspace = settings.paid_media_workspace_root
     workspace = workspace if workspace.is_absolute() else root / workspace
     state_dir = state_dir or workspace / "state"
     base = await run_demo(settings, with_proposal=True, root=root)
-    if record and not _token(settings):
+    recording_run = record or record_watch
+    if recording_run and not _token(settings):
         raise ValueError("recording needs TABPFN_TOKEN")
-    store, built = await demo_store(settings, state_dir, live=record, rebuild=record)
+    store, built = await demo_store(settings, state_dir, live=record, rebuild=recording_run)
+    recorder = None
+    if recording_run:
+        earlier = load_recording() if record_watch else None
+        if record_watch and (earlier is None or built.source != "recorded"):
+            store.close()
+            raise ValueError("--record-watch adds to an existing recording; use --record first")
+        recorder = Recorder(
+            RecordedTabPFN(earlier["calls"]) if earlier is not None else None,
+            TabPFNPredictor(_token(settings), base_url=settings.tabpfn_base_url),
+        )
     try:
         binding = scenario_binding(DEMO)
         artifacts = ArtifactStore(workspace)
@@ -462,7 +591,8 @@ async def run_visual_demo(
             ProposalView.model_validate(base["proposal"]), str(base["receipt_message"])
         ).model_copy(update={"context": f"sample account {base['proposal']['account_ref']}"})
         insights = None
-        for predictor in demo_predictors(settings, store, built, live=record):
+        predictors = demo_predictors(settings, store, built, recorder=recorder)
+        for predictor in predictors:
             insights = await build_insights(
                 store,
                 predictor,
@@ -478,6 +608,7 @@ async def run_visual_demo(
             if insights.anomaly is not None:
                 break  # a model drew the ranges; otherwise fall through to the next one
         assert insights is not None  # noqa: S101 - there is always at least one predictor
+        watch = await weekly_watch(store, predictors)
         check = account_check(store)
         narrative = await _narrative(
             insights, check, model=narrative_model if record else None, root=root
@@ -495,7 +626,26 @@ async def run_visual_demo(
             report_id=REPORT_ID,
             omit=("charts", "scorecard", "platforms"),
         )
-        recorded_calls = export_recording(store, built) if record else None
+        story = build_story(
+            runs=built.runs,
+            trial=built.trial,
+            agent_label=built.agent_label,
+            weekly_source=built.source,
+            check_days=check_days(),
+            watch=watch,
+            truth=demo_truth(),
+            insights=insights,
+            narrative=narrative,
+            report_href=f"{REPORT_ID}.html",
+            account=ACCOUNT,
+            currency=DEMO.currency,
+        )
+        out = workspace / "out"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / DEMO_PAGE).write_text(render_story(story), encoding="utf-8")
+        recorded_calls = None
+        if recorder is not None:
+            recorded_calls = export_recording(store, built, recorder.calls)
         tokens = store.fetch(
             "SELECT coalesce(sum(tokens_estimated), 0) FROM predictor_calls "
             "WHERE provider = ? AND status IN ('ok', 'failed')",
@@ -504,11 +654,15 @@ async def run_visual_demo(
     finally:
         store.close()
     html = workspace / "out" / f"{REPORT_ID}.html"
+    page = workspace / "out" / DEMO_PAGE
     if open_browser:
-        webbrowser.open(html.resolve().as_uri())
+        webbrowser.open(page.resolve().as_uri())
     ranges, budgets = insights.anomaly, insights.budgets
     trial = budgets.trial if budgets else None
     return {
+        "demo": str(page),
+        "watch": {"label": watch.label, "source": watch.source, "scores": story["scores"]},
+        "asked_live": None if recorder is None else recorder.asked_live,
         "html": str(html),
         "pdf": rendered["pdf"],
         "ranges": None if ranges is None else {"label": ranges.label, "source": ranges.source},

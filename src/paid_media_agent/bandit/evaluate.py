@@ -50,6 +50,19 @@ RULE_MARGIN = 0.1
 Z80 = 1.2816
 
 
+@dataclass(frozen=True)
+class CampaignDay:
+    """One campaign on one scored day of a run."""
+
+    day: date
+    entity_ref: str
+    budget: float
+    spend: float
+    expected_conversions: float
+    conversions: int
+    anomaly: str | None
+
+
 @dataclass
 class LoopResult:
     policy: LoopPolicy
@@ -65,6 +78,8 @@ class LoopResult:
     """Expected conversions on each scored day, for a chart of the run."""
     budgets: list[tuple[date, dict[str, float]]] = field(default_factory=list)
     """The budgets in force from each decision day (and from the first scored day)."""
+    campaign_days: list[CampaignDay] = field(default_factory=list)
+    """Every campaign on every scored day, for a replay of the run."""
 
 
 def _cpa_rule(
@@ -147,6 +162,18 @@ async def run_closed_loop(
             result.daily.append((sim.day(index), sum(o.expected_conversions for o in outcomes)))
             result.expected_conversions += sum(o.expected_conversions for o in outcomes)
             result.spend += sum(o.spend for o in outcomes)
+            result.campaign_days += [
+                CampaignDay(
+                    day=o.day,
+                    entity_ref=o.entity_ref,
+                    budget=o.budget,
+                    spend=o.spend,
+                    expected_conversions=o.expected_conversions,
+                    conversions=o.conversions,
+                    anomaly=o.anomaly,
+                )
+                for o in outcomes
+            ]
             result.unspendable += sum(
                 o.budget - o.spend for o in outcomes if o.limited_by != "budget"
             )

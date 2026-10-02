@@ -69,43 +69,48 @@ the configured predictor (the free local model by default). Scheduled reports do
 `ReportPayload.omit` leaves out standard sections (the account-performance charts, the
 all-accounts table, the per-platform sections) for a page about one account's panels.
 
-**The demo.** `demo --visual` (`testing/demo_visual.py`) renders this report for Northwind, a
-simulated store, and opens it. A simulation has what real data cannot give: planted anomalies
-and true response curves, so the page shows what was caught and what a budget split produced
-against the best possible one.
+**The demo.** `demo --visual` (`testing/demo_visual.py`) builds Northwind, a simulated store,
+and writes two pages: an animated demo page and the agent's report for the last fortnight. A
+simulation has what real data cannot give: planted anomalies and true response curves, so the
+pages show what was caught and what a budget split produced against the best possible one.
 
-- **One store.** Six weeks under its operator's budgets, then eight in which the agent
-  reallocates weekly (`bandit/evaluate.py` `run_closed_loop`). The same store is then checked for
-  unusual days and asked for its next budgets.
-- **What was unusual.** The section opens with the finding from the scores, shows each method's
-  alerts split into real problems and false alarms, and draws only the charts with a flagged or
-  planted day, each flag labelled with what it turned out to be.
-- **What the budget moves bought.** Three runs of the same store, all scored by the simulation's
-  true curves: budgets left alone, the agent's weekly moves, and the best possible split
-  (`reports/insights.py` `build_trial`). Each campaign's budget is shown before the agent, now,
-  and as recommended next. The spend-response curves are in a collapsed block.
-- **How the model is applied.** Each section shows it on one real case, from the run's own
-  figures (`reports/insights.py` `_anomaly_how`, `_budget_how`).
-  - Unusual days: `check_anomalies` keeps the table each request held (`AnomalyReport.inputs`).
-    The page shows three of its rows for the most extreme real flag, the range that came back,
-    and the verdict. Two more days say why a range per row beats a fixed rule: a budget change
-    the range followed, and a day the ±50% rule flagged that the model left alone.
-  - Budgets: two of a campaign's days, two of the spend levels the global model was asked
-    about with its answers, and what the fitted curves say the next 100 a day buys in each
-    campaign, beside the true figure.
-- **Next steps.** `testing/demo_narrative.py` runs the real agent loop with the project's
-  instructions, `calculate`, and two tools that return the page's own figures. Its reply is
+- **One store.** Six weeks under its operator's budgets, then eight in which the agent works
+  each week: it checks the week just gone for unusual days (`check_anomalies`, reading history
+  as it stood that day) and reallocates the budgets (`bandit/evaluate.py` `run_closed_loop`).
+- **The demo page** (`testing/demo_story.py`, `testing/templates/demo.*`). One self-contained
+  file with inline styles, script and data.
+  - `build_story` turns the three runs, the weekly checks, the truth and the agent's text into
+    one JSON document. The script only draws it.
+  - Two intuition diagrams: a fixed rule against a learned range on one real series, and two
+    true response curves with the budget moving from the flatter to the steeper.
+  - Two feature pipelines: a raw row, the engineered row, the model, the output. The measured
+    effect of the feature choices is quoted from this project's backtests and labelled as such.
+  - The replay: one clock in days drives every panel, and `render(t)` depends on nothing else,
+    so scrubbing, `?t=<day>` and video frames show exactly what playback shows.
+- **The video** (`testing/demo_video.py`, `make demo-video`). One headless Chrome on its own
+  throwaway profile sets the clock frame by frame over the DevTools protocol; ffmpeg joins the
+  frames.
+- **The report** (`demo_report.html`). The agent's own output: what was unusual in the last
+  fortnight, what the budget moves bought, its next steps, and an approved change. Its "How
+  TabPFN is applied" blocks are collapsed on screen and open in the PDF.
+- **The agent's text.** `testing/demo_narrative.py` runs the real agent loop with the project's
+  instructions, `calculate`, and two tools that return the report's own figures. Its reply is
   validated, and every figure in it is checked against the tool results; if either fails, a
   code-written text is used and the page says so.
 - **Recording and replay.** `demo --visual` never calls TabPFN or a model. It replays
   `fixtures/data/demo_tabpfn_cache.json` (the weekly budgets the agent set with TabPFN's
-  predictions, and TabPFN's answers for the final checks) and `fixtures/data/demo_narrative.json`
-  (the agent's text). The recorded decisions rebuild the same store on any machine; the
-  recordings are used only if they did, and otherwise the pooled and local models and the code
-  text are used. `demo --visual --record` makes the recordings: 11 TabPFN calls (about 110,000
-  tokens) and a few model calls.
+  predictions, and TabPFN's answers for the weekly checks and the final ones) and
+  `fixtures/data/demo_narrative.json` (the agent's text).
+  - The recorded decisions rebuild the same store on any machine. The recordings are used only
+    if they did; otherwise the pooled and local models and the code text are used.
+  - A recorded answer is matched by purpose, shape and the sum of its training targets in
+    hundredths, which tells the weekly checks apart and is a whole number on any machine.
+  - `demo --visual --record` makes everything from scratch. `--record-watch` keeps what is
+    recorded and asks TabPFN only for what is missing.
 - **What it measured.** The seed was chosen with the pooled model, before TabPFN saw the store.
-  - Alerts: TabPFN 4 (3 of 3 planted, 1 false alarm); the local model 8 (3, 5); the rule 24
-    (2, 22).
+  - Eight weekly checks, 10 planted problems: TabPFN 8 alerts (6 real, 2 false); the local
+    model 33 (8, 25); the ±50% rule 83 (9, 74). TabPFN misses more and alarms far less.
+  - The last fortnight, in the report: TabPFN 4 alerts (3 of 3, 1 false); the local model 8
+    (3, 5); the rule 24 (2, 22).
   - Budget: 39.6 conversions a day with the agent and TabPFN, 37.3 left alone, 40.0 best
     possible: +6.1%, 86% of the available gain. With the pooled model the agent reached +6.2%.

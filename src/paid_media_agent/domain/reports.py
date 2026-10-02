@@ -186,6 +186,8 @@ class AnomalyHow(BaseModel):
     answer_header: str
     rows: tuple[HowRow, ...]
     other_columns: tuple[str, ...]
+    extras: tuple[tuple[str, str], ...] = ()
+    """The judged row's remaining feature values, as (name, value)."""
     example: RangeExample
     step: RangeStep | None = None
     contrast: RuleContrast | None = None
@@ -316,6 +318,10 @@ class BudgetHow(BaseModel):
     tried_when: str = ""
     reached: float | None = None
     """Its daily budget now, when that is outside what it had tried."""
+    unit: float | None = None
+    """The example campaign's cost per conversion, the unit its spend is modelled in."""
+    sample: tuple[float, float] | None = None
+    """One real day of the example campaign as numbers: (spend, conversions)."""
     step: float
     """The extra daily spend the marginal figures are for."""
     marginals: tuple[MarginalRow, ...]

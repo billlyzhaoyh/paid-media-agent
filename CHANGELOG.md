@@ -5,18 +5,22 @@
 ### Added
 
 - A visual demo, and report panels that show what the models expect.
-  - **`demo --visual`** (now `make demo`) opens a report page for Northwind, a simulated store,
-    that reads as a story:
-    - what was unusual: TabPFN's alerts against a day-over-day rule's, split into real problems
-      and false alarms, with each flag labelled on its chart;
-    - what the budget moves bought: eight weeks of the agent's weekly reallocations against
-      budgets left alone and the best possible split, scored by the simulation's truth;
-    - how TabPFN is applied in each: the rows that went in, what came out, what it decided;
-    - next steps, written by the agent from those figures and checked against them;
-    - a change, approved and read back.
+  - **`demo --visual`** (now `make demo`) opens an animated page for Northwind, a simulated
+    store, built from diagrams:
+    - two intuitions: a fixed ±50% rule against a learned range, and budget moving from a flat
+      response curve to a steep one;
+    - the feature engineering for each job, as a pipeline from a raw row to TabPFN's output;
+    - a day-by-day replay of eight weeks: the agent's weekly budget moves, the conversions they
+      gain, and its weekly check for unusual days against the rule's;
+    - the result, the approval gate, and a link to the report the agent wrote.
+  - **The report** for the store's last fortnight: what was unusual, what the budget moves
+    bought, how TabPFN was applied (collapsed), next steps written by the agent and checked
+    against the figures, and a change approved and read back.
+  - **`make demo-video`** records the replay as `docs/media/demo-replay.mp4`.
   - **No token or model key needed.** The demo replays a recording of the weekly decisions,
-    TabPFN's answers, and the agent's text, and never calls out; `demo --visual --record` makes
-    the recording. The page says where each figure came from.
+    TabPFN's answers, and the agent's text, and never calls out. `demo --visual --record`
+    makes the recording and `--record-watch` adds only what is missing. The pages say where
+    each figure came from.
   - **`report --insights`** adds the expected-range and budget panels for a real account from
     stored history, with the configured predictor.
   - Chart geometry lives in `reports/charts.py`; a new `model` colour token marks what a model

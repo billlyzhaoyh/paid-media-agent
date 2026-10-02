@@ -57,8 +57,8 @@
   {% if panel.how %}
   {% set how = panel.how %}{% set ex = how.example %}
   {% set money = ex.metric == "spend" %}
+  <details class="how-details"><summary id="how-ranges">{{ how_title(how.model) }}: one real day, step by step</summary><div class="details-body">
   <figure class="how" aria-labelledby="how-ranges">
-    <h3 id="how-ranges">{{ how_title(how.model) }}</h3>
     <div class="how-steps">
       <div class="how-step">
         <p class="how-n"><span>1</span>What goes in</p>
@@ -102,6 +102,7 @@
       </ul>
     </div>
   </figure>
+  </div></details>
   {% if alert_bars %}<p class="how-n result">The result, on the same days</p>{% endif %}
   {% else %}
   <p class="note">The model learns each campaign's normal range from the weeks before, given the weekday, the budget, and the spend, and flags a day that falls outside it. Fewer false alarms means fewer days someone has to investigate for nothing.</p>
@@ -210,8 +211,8 @@
   {% endif %}
   {% if panel.how %}
   {% set how = panel.how %}
+  <details class="how-details"><summary id="how-budgets">{{ how_title(how.model) }}: one real campaign, step by step</summary><div class="details-body">
   <figure class="how" aria-labelledby="how-budgets">
-    <h3 id="how-budgets">{{ how_title(how.model) }}</h3>
     <div class="how-steps">
       <div class="how-step">
         <p class="how-n"><span>1</span>What goes in</p>
@@ -253,6 +254,7 @@
       </ul>
     </div>
   </figure>
+  </div></details>
   {% endif %}
   <details class="drivers"{% if not panel.trial %} open{% endif %}><summary>{% if panel.how %}Each campaign's spend response curve{% else %}How the prediction works: each campaign's spend response{% endif %}</summary><div class="details-body">
   <p class="note">Conversions a day against daily spend. Each curve is fitted to the campaign's own days and to points the global model predicts from every campaign's history, at spends the campaign has not tried.{% if panel.source in source_note %} {{ source_note[panel.source] }}{% endif %}</p>

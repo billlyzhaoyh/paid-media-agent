@@ -91,7 +91,9 @@ def setup(port: int | None, no_open: bool, no_token: bool) -> None:
 # ---------------------------------------------------------------- demo and doctor
 
 
-def _visual_demo(settings: Settings, *, open_browser: bool, record: bool, as_json: bool) -> None:
+def _visual_demo(
+    settings: Settings, *, open_browser: bool, record: bool, record_watch: bool, as_json: bool
+) -> None:
     from paid_media_agent.harness.models import cache_session, resolve_model
     from paid_media_agent.runtime.self_hosted import state_path
     from paid_media_agent.testing.demo_visual import run_visual_demo
@@ -116,6 +118,7 @@ def _visual_demo(settings: Settings, *, open_browser: bool, record: bool, as_jso
                 state_dir=state_dir,
                 open_browser=open_browser,
                 record=record,
+                record_watch=record_watch,
                 narrative_model=writer,
             )
         )
@@ -124,7 +127,8 @@ def _visual_demo(settings: Settings, *, open_browser: bool, record: bool, as_jso
     if as_json:
         click.echo(json.dumps(result, indent=2, default=str))
         return
-    click.echo(f"Report: {result['html']}" + ("" if open_browser else " (not opened)"))
+    click.echo(f"Demo: {result['demo']}" + ("" if open_browser else " (not opened)"))
+    click.echo(f"Report: {result['html']}")
     pdf = str(result["pdf"])
     click.echo(
         "PDF: rendered beside it"
@@ -139,6 +143,14 @@ def _visual_demo(settings: Settings, *, open_browser: bool, record: bool, as_jso
     if trial:
         per_day = ", ".join(f"{k} {v:.1f}" for k, v in trial["conversions_a_day"].items())
         click.echo(f"Conversions a day: {per_day} ({trial['gain']:+.1%} with the agent)")
+    watch = result["watch"]
+    counts = "; ".join(
+        f"{s['label']} {s['alerts']} alerts ({s['real']} real, {s['false']} false)"
+        for s in watch["scores"]
+    )
+    click.echo(f"Weekly watch ({watch['source']}): {counts}")
+    if result["asked_live"] is not None:
+        click.echo(f"TabPFN asked live: {result['asked_live']} calls")
     click.echo(f"Next steps: {result['narrative']}")
     click.echo(f"TabPFN tokens billed in this state file: {result['tabpfn_tokens_billed']:,}")
     click.echo(result["receipt_message"])
@@ -153,10 +165,10 @@ def _visual_demo(settings: Settings, *, open_browser: bool, record: bool, as_jso
 @click.option(
     "--visual",
     is_flag=True,
-    help="Render the report for a simulated account, with expected ranges, budget curves, and "
-    "an approved change, and open it in the browser.",
+    help="Replay eight weeks of the agent on a simulated store in an animated page, write the "
+    "report it produced, and open the page in the browser.",
 )
-@click.option("--no-open", is_flag=True, help="With --visual: write the report, do not open it.")
+@click.option("--no-open", is_flag=True, help="With --visual: write the pages, do not open one.")
 @click.option(
     "--record",
     is_flag=True,
@@ -165,14 +177,34 @@ def _visual_demo(settings: Settings, *, open_browser: bool, record: bool, as_jso
     "and rewrite the recordings shipped for replay. Bills TabPFN tokens and a few model calls.",
 )
 @click.option(
+    "--record-watch",
+    is_flag=True,
+    hidden=True,
+    help="With --visual: keep the recorded decisions and answers, and ask TabPFN only for the "
+    "answers the recording lacks (the weekly checks). Bills TabPFN tokens.",
+)
+@click.option(
     "--json", "as_json", is_flag=True, help="Print the final message and tool audit as JSON."
 )
-def demo(with_proposal: bool, visual: bool, no_open: bool, record: bool, as_json: bool) -> None:
+def demo(
+    with_proposal: bool,
+    visual: bool,
+    no_open: bool,
+    record: bool,
+    record_watch: bool,
+    as_json: bool,
+) -> None:
     """Run the fixture-backed demo through the real agent loop with no network or secrets."""
     settings = Settings(paid_media_model="scripted:demo", paid_media_allow_self_approval=True)
     _configure_logging(settings)
     if visual:
-        _visual_demo(settings, open_browser=not no_open, record=record, as_json=as_json)
+        _visual_demo(
+            settings,
+            open_browser=not no_open,
+            record=record,
+            record_watch=record_watch,
+            as_json=as_json,
+        )
         return
     try:
         result = asyncio.run(run_demo(settings, with_proposal=with_proposal))

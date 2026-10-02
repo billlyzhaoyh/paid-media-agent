@@ -89,7 +89,7 @@ class Truth:
     curves: Mapping[str, CampaignTruth] = field(default_factory=dict)
 
 
-def _source(store: Store, provider: str, purpose: str, since: datetime) -> ResultSource:
+def result_source(store: Store, provider: str, purpose: str, since: datetime) -> ResultSource:
     """Whether this build's model figures were computed now, read from an earlier identical
     call, or come from a recording."""
     if provider == "local":
@@ -164,7 +164,7 @@ def _alert_headline(scores: Sequence[MethodScore], truth_known: bool) -> str:
     return text
 
 
-def _method_label(method: str) -> tuple[str, str]:
+def method_label(method: str) -> tuple[str, str]:
     """(provider, what a reader calls it) from a method such as `tabpfn_band95`."""
     if method == RULE:
         return "rule", "±50% day-over-day rule"
@@ -314,6 +314,11 @@ def _anomaly_how(
             "a simple estimate: the usual level scaled by the "
             + ("budget change" if extra == "budget" else "day's spend"),
         ),
+        extras=(
+            ("Weekday", f"{judged.day:%A}"),
+            ("Day number", f"{judged.features[col['t']]:.0f}"),
+            ("Simple estimate", _amount(judged.features[col["naive"]], flag.metric)),
+        ),
         example=RangeExample(
             entity_name=flag.entity_name,
             day=flag.day,
@@ -352,7 +357,7 @@ async def anomaly_panel(
     if not report.bands:
         return None  # no model drew a range (too little history, or it was unavailable)
     methods = sorted(set(report.methods.values()), key=lambda m: m == RULE)
-    provider, label = _method_label(methods[0])
+    provider, label = method_label(methods[0])
     planted = _relevant(report, truth) if truth is not None else None
     flagged_days = {(f.entity_ref, f.day) for f in report.flags}
     grouped: dict[tuple[str, str], list[BandDay]] = {}
@@ -416,7 +421,7 @@ async def anomaly_panel(
         )  # fmt: skip
         other_methods = sorted(set(compared.methods.values()), key=lambda m: m == RULE)
         if other_methods:
-            scores.append(_score(_method_label(other_methods[0])[1], compared, planted))
+            scores.append(_score(method_label(other_methods[0])[1], compared, planted))
         if _name == "rule":
             by_rule = compared
     return AnomalyPanel(
@@ -424,7 +429,7 @@ async def anomaly_panel(
         headline=_alert_headline(scores, planted is not None),
         hidden_series=total - len(series[:MAX_SERIES]),
         method=methods[0],
-        source="rule" if provider == "rule" else _source(store, provider, "anomaly:%", since),
+        source="rule" if provider == "rule" else result_source(store, provider, "anomaly:%", since),
         windows=dict(report.windows),
         series=tuple(series[:MAX_SERIES]),
         scores=tuple(scores),
@@ -622,12 +627,13 @@ def _budget_how(
     seen = list(zip(arm.days, arm.spend, arm.conversions, strict=True))
     # Recent days are scaled up for conversions still arriving; show days that are simply counted.
     whole = [row for row in seen if abs(float(row[2]) - round(float(row[2]))) < 1e-6]
+    shown = (whole if len(whole) >= 2 else seen)[-2:]
     rows = [
         HowRow(
             cells=(arm.entity_name, f"{day:%a, %b} {day.day}", f"{float(spent):,.0f}"),
             answer=_amount(float(converted), "conversions"),
         )
-        for day, spent, converted in (whole if len(whole) >= 2 else seen)[-2:]
+        for day, spent, converted in shown
     ]
     for i in dict.fromkeys((int(order[0]), int(order[-1]))):
         rows.append(
@@ -729,6 +735,8 @@ def _budget_how(
         rows=tuple(rows),
         tried=tried,
         tried_when=when,
+        unit=round(float(arm.unit), 2) if math.isfinite(arm.unit) else None,
+        sample=(round(float(shown[-1][1]), 2), round(float(shown[-1][2]), 2)),
         reached=round(reached, 2) if reached is not None else None,
         step=step,
         marginals=tuple(marginals),
@@ -792,7 +800,7 @@ async def budget_panel(
         trial=trial,
         alternative_label="Pooled regression as the global model" if other else None,
         prior_source=run.prior_source,
-        source=_source(store, provider, "bandit:%", since),
+        source=result_source(store, provider, "bandit:%", since),
         currency=run.currency,
         curves=tuple(curves[:MAX_CURVES]),
         total_now=round(sum(float(c.current_budget or 0.0) for c in curves), 2),

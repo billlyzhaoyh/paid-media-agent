@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,15 @@ from paid_media_agent.testing.demo_narrative import (
 )
 from paid_media_agent.testing.demo_visual import ACCOUNT, DEMO, run_visual_demo
 from paid_media_agent.testing.scripted_model import ScriptedChatModel, tool_call_message
+
+
+def _story(page: str) -> dict[str, Any]:
+    """The data the demo page draws, read back out of the page."""
+    found = re.search(r'<script type="application/json" id="story">(.*?)</script>', page, re.S)
+    assert found is not None
+    story: dict[str, Any] = json.loads(found.group(1).replace("<\\/", "</"))
+    return story
+
 
 HEADINGS = (
     "What was unusual",
@@ -78,11 +88,61 @@ async def test_the_demo_replays_its_recordings_with_no_network_even_with_a_token
     assert "The range moves with the budget." in html
     assert "The range is as wide as the campaign is noisy." in html
 
+    # The demo page: one file, no external requests, and a replay that adds up.
+    page = Path(result["demo"]).read_text("utf-8")
+    assert Path(result["demo"]).name == "demo.html"
+    assert not re.search(r'(src|href)="https?://', page) and "@import" not in page
+    assert "TabPFN does the predicting" in page and 'href="demo_report.html"' in page
+    assert result["watch"]["source"] == "recorded" and result["asked_live"] is None
+    story = _story(page)
+    assert story["meta"]["sources"] == {
+        "budgets": "recorded",
+        "watch": "recorded",
+        "watch_label": "TabPFN, 95% expected range",
+        "text": result["narrative"],
+    }
+    days, refs = len(story["days"]), [c["ref"] for c in story["campaigns"]]
+    assert days == 56 and len(refs) == 4
+    for key in ("static", "agent", "best"):
+        assert len(story["series"][key]) == days
+        assert all(len(story["budgets"][key][ref]) == days for ref in refs)
+        assert sum(story["series"][key]) / days == pytest.approx(
+            story["result"]["per_day"][key], abs=0.01
+        )
+    assert list(story["result"]["per_day"].values()) == pytest.approx(
+        list(trial["conversions_a_day"].values()), abs=0.01
+    )
+    # Budgets move only at the weekly decisions and the total stays the same.
+    totals = [sum(story["budgets"]["agent"][ref][i] for ref in refs) for i in range(days)]
+    assert max(totals) - min(totals) < 1
+    assert [d["t"] for d in story["decisions"]] == list(range(0, days, 7))
+    for ref in refs:
+        budgets = story["budgets"]["agent"][ref]
+        assert all(budgets[i] == budgets[i - 1] for i in range(1, days) if i % 7)
+    # Every mark is on a real campaign-day, revealed at a weekly check, and the scores count them.
+    flagged = {(p["ref"], p["i"]) for p in story["points"] if p["flagged"]}
+    assert all(p["ref"] in refs and 0 <= p["i"] < days for p in story["points"])
+    assert {p["reveal"] for p in story["points"]} <= set(range(7, days + 1, 7))
+    assert all(p["lo"] >= 0 for p in story["points"])
+    model, local, rule = story["scores"]
+    planted = {(p["ref"], p["i"]) for p in story["planted"]}
+    assert (model["alerts"], model["real"]) == (len(flagged), len(flagged & planted))
+    assert model["false"] < local["false"] < rule["false"], "fewer false alarms is the point"
+    assert result["watch"]["scores"] == story["scores"]
+    kinds = [entry["kind"] for entry in story["log"]]
+    assert kinds.count("move") == len(story["decisions"]) and kinds.count("check") == 8
+    assert kinds.count("alert") + kinds.count("false") == sum(p["flagged"] for p in story["points"])
+    assert [e["t"] for e in story["log"]] == sorted(e["t"] for e in story["log"])
+    features = story["features"]
+    assert features["ranges"]["model"] == "TabPFN" and features["budgets"]["unit"] > 0
+    assert len(story["intuition"]["curves"]) == 2 and story["next_steps"]
+
     # A second run reuses the store and says the same thing.
     again = await run_visual_demo(
         with_token, root=project_root, state_dir=tmp_path / "state", open_browser=False
     )
     assert again["trial"] == trial and again["ranges"] == result["ranges"]
+    assert again["watch"] == result["watch"]
 
 
 async def test_without_recordings_local_models_and_code_write_the_page_and_say_so(
@@ -107,6 +167,15 @@ async def test_without_recordings_local_models_and_code_write_the_page_and_say_s
     assert "How the local model is applied" in html
     assert "How the pooled regression is applied" in html
     assert result["trial"]["gain"] > 0, "the pooled model's moves still beat budgets left alone"
+    page = Path(result["demo"]).read_text("utf-8")
+    story = _story(page)
+    assert result["watch"]["source"] == "local" and story["meta"]["model"] == "Local model"
+    assert "A local model does the predicting" in page and "TabPFN does the predicting" not in page
+    assert [s["label"] for s in story["scores"]] == [
+        "Local model, 95% expected range",
+        "±50% day-over-day rule",
+    ]
+    assert story["meta"]["sources"]["budgets"] == "local"
 
 
 async def test_a_recording_for_another_store_is_not_applied(
@@ -126,6 +195,7 @@ async def test_a_recording_for_another_store_is_not_applied(
     )
     assert result["weekly_predictions"] == "local", "the recorded decisions built another store"
     assert result["ranges"]["source"] == "local" and result["narrative"] == CODE
+    assert result["watch"]["source"] == "local", "the weekly answers are about another store"
     assert body["scenario"]["seed"] == DEMO.seed
 
 
