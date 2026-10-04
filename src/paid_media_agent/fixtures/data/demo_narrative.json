@@ -1,0 +1,45 @@
+{
+ "note": "The demo page's summary and next steps, written once by the agent loop from the page's own figures and replayed for the same simulated account.",
+ "model": "anthropic/claude-sonnet-5.5",
+ "account_check": {
+  "rows": 392,
+  "spend": 205196.03,
+  "conversions": 3752.0
+ },
+ "tools_called": [
+  "get_unusual_days",
+  "get_budget_result",
+  "calculate",
+  "calculate"
+ ],
+ "summary": "This is a simulated account, so results are scored against the simulation's truth, not real sales. Over 8 weeks, the agent's weekly budget moves produced 39.6 conversions a day against 37.3 with budgets left alone. That is +6.1% at the same total budget, and it captured 86% of the available gain. TabPFN raised 4 alerts on unusual days and 3 were real problems. The \u00b150% day-over-day rule raised 24 alerts and 22 were false alarms. Next, move budget toward Retargeting and investigate the flagged days.",
+ "recommendations": [
+  {
+   "target": "Retargeting daily budget",
+   "action": "Raise the daily budget from 182.96 USD to the recommended 228.70 USD, an increase of 45.74 USD (25.0%). Submit it as a proposal for approval, funded by the cuts below so the total stays at 2313.94 USD.",
+   "evidence": "Retargeting is limited by budget and is the only campaign expected to gain. Expected conversions rise from 4.01 to 4.75 a day, about 0.74 more. The 8-week trial of this approach gained 6.1% at the same total budget.",
+   "expected_effect": "About 0.74 more conversions a day from Retargeting. This is a model estimate, so the real gain may differ.",
+   "confidence": "medium",
+   "measurement": "Compare Retargeting conversions a day and total account conversions a day against the trial level of 39.6 over the next few weeks. Watch Retargeting spend for spikes, since one was flagged there on 2026-08-05.",
+   "reversal": "Set the Retargeting budget back to 182.96 USD through a new proposal, and restore the funding campaigns to their current budgets."
+  },
+  {
+   "target": "Brand Search and Non-Brand Search daily budgets",
+   "action": "Lower Brand Search from 42.43 USD to 31.82 USD (-10.61 USD) and Non-Brand Search from 487.65 USD to 455.78 USD (-31.87 USD). Leave Shopping almost flat, from 1600.90 USD to 1,597.64 USD. Submit these as proposals together with the Retargeting increase.",
+   "evidence": "The result recommends these shifts at no change in total budget. Expected conversions fall by 0.46 a day for Non-Brand Search (8.54 to 8.08) and by 0.12 for Brand Search (1.02 to 0.90). Together that is 0.58 a day lost. Shopping is expected to lose 0.05 a day.",
+   "expected_effect": "The expected net gain across all four campaigns is small, about 0.11 conversions a day. The Retargeting gain only slightly outweighs the losses elsewhere, so the benefit depends on the model being right.",
+   "confidence": "low",
+   "measurement": "Track conversions a day for each campaign over the next few weeks and compare them with the expected values above. Confirm the account total does not fall below the current level.",
+   "reversal": "Restore Brand Search to 42.43 USD and Non-Brand Search to 487.65 USD through a new proposal if account conversions drop."
+  },
+  {
+   "target": "Unusual days: Shopping tracking, Retargeting spend, Brand Search conversions",
+   "action": "Check the Shopping conversion tracking for 2026-07-30. Check the Retargeting spend settings and change history for 2026-08-05. Review the Brand Search conversion surge on 2026-08-01 to confirm it was genuine. Keep the TabPFN 95% expected range as the alert method, and stop relying on the \u00b150% day-over-day rule.",
+   "evidence": "On 2026-07-30 Shopping recorded 6.0 conversions against an expected 22.33, which was a real tracking outage. On 2026-08-05 Retargeting spent 300.59 USD against an expected 169.61 USD, a real spend spike. On 2026-08-01 Brand Search recorded 6.0 conversions against an expected 0.99, a real conversion surge. The 2026-08-02 Shopping flag (14.0 against 27.24 expected) was a false alarm, so treat it as lower priority. On a real account, flags prompt an investigation and are not findings.",
+   "expected_effect": "Catching tracking outages and spend spikes early protects the conversion data the budget moves depend on.",
+   "confidence": "high",
+   "measurement": "Count alerts and confirmed problems each week. TabPFN had 1 false alarm among 4 alerts, against 22 among 24 for the \u00b150% rule.",
+   "reversal": "Alert method changes are reversible. If TabPFN misses real problems, bring back the \u00b150% rule alongside it."
+  }
+ ]
+}

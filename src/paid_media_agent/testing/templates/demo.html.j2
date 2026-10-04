@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+{# The demo page. Everything it draws is in the embedded story (testing/demo_story.py); demo.js
+   only draws it. Styles, script and data are inline, so the file opens anywhere with no network. #}
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ story.meta.account }} · paid media agent demo</title>
+<style>{{ css }}</style>
+</head>
+<body>
+<main class="page">
+
+<header class="hero">
+  <p class="eyebrow">Paid media agent · {{ story.meta.account }}, a simulated store</p>
+  <h1>An agent that watches ad spend and moves budget.<br>{{ "TabPFN" if story.meta.model == "TabPFN" else "A local model" }} does the predicting.</h1>
+  <div class="hero-tiles" id="hero-tiles"></div>
+</header>
+
+<section id="jobs" aria-labelledby="jobs-title">
+  <h2 id="jobs-title"><span class="num">01</span>Two jobs, two ideas</h2>
+
+  <article class="job">
+    <header class="job-head">
+      <p class="tag">Job 1 · Spot the unusual day</p>
+      <h3>Is today normal <em>for this campaign, at this budget</em>?</h3>
+      <p class="line">A fixed rule alerts on ordinary noise. A range learned from the campaign's own weeks does not.</p>
+    </header>
+    <div class="pair">
+      <figure class="panel">
+        <figcaption><span class="cap">±50% day-over-day rule</span><span class="count" id="intu-rule-count"></span></figcaption>
+        <svg id="intu-rule" class="chart" role="img" aria-label="The same days judged by a fixed ±50% rule"></svg>
+      </figure>
+      <figure class="panel">
+        <figcaption><span class="cap">{{ "TabPFN's" if story.meta.model == "TabPFN" else "The local model's" }} expected range</span><span class="count" id="intu-range-count"></span></figcaption>
+        <svg id="intu-range" class="chart" role="img" aria-label="The same days judged by the model's expected range"></svg>
+      </figure>
+    </div>
+    <p class="keys" id="intu-keys"></p>
+  </article>
+
+  <article class="job">
+    <header class="job-head">
+      <p class="tag">Job 2 · Move the budget</p>
+      <h3>Where does the next dollar buy the most?</h3>
+      <p class="line">Take budget from where the curve is flat and give it to where it is steep, until the slopes meet.</p>
+    </header>
+    <figure class="panel">
+      <figcaption><span class="cap">Conversions a day against daily budget · the simulation's true curves</span>
+        <span class="toggle" role="group" aria-label="Budgets shown">
+          <button type="button" id="curve-before" aria-pressed="true">Before the agent</button>
+          <button type="button" id="curve-now" aria-pressed="false">After 8 weeks</button>
+        </span>
+      </figcaption>
+      <svg id="intu-curves" class="chart tall" role="img" aria-label="Two campaigns' response curves with the budget moving from the flatter one to the steeper one"></svg>
+    </figure>
+  </article>
+</section>
+
+<section id="features" aria-labelledby="features-title">
+  <h2 id="features-title"><span class="num">02</span>The feature engineering that makes it work</h2>
+  <div id="pipelines"></div>
+</section>
+
+<section id="replay" aria-labelledby="replay-title">
+  <h2 id="replay-title"><span class="num">03</span>Eight weeks, replayed</h2>
+  <div class="player" id="player">
+    <div class="controls">
+      <button type="button" id="play" class="play" aria-label="Play">▶</button>
+      <div class="clock"><span id="clock-week"></span><span id="clock-day"></span></div>
+      <input type="range" id="scrub" min="0" max="{{ story.days | length }}" step="0.05" value="0" aria-label="Day of the replay">
+      <span class="toggle" role="group" aria-label="Speed">
+        <button type="button" data-speed="1" aria-pressed="true">1×</button>
+        <button type="button" data-speed="2" aria-pressed="false">2×</button>
+        <button type="button" data-speed="4" aria-pressed="false">4×</button>
+      </span>
+    </div>
+    <div class="stage">
+      <div class="col">
+        <figure class="panel">
+          <figcaption><span class="cap">Conversions gained over budgets left alone</span><span class="big" id="gain-now"></span></figcaption>
+          <svg id="race" class="chart" role="img" aria-label="Cumulative conversions gained by the agent and by the best possible split, against budgets left alone"></svg>
+        </figure>
+        <figure class="panel">
+          <figcaption><span class="cap">The weekly watch · observed against the expected range</span><span class="counts" id="watch-counts"></span></figcaption>
+          <div class="strips" id="strips"></div>
+          <p class="keys" id="watch-keys"></p>
+        </figure>
+      </div>
+      <div class="col narrow">
+        <figure class="panel">
+          <figcaption><span class="cap">Daily budget</span><span class="cap right">Next {{ "{:,.0f}".format(story.meta.step) }} a day buys</span></figcaption>
+          <div id="budget-rows"></div>
+          <p class="gap" id="gap"></p>
+        </figure>
+        <figure class="panel log-panel">
+          <figcaption><span class="cap">What the agent did</span></figcaption>
+          <ol class="log" id="log" aria-live="off"></ol>
+        </figure>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="result" aria-labelledby="result-title">
+  <h2 id="result-title"><span class="num">04</span>The result, and the guardrail</h2>
+  <div class="result-grid">
+    <figure class="panel" id="result-alerts"></figure>
+    <figure class="panel" id="result-budget"></figure>
+  </div>
+  <figure class="panel gate">
+    <figcaption><span class="cap">Nothing changes without a person</span></figcaption>
+    <ol class="gate-steps">
+      <li><span>1</span>The agent proposes</li>
+      <li><span>2</span>A person approves</li>
+      <li><span>3</span>Applied once, read back</li>
+    </ol>
+    {% if story.change %}<p class="receipt">{{ story.change.receipt }}</p>{% endif %}
+  </figure>
+  {% if story.next_steps %}
+  <figure class="panel">
+    <figcaption><span class="cap">What the agent recommends next</span><span class="cap right">{{ story.meta.sources.text }}</span></figcaption>
+    <ol class="next">
+      {% for step in story.next_steps %}<li><strong>{{ step.target }}</strong><span>{{ step.action }}</span><em>{{ step.confidence }} confidence</em></li>{% endfor %}
+    </ol>
+  </figure>
+  {% endif %}
+  <p class="cta"><a class="button" href="{{ story.meta.report }}">Open the report the agent wrote</a></p>
+  <p class="fine" id="sources"></p>
+</section>
+
+</main>
+<div class="tip" id="tip" hidden></div>
+<script type="application/json" id="story">{{ payload }}</script>
+<script>{{ script }}</script>
+</body>
+</html>

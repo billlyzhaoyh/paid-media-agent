@@ -117,7 +117,15 @@ async def test_every_judged_day_is_returned_with_its_range_and_flags_agree(
     panel = await anomaly_panel(
         store, LocalPredictor(), account_alias=ALIAS, as_of=AS_OF, truth=truth, currency="USD"
     )
-    assert panel is not None and panel.source == "local" and len(panel.series) == 6
+    assert panel is not None and panel.source == "local"
+    assert len(panel.series) == 4 and panel.hidden_series == 2, "only charts with something on"
+    assert all(any(d.flagged or d.planted for d in s.days) for s in panel.series)
+    assert panel.headline.startswith("Local model raised 5 alerts; 3 were real problems.")
+    assert "day-over-day rule raised 15 for the same days, 11 of them false alarms" in (
+        panel.headline
+    )
+    notes = {d.note for s in panel.series for d in s.days if d.note}
+    assert "false alarm" in notes and any(n.endswith(", caught") for n in notes)
     assert panel.label == "Local model, 95% expected range" and panel.planted == 4
     local, rule = panel.scores
     assert (local.flagged, local.caught) == (len({(e, d) for e, d, _ in flagged}), 3)
@@ -195,7 +203,7 @@ def test_the_report_draws_the_panels_only_when_it_has_them(tmp_path: Path) -> No
     )  # fmt: skip
     renderer = ReportRenderer(tmp_path)
     plain = renderer.render_html(payload)
-    assert "Expected range and anomalies" not in plain and "<polyline" not in plain
+    assert "What was unusual" not in plain and "<polyline" not in plain
     insights = ReportInsights(
         anomaly=AnomalyPanel(
             label="TabPFN, 95% expected range", method="tabpfn_band95", source="cached",
@@ -215,7 +223,7 @@ def test_the_report_draws_the_panels_only_when_it_has_them(tmp_path: Path) -> No
                            receipt="status=verified"),
     )  # fmt: skip
     html = renderer.render_html(payload.model_copy(update={"insights": insights}))
-    for heading in ("Expected range and anomalies", "Budget response and recommendation",
+    for heading in ("What was unusual", "Budget response and recommendation",
                     "A change, approved and verified"):  # fmt: skip
         assert heading in html
     assert (
@@ -225,3 +233,175 @@ def test_the_report_draws_the_panels_only_when_it_has_them(tmp_path: Path) -> No
     )
     assert "&lt;b&gt;C&lt;/b&gt;" in html and "<b>C</b>" not in html, "names are escaped"
     assert html.count("<polyline") >= 3 and "status=verified" in html
+
+
+def test_alert_bars_budget_rows_and_the_trial_chart_share_one_scale_each() -> None:
+    from paid_media_agent.domain.reports import BudgetRow, BudgetTrial, MethodScore, TrialRun
+    from paid_media_agent.reports.charts import WIDE_WIDTH, alert_bars, budget_bars, trial_chart
+
+    bars = alert_bars(
+        [
+            MethodScore(label="TabPFN", flagged=4, caught=3, false_alarms=1),
+            MethodScore(label="Rule", flagged=24, caught=2, false_alarms=22),
+        ]
+    )
+    assert [(b.caught_width, b.false_width) for b in bars] == [(12.5, 4.17), (8.33, 91.67)]
+    assert alert_bars([MethodScore(label="No truth", flagged=3)]) == (), "nothing to split"
+    rows = budget_bars(
+        [
+            BudgetRow(entity_ref="a", entity_name="A", start=400, now=100, recommended=80),
+            BudgetRow(entity_ref="b", entity_name="B", start=500, now=1000),
+        ]
+    )
+    assert (rows[0].start, rows[0].now, rows[0].recommended, rows[0].change) == (40, 10, 8, "-75%")
+    assert (rows[1].now, rows[1].recommended, rows[1].change) == (100, None, "+100%")
+    trial = BudgetTrial(
+        weeks=tuple(date(2026, 6, 15) + timedelta(days=7 * i) for i in range(3)),
+        days=21,
+        runs=(
+            TrialRun(key="static", label="Budgets left alone", weekly=(260, 259, 261), per_day=37.1),
+            TrialRun(key="agent", label="The agent", weekly=(264, 277, 281), per_day=39.1),
+            TrialRun(key="best", label="Best possible", weekly=(264, 279, 282), per_day=39.3),
+        ),
+        gain=0.054, best_gain=0.059, captured=0.9, decisions=3, rows=(),
+    )  # fmt: skip
+    chart = trial_chart(trial)
+    assert chart.frame.width == WIDE_WIDTH and [line.key for line in chart.lines] == [
+        "static", "agent", "best",
+    ]  # fmt: skip
+    ends = {line.key: line.end.y for line in chart.lines}
+    assert ends["best"] < ends["agent"] < ends["static"], "more conversions are drawn higher"
+    labels = sorted(label.y for label in chart.labels)
+    assert all(b - a >= 14 for a, b in zip(labels, labels[1:], strict=False)), "no overprinting"
+    assert all(line.end.x <= chart.frame.right for line in chart.lines)
+
+
+async def test_the_trial_scores_three_runs_of_one_store_by_its_true_curves() -> None:
+    from paid_media_agent.bandit.evaluate import run_closed_loop
+    from paid_media_agent.bandit.recommend import BanditConfig
+    from paid_media_agent.reports.insights import build_trial
+
+    params = ScenarioParams(
+        scenario_id="trial", seed=4, n_campaigns=4, days=70, start=date(2026, 5, 4),
+        cold_starts=0, campaign_names=("Brand Search", "Shopping"),
+    )  # fmt: skip
+    runs = {
+        policy: await run_closed_loop(
+            params,
+            policy,
+            warmup_days=42,
+            days=28,
+            config=BanditConfig(policy="greedy"),  # type: ignore[arg-type]
+        )
+        for policy in ("static", "greedy", "oracle")
+    }
+    names = {c.entity_ref: c.name for c in Simulator(params).campaigns}
+    assert names["sim-001"] == "Brand Search" and names["sim-003"] == "Simulated campaign 3"
+    trial = build_trial(
+        runs["static"], runs["greedy"], runs["oracle"], names=names, agent_label="The agent"
+    )
+    assert trial is not None and len(trial.weeks) == 4 and trial.days == 28
+    assert all(len(run.weekly) == 4 for run in trial.runs) and trial.decisions == 4
+    left, agent, best = (run.per_day for run in trial.runs)
+    assert left <= agent <= best + 1e-6, "the best possible split bounds the agent's"
+    assert trial.captured is not None and 0 <= trial.captured <= 1
+    assert sum(r.start for r in trial.rows) == pytest.approx(
+        sum(r.now for r in trial.rows), abs=0.1
+    )
+
+    # The same decisions, replayed without the policy, rebuild the same run.
+    decisions = [budgets for _day, budgets in runs["greedy"].budgets[1:]]
+    replayed = await run_closed_loop(
+        params, "greedy", warmup_days=42, days=28, config=BanditConfig(policy="greedy"),
+        replay=decisions,
+    )  # fmt: skip
+    assert replayed.expected_conversions == pytest.approx(runs["greedy"].expected_conversions)
+
+
+async def test_the_model_is_followed_through_one_flagged_day(
+    account: tuple[Store, Truth],
+) -> None:
+    from paid_media_agent.reports.charts import RANGE_WIDTH, range_bar
+
+    store, truth = account
+    report = await check_anomalies(
+        store, LocalPredictor(), record=False, as_of=AS_OF, window_days=14, account_alias=ALIAS
+    )
+    given = report.inputs["spend"]
+    assert given.columns[-1] == "budget" and len(given.quantiles) == 3
+    assert len(given.judged) == report.rows_checked["spend"] and len(given.history) >= 20
+    assert all(len(row.features) == len(given.columns) for row in given.history + given.judged)
+    assert max(r.day for r in given.history) < min(r.day for r in given.judged)
+    by_rule = await check_anomalies(
+        store, None, record=False, as_of=AS_OF, window_days=14, account_alias=ALIAS
+    )
+    assert by_rule.inputs == {}, "the rule is given no table"
+
+    panel = await anomaly_panel(
+        store, LocalPredictor(), account_alias=ALIAS, as_of=AS_OF, truth=truth, currency="USD"
+    )
+    assert panel is not None and panel.how is not None
+    how = panel.how
+    assert how.model == "Local model" and "simple estimate" in how.about and how.requests == 2
+    example = how.example
+    assert example.note is not None and example.note.endswith(", caught"), "a real problem"
+    assert not example.lo <= example.observed <= example.hi
+    assert (example.low_level, example.high_level) == (2.5, 97.5)
+    *history, judged = how.rows
+    assert judged.asked and judged.answer == "?" and len(judged.cells) == len(how.headers)
+    assert len(history) == 2 and not any(row.asked for row in history)
+    assert {row.cells[0] for row in how.rows} == {example.entity_name}, "one campaign's rows"
+    assert how.history_rows == len(report.inputs[example.metric].history)
+
+    flagged = {(f.entity_name, f.day) for f in report.flags}
+    alarms = {(f.entity_name, f.day) for f in by_rule.flags}
+    names = {f.entity_ref: f.entity_name for f in by_rule.flags}
+    planted = {(names.get(entity), day) for (entity, day) in truth.planted}
+    contrast = how.contrast
+    assert contrast is not None and (contrast.entity_name, contrast.day) in alarms - flagged
+    assert (contrast.entity_name, contrast.day) not in planted and contrast.planted_known
+    assert abs(contrast.change) >= 0.5 and contrast.lo <= contrast.observed <= contrast.hi
+    if how.step is not None:
+        assert abs(how.step.budget_after / how.step.budget_before - 1) >= 0.1
+        assert (how.step.entity_name, how.step.day) not in flagged
+
+    bar = range_bar(example)
+    assert bar.lo < bar.expected < bar.hi and bar.outside
+    assert 0 <= bar.observed <= RANGE_WIDTH and not bar.lo <= bar.observed <= bar.hi
+    inside = range_bar(example.model_copy(update={"observed": example.expected}))
+    assert not inside.outside and inside.lo < inside.observed < inside.hi
+
+    # With no truth the example is still a flag, and nothing claims what it turned out to be.
+    plain = await anomaly_panel(
+        store, LocalPredictor(), account_alias=ALIAS, as_of=AS_OF, currency="USD"
+    )
+    assert plain is not None and plain.how is not None and plain.how.example.note is None
+    assert plain.how.contrast is None or not plain.how.contrast.planted_known
+
+
+async def test_the_global_model_is_followed_through_one_campaign(
+    account: tuple[Store, Truth],
+) -> None:
+    from paid_media_agent.reports.insights import budget_panel
+
+    store, truth = account
+    panel = await budget_panel(store, None, account_alias=ALIAS, as_of=AS_OF, truth=truth)
+    assert panel is not None and panel.how is not None
+    how = panel.how
+    assert how.model == "Pooled regression" and how.campaigns == len(how.marginals) >= 2
+    assert how.history_rows > 0 and how.levels > 0 and how.step > 0
+    seen = [row for row in how.rows if not row.asked]
+    asked = [row for row in how.rows if row.asked]
+    assert len(seen) == 2 and 1 <= len(asked) <= 2
+    assert all(row.answer == "?" and row.predicted for row in asked)
+    assert all(row.cells[1] == "any weekday" for row in asked)
+    assert {row.cells[0] for row in how.rows} == {how.entity_name}
+    for row in how.marginals:
+        assert row.now_predicted > 0 and row.now_true is not None and row.now_true > 0
+        assert row.start_predicted is None and row.moved is None, "no trial, so no 'before'"
+    assert how.headline.startswith("Budget goes to where the next") and how.balance == ""
+
+    plain = await budget_panel(store, None, account_alias=ALIAS, as_of=AS_OF)
+    assert plain is not None and plain.how is not None
+    assert all(row.now_true is None for row in plain.how.marginals), "no truth, no true column"
+    assert {row.next_move for row in plain.how.marginals} <= {"up", "down", "flat"}

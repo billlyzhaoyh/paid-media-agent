@@ -20,7 +20,7 @@
 </a>
 
 <p align="center">
-  <sub><a href="docs/screenshots/setup-preview.png">Setup console, dark</a> · <a href="docs/screenshots/report-preview.png">Example report</a> · <a href="docs/screenshots/demo-report.png">Demo report with TabPFN's expected ranges</a>, all from synthetic accounts.</sub>
+  <sub><a href="docs/screenshots/setup-preview.png">Setup console, dark</a> · <a href="docs/screenshots/report-preview.png">Example report</a> · <a href="docs/screenshots/demo-page.png">Demo page</a> · <a href="docs/media/demo-replay.mp4">Demo replay (video)</a>, all from synthetic accounts.</sub>
 </p>
 
 Paid Media Agent helps you understand what changed across your ad accounts and decide what to do
@@ -115,19 +115,28 @@ You can also ask your coding agent to guide setup:
 uv run paid-media-agent demo --visual
 ```
 
-The demo opens a [report page](docs/screenshots/demo-report.png) for a simulated account, where
-the true spend curves and the planted anomalies are known:
+The demo opens an [animated page](docs/screenshots/demo-page.png) for Northwind, a simulated
+store ([video of the replay](docs/media/demo-replay.mp4)). A simulation is used because it knows
+what real data cannot: which anomalies were planted and what each campaign's true spend curve
+is. The page is mostly diagrams:
 
-- **Expected ranges.** Each campaign-day against the range [TabPFN](https://priorlabs.ai/)
-  expected, with the days it flagged and the anomalies that were really planted, beside what the
-  local model and a ±50% day-over-day rule flagged on the same days.
-- **Budget curves.** Each campaign's fitted spend response against its true curve, the points the
-  global model suggested, and the current and recommended budgets.
-- **A change.** A proposal as its reviewer saw it, approved, applied once, and read back.
+- **Two jobs, two ideas.** Spotting an unusual day: a fixed ±50% rule against a range
+  [TabPFN](https://priorlabs.ai/) learns for each campaign at its budget. Moving budget: from
+  where the response curve is flat to where it is steep, until the slopes meet.
+- **Feature engineering.** For each job, the raw daily row, the engineered row TabPFN is given,
+  and what comes back, with the measured effect of the feature choices.
+- **Eight weeks, replayed.** Day by day: the agent's weekly budget moves, the conversions they
+  gain over budgets left alone, and its weekly check for unusual days.
+- **The result.** Over the eight weeks TabPFN raised 8 alerts: 6 of the 10 planted problems and
+  2 false alarms. A ±50% day-over-day rule caught 9 and raised 74 false alarms. The agent's
+  budget moves produced 39.6 conversions a day against 37.3 with budgets left alone (+6.1% at
+  the same total budget); the best possible split would have produced 40.0.
+- **The report the agent wrote** for the last fortnight is linked from the page
+  ([screenshot](docs/screenshots/demo-report.png)).
 
-It needs no token: TabPFN's answers for this fixed account are recorded and replayed, and the
-page says so. With `TABPFN_TOKEN` set, the same command asks TabPFN live. It doesn't call a
-language model or touch live campaigns. `demo --with-proposal` prints the same flow as text.
+The demo calls no model and no TabPFN: it replays a recording of the weekly decisions, TabPFN's
+answers, and the agent's text, and the page says so. It doesn't touch live campaigns.
+`demo --with-proposal` prints the analysis and approval flow as text.
 
 Once configured, ask a question or generate a report:
 

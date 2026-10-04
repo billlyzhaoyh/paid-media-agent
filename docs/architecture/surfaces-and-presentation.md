@@ -66,16 +66,51 @@ template folder and token set fall back to the defaults for anything they do not
 `report --insights` adds the first two panels for a real account from its stored history, with
 the configured predictor (the free local model by default). Scheduled reports do not add them.
 
-**The demo.** `demo --visual` (`testing/demo_visual.py`) renders this report for a simulated
-account and opens it. A simulation has what real data cannot give: planted anomalies and true
-response curves, so the page also shows what was caught and how close each fit is.
-- The account is fixed (seed, dates) and kept in `workspace/state/sim-demo.duckdb`.
-- With `TABPFN_TOKEN` set, TabPFN is asked live: three calls, about 30,000 tokens, then answered
-  from that state file's cache.
-- Without a token, TabPFN's answers recorded for this account
-  (`fixtures/data/demo_tabpfn_cache.json`) are replayed, matched by question and shape, and only
-  when the account built on this machine is the same one. Otherwise the local model draws the
-  panels. The page states which happened.
-- The seed was chosen with the local model, before TabPFN saw the account. On it TabPFN flagged 4
-  campaign-days: 3 of the 4 planted anomalies and 1 false alarm. The local model flagged 5 (3
-  caught, 2 false alarms); the rule flagged 15 (4 caught, 11 false alarms).
+`ReportPayload.omit` leaves out standard sections (the account-performance charts, the
+all-accounts table, the per-platform sections) for a page about one account's panels.
+
+**The demo.** `demo --visual` (`testing/demo_visual.py`) builds Northwind, a simulated store,
+and writes two pages: an animated demo page and the agent's report for the last fortnight. A
+simulation has what real data cannot give: planted anomalies and true response curves, so the
+pages show what was caught and what a budget split produced against the best possible one.
+
+- **One store.** Six weeks under its operator's budgets, then eight in which the agent works
+  each week: it checks the week just gone for unusual days (`check_anomalies`, reading history
+  as it stood that day) and reallocates the budgets (`bandit/evaluate.py` `run_closed_loop`).
+- **The demo page** (`testing/demo_story.py`, `testing/templates/demo.*`). One self-contained
+  file with inline styles, script and data.
+  - `build_story` turns the three runs, the weekly checks, the truth and the agent's text into
+    one JSON document. The script only draws it.
+  - Two intuition diagrams: a fixed rule against a learned range on one real series, and two
+    true response curves with the budget moving from the flatter to the steeper.
+  - Two feature pipelines: a raw row, the engineered row, the model, the output. The measured
+    effect of the feature choices is quoted from this project's backtests and labelled as such.
+  - The replay: one clock in days drives every panel, and `render(t)` depends on nothing else,
+    so scrubbing, `?t=<day>` and video frames show exactly what playback shows.
+- **The video** (`testing/demo_video.py`, `make demo-video`). One headless Chrome on its own
+  throwaway profile sets the clock frame by frame over the DevTools protocol; ffmpeg joins the
+  frames.
+- **The report** (`demo_report.html`). The agent's own output: what was unusual in the last
+  fortnight, what the budget moves bought, its next steps, and an approved change. Its "How
+  TabPFN is applied" blocks are collapsed on screen and open in the PDF.
+- **The agent's text.** `testing/demo_narrative.py` runs the real agent loop with the project's
+  instructions, `calculate`, and two tools that return the report's own figures. Its reply is
+  validated, and every figure in it is checked against the tool results; if either fails, a
+  code-written text is used and the page says so.
+- **Recording and replay.** `demo --visual` never calls TabPFN or a model. It replays
+  `fixtures/data/demo_tabpfn_cache.json` (the weekly budgets the agent set with TabPFN's
+  predictions, and TabPFN's answers for the weekly checks and the final ones) and
+  `fixtures/data/demo_narrative.json` (the agent's text).
+  - The recorded decisions rebuild the same store on any machine. The recordings are used only
+    if they did; otherwise the pooled and local models and the code text are used.
+  - A recorded answer is matched by purpose, shape and the sum of its training targets in
+    hundredths, which tells the weekly checks apart and is a whole number on any machine.
+  - `demo --visual --record` makes everything from scratch. `--record-watch` keeps what is
+    recorded and asks TabPFN only for what is missing.
+- **What it measured.** The seed was chosen with the pooled model, before TabPFN saw the store.
+  - Eight weekly checks, 10 planted problems: TabPFN 8 alerts (6 real, 2 false); the local
+    model 33 (8, 25); the ±50% rule 83 (9, 74). TabPFN misses more and alarms far less.
+  - The last fortnight, in the report: TabPFN 4 alerts (3 of 3, 1 false); the local model 8
+    (3, 5); the rule 24 (2, 22).
+  - Budget: 39.6 conversions a day with the agent and TabPFN, 37.3 left alone, 40.0 best
+    possible: +6.1%, 86% of the available gain. With the pooled model the agent reached +6.2%.
